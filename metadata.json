@@ -1,0 +1,6 @@
+{
+  "name": "VatTuPro - Quản Lý Nhập Xuất Tồn Vật Tư Thiết Bị",
+  "description": "Hệ thống quản lý Nhập - Xuất - Tồn vật tư và thiết bị chuyên nghiệp với bộ lọc đa điều kiện, cảnh báo định mức, thẻ kho và báo cáo tổng hợp.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
