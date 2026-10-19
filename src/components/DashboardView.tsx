@@ -1,375 +1,457 @@
-import React from 'react';
-import { useInventory } from '../context/InventoryContext';
-import { formatVND, formatNumber, formatDate } from '../utils/formatters';
-import { getItemStockStatus, getItemMaintenanceStatus } from '../utils/filterEngine';
+import React, { useMemo, useState } from 'react';
 import {
   Boxes,
-  AlertTriangle,
-  Wrench,
+  TrendingDown,
   TrendingUp,
-  ArrowDownLeft,
+  AlertTriangle,
+  Download,
+  Warehouse as WarehouseIcon,
+  PieChart,
+  Calendar,
+  Layers,
   ArrowUpRight,
-  PackageCheck,
-  ChevronRight,
-  Warehouse,
-  Edit2,
+  ArrowDownLeft,
 } from 'lucide-react';
-import { ActiveTab } from './Header';
+import { useInventory } from '../context/InventoryContext';
+import {
+  exportToCSV,
+  formatCurrency,
+  formatNumber,
+  getItemTypeLabel,
+  getStockStatus,
+  getStockStatusLabel,
+} from '../utils/formatters';
 
 interface DashboardViewProps {
-  onNavigateTab: (tab: ActiveTab) => void;
-  onFilterPreset: (presetId: string) => void;
-  onViewTransaction: (transId: string) => void;
-  onOpenWarehouseManager?: () => void;
-  onOpenCategoryManager?: () => void;
+  onSelectStockCard: (itemId: string) => void;
+  onOpenCreateTransaction: (type: 'NHAP_KHO' | 'XUAT_KHO') => void;
 }
 
 export const DashboardView: React.FC<DashboardViewProps> = ({
-  onNavigateTab,
-  onFilterPreset,
-  onViewTransaction,
-  onOpenWarehouseManager,
-  onOpenCategoryManager,
+  onSelectStockCard,
+  onOpenCreateTransaction,
 }) => {
   const { items, transactions, warehouses } = useInventory();
+  const [selectedReportWarehouse, setSelectedReportWarehouse] = useState<string>('ALL');
 
-  // Metrics calculation
-  const totalValue = items.reduce((sum, item) => sum + item.currentStock * item.unitPrice, 0);
-  const totalItemCount = items.length;
-  
-  const shortageItems = items.filter(it => getItemStockStatus(it) === 'THIEU_HUT' || getItemStockStatus(it) === 'HET_HANG');
-  const maintenanceItems = items.filter(it => {
-    const status = getItemMaintenanceStatus(it);
-    return it.condition === 'NEED_MAINTENANCE' || it.condition === 'UNDER_REPAIR' || status === 'OVERDUE' || status === 'DUE_SOON';
+  // KPI Calculations
+  const totalItemsCount = items.length;
+  const totalInventoryValue = items.reduce((acc, i) => acc + i.currentStock * i.unitPrice, 0);
+
+  const lowStockItems = items.filter(i => {
+    const st = getStockStatus(i);
+    return st === 'CANH_BAO_THAP' || st === 'HET_HANG';
   });
 
-  const overstockedItems = items.filter(it => getItemStockStatus(it) === 'VUOT_DINH_MUC');
+  const equipmentOnLoan = items.filter(
+    i => (i.type === 'THIET_BI' || i.type === 'CONG_CU') && i.condition === 'DANG_MUON'
+  );
 
-  // Breakdown by warehouse
-  const warehouseStats = warehouses.map(wh => {
-    const whItems = items.filter(it => it.warehouse === wh);
-    const whValue = whItems.reduce((sum, it) => sum + it.currentStock * it.unitPrice, 0);
-    const whCount = whItems.length;
-    return {
-      name: wh,
-      count: whCount,
-      value: whValue,
-    };
-  });
+  const totalReceipts = transactions.filter(t => t.type === 'NHAP_KHO');
+  const totalIssues = transactions.filter(t => t.type === 'XUAT_KHO');
 
-  // Breakdown by item type
-  const typeStats = [
-    { label: 'Vật tư tiêu hao', type: 'VAT_TU' },
-    { label: 'Thiết bị máy móc', type: 'THIET_BI' },
-    { label: 'Công cụ dụng cụ', type: 'CONG_CU' },
-    { label: 'Phụ tùng linh kiện', type: 'PHU_TUNG' },
-  ].map(t => {
-    const tItems = items.filter(it => it.type === t.type);
-    const tValue = tItems.reduce((sum, it) => sum + it.currentStock * it.unitPrice, 0);
-    return {
-      label: t.label,
-      count: tItems.length,
-      value: tValue,
-      pct: totalValue > 0 ? (tValue / totalValue) * 100 : 0,
-    };
-  });
+  const totalReceiptValue = totalReceipts.reduce((acc, t) => acc + t.totalAmount, 0);
+  const totalIssueValue = totalIssues.reduce((acc, t) => acc + t.totalAmount, 0);
 
-  // Recent transactions (latest 5)
-  const recentTransactions = [...transactions]
-    .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
-    .slice(0, 5);
+  // Category breakdown
+  const categoryBreakdown = useMemo(() => {
+    const map = new Map<string, { count: number; value: number }>();
+    items.forEach(item => {
+      const existing = map.get(item.category) || { count: 0, value: 0 };
+      map.set(item.category, {
+        count: existing.count + 1,
+        value: existing.value + item.currentStock * item.unitPrice,
+      });
+    });
+
+    const list = Array.from(map.entries()).map(([cat, val]) => ({
+      category: cat,
+      count: val.count,
+      value: val.value,
+      percentage: totalInventoryValue > 0 ? (val.value / totalInventoryValue) * 100 : 0,
+    }));
+
+    return list.sort((a, b) => b.value - a.value);
+  }, [items, totalInventoryValue]);
+
+  // Warehouse breakdown
+  const warehouseBreakdown = useMemo(() => {
+    return warehouses.map(wh => {
+      const whItems = items.filter(i => i.warehouseId === wh.id);
+      const whValue = whItems.reduce((acc, i) => acc + i.currentStock * i.unitPrice, 0);
+      return {
+        id: wh.id,
+        name: wh.name,
+        itemCount: whItems.length,
+        totalValue: whValue,
+        percentage: totalInventoryValue > 0 ? (whValue / totalInventoryValue) * 100 : 0,
+      };
+    });
+  }, [warehouses, items, totalInventoryValue]);
+
+  // Comprehensive In-Out-Stock (NXT) Report Data
+  const nxtReportRows = useMemo(() => {
+    return items
+      .filter(item => (selectedReportWarehouse === 'ALL' ? true : item.warehouseId === selectedReportWarehouse))
+      .map(item => {
+        // Compute in and out from transactions
+        let totalIn = 0;
+        let totalOut = 0;
+
+        transactions.forEach(trx => {
+          const line = trx.items.find(l => l.itemId === item.id);
+          if (line) {
+            if (trx.type === 'NHAP_KHO') totalIn += line.quantity;
+            if (trx.type === 'XUAT_KHO') totalOut += line.quantity;
+          }
+        });
+
+        // Opening balance approximation
+        const closingStock = item.currentStock;
+        const openingStock = Math.max(0, closingStock - totalIn + totalOut);
+        const closingValue = closingStock * item.unitPrice;
+        const wh = warehouses.find(w => w.id === item.warehouseId);
+
+        return {
+          id: item.id,
+          code: item.code,
+          name: item.name,
+          type: item.type,
+          unit: item.unit,
+          warehouseName: wh?.name || item.warehouseId,
+          openingStock,
+          totalIn,
+          totalOut,
+          closingStock,
+          unitPrice: item.unitPrice,
+          closingValue,
+          status: getStockStatus(item),
+        };
+      });
+  }, [items, transactions, selectedReportWarehouse, warehouses]);
+
+  // Export report to CSV
+  const handleExportNXT = () => {
+    const headers = [
+      'Mã Vật Tư/Thiết Bị',
+      'Tên Vật Tư Thiết Bị',
+      'Phân Loại',
+      'ĐVT',
+      'Kho Lưu Trữ',
+      'Tồn Đầu Kỳ',
+      'Nhập Trong Kỳ',
+      'Xuất Trong Kỳ',
+      'Tồn Cuối Kỳ',
+      'Đơn Giá Vốn (VNĐ)',
+      'Thành Tiền Tồn (VNĐ)',
+      'Tình Trạng Tồn Kho',
+    ];
+
+    const rows = nxtReportRows.map(row => [
+      row.code,
+      row.name,
+      getItemTypeLabel(row.type),
+      row.unit,
+      row.warehouseName,
+      row.openingStock,
+      row.totalIn,
+      row.totalOut,
+      row.closingStock,
+      row.unitPrice,
+      row.closingValue,
+      getStockStatusLabel(row.status),
+    ]);
+
+    exportToCSV(`Bao_Cao_Nhap_Xuat_Ton_${new Date().toISOString().substring(0, 10)}`, headers, rows);
+  };
 
   return (
     <div className="space-y-6">
-      {/* 4 Metric Cards */}
+      {/* KPI Cards Strip */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        {/* Card 1: Total Value */}
-        <div className="bg-white border border-slate-200 rounded-lg p-5">
+        {/* Metric 1 */}
+        <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-xs">
           <div className="flex items-center justify-between text-slate-500 mb-2">
             <span className="text-xs font-medium">Tổng giá trị tồn kho</span>
-            <TrendingUp className="w-4 h-4 text-slate-700" />
+            <Boxes className="w-4 h-4 text-indigo-600" />
           </div>
-          <div className="text-2xl font-bold text-slate-900 font-mono tracking-tight">
-            {formatVND(totalValue)}
+          <div className="text-2xl font-bold text-slate-900 tabular-nums">
+            {formatCurrency(totalInventoryValue)}
           </div>
-          <div className="text-xs text-slate-500 mt-2">
-            Ước tính theo đơn giá vốn danh mục
+          <div className="mt-2 text-xs text-slate-500 flex items-center gap-1.5">
+            <span className="font-semibold text-slate-700 tabular-nums">{totalItemsCount}</span>
+            <span>danh mục vật tư thiết bị</span>
           </div>
         </div>
 
-        {/* Card 2: Total Items */}
-        <div className="bg-white border border-slate-200 rounded-lg p-5">
+        {/* Metric 2 */}
+        <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-xs">
           <div className="flex items-center justify-between text-slate-500 mb-2">
-            <span className="text-xs font-medium">Danh mục quản lý</span>
-            <Boxes className="w-4 h-4 text-slate-700" />
+            <span className="text-xs font-medium">Cảnh báo thiếu hụt</span>
+            <AlertTriangle className="w-4 h-4 text-rose-500" />
           </div>
-          <div className="text-2xl font-bold text-slate-900 font-mono tracking-tight">
-            {formatNumber(totalItemCount)}{' '}
-            <span className="text-sm font-normal text-slate-500">mặt hàng</span>
+          <div className="text-2xl font-bold text-rose-600 tabular-nums">
+            {lowStockItems.length}
           </div>
-          <div className="text-xs text-slate-500 mt-2">
-            Phân bổ trên {warehouses.length} kho lưu trữ
-          </div>
-        </div>
-
-        {/* Card 3: Shortage Alert */}
-        <div
-          onClick={() => {
-            onFilterPreset('preset-shortage');
-            onNavigateTab('inventory');
-          }}
-          className="bg-white border border-amber-200 rounded-lg p-5 cursor-pointer hover:border-amber-400 transition-colors"
-        >
-          <div className="flex items-center justify-between text-amber-700 mb-2">
-            <span className="text-xs font-semibold">Cảnh báo thiếu hụt</span>
-            <AlertTriangle className="w-4 h-4 text-amber-600" />
-          </div>
-          <div className="text-2xl font-bold text-amber-900 font-mono tracking-tight">
-            {formatNumber(shortageItems.length)}{' '}
-            <span className="text-sm font-normal text-amber-700">mặt hàng</span>
-          </div>
-          <div className="text-xs text-amber-800 mt-2 flex items-center justify-between">
-            <span>Tồn dưới định mức tối thiểu</span>
-            <ChevronRight className="w-3.5 h-3.5" />
+          <div className="mt-2 text-xs text-slate-500">
+            <span>Dưới định mức min hoặc hết tồn kho</span>
           </div>
         </div>
 
-        {/* Card 4: Maintenance Alert */}
-        <div
-          onClick={() => {
-            onFilterPreset('preset-maintenance');
-            onNavigateTab('inventory');
-          }}
-          className="bg-white border border-rose-200 rounded-lg p-5 cursor-pointer hover:border-rose-400 transition-colors"
-        >
-          <div className="flex items-center justify-between text-rose-700 mb-2">
-            <span className="text-xs font-semibold">Thiết bị cần bảo trì</span>
-            <Wrench className="w-4 h-4 text-rose-600" />
+        {/* Metric 3 */}
+        <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-xs">
+          <div className="flex items-center justify-between text-slate-500 mb-2">
+            <span className="text-xs font-medium">Thiết bị đang thi công/mượn</span>
+            <Layers className="w-4 h-4 text-blue-600" />
           </div>
-          <div className="text-2xl font-bold text-rose-900 font-mono tracking-tight">
-            {formatNumber(maintenanceItems.length)}{' '}
-            <span className="text-sm font-normal text-rose-700">thiết bị</span>
+          <div className="text-2xl font-bold text-slate-900 tabular-nums">
+            {equipmentOnLoan.length}
           </div>
-          <div className="text-xs text-rose-800 mt-2 flex items-center justify-between">
-            <span>Quá hạn hoặc cần bảo dưỡng</span>
-            <ChevronRight className="w-3.5 h-3.5" />
+          <div className="mt-2 text-xs text-slate-500">
+            <span>Máy móc, công cụ tại các công trường</span>
+          </div>
+        </div>
+
+        {/* Metric 4 */}
+        <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-xs">
+          <div className="flex items-center justify-between text-slate-500 mb-2">
+            <span className="text-xs font-medium">Lưu chuyển trong kỳ</span>
+            <div className="flex items-center gap-1">
+              <span className="w-2 h-2 rounded-full bg-emerald-500" />
+              <span className="w-2 h-2 rounded-full bg-amber-500" />
+            </div>
+          </div>
+          <div className="flex items-center justify-between pt-1">
+            <div>
+              <span className="text-xs text-emerald-700 block">Nhập ({totalReceipts.length})</span>
+              <span className="text-sm font-bold text-slate-800 tabular-nums">
+                {formatCurrency(totalReceiptValue)}
+              </span>
+            </div>
+            <div className="text-right">
+              <span className="text-xs text-amber-700 block">Xuất ({totalIssues.length})</span>
+              <span className="text-sm font-bold text-slate-800 tabular-nums">
+                {formatCurrency(totalIssueValue)}
+              </span>
+            </div>
           </div>
         </div>
       </div>
 
-      {/* Critical Conditions Action Row */}
-      <div className="bg-slate-900 text-white rounded-lg p-4 flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
-        <div>
-          <h3 className="text-sm font-semibold text-white">
-            Bộ điều kiện kiểm soát rủi ro tồn kho
-          </h3>
-          <p className="text-xs text-slate-300 mt-0.5">
-            Truy xuất nhanh các nhóm vật tư thiết bị vi phạm điều kiện an toàn kho
-          </p>
-        </div>
-        <div className="flex items-center gap-2 flex-wrap">
-          <button
-            onClick={() => {
-              onFilterPreset('preset-shortage');
-              onNavigateTab('inventory');
-            }}
-            className="px-3 py-1.5 text-xs font-medium bg-amber-500/20 text-amber-200 border border-amber-500/30 rounded-md hover:bg-amber-500/30 transition-colors whitespace-nowrap cursor-pointer"
-          >
-            Lọc {shortageItems.length} mục thiếu hụt
-          </button>
-          <button
-            onClick={() => {
-              onFilterPreset('preset-maintenance');
-              onNavigateTab('inventory');
-            }}
-            className="px-3 py-1.5 text-xs font-medium bg-rose-500/20 text-rose-200 border border-rose-500/30 rounded-md hover:bg-rose-500/30 transition-colors whitespace-nowrap cursor-pointer"
-          >
-            Lọc {maintenanceItems.length} thiết bị bảo dưỡng
-          </button>
-          <button
-            onClick={() => {
-              onFilterPreset('preset-overstocked');
-              onNavigateTab('inventory');
-            }}
-            className="px-3 py-1.5 text-xs font-medium bg-blue-500/20 text-blue-200 border border-blue-500/30 rounded-md hover:bg-blue-500/30 transition-colors whitespace-nowrap cursor-pointer"
-          >
-            Lọc {overstockedItems.length} mục vượt Max
-          </button>
-          <button
-            onClick={() => {
-              onFilterPreset('preset-active-projects');
-              onNavigateTab('inventory');
-            }}
-            className="px-3 py-1.5 text-xs font-medium bg-emerald-500/20 text-emerald-200 border border-emerald-500/30 rounded-md hover:bg-emerald-500/30 transition-colors whitespace-nowrap cursor-pointer"
-          >
-            Thiết bị tại dự án
-          </button>
-        </div>
-      </div>
-
-      {/* 2-Column Split: Inventory Breakdown & Recent Transactions */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Left: Distribution by Warehouse & Type */}
-        <div className="bg-white border border-slate-200 rounded-lg p-5 space-y-5">
-          <div>
-            <div className="flex items-center justify-between mb-1">
-              <h3 className="text-sm font-bold text-slate-900">
-                Phân bổ giá trị theo Kho lưu trữ
+      {/* Distribution Section: Categories & Warehouses */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        {/* Category Breakdown (2 columns) */}
+        <div className="lg:col-span-2 bg-white p-5 rounded-xl border border-slate-200 shadow-xs">
+          <div className="flex items-center justify-between mb-4">
+            <div>
+              <h3 className="text-base font-semibold text-slate-900">
+                Phân bổ giá trị theo danh mục vật tư
               </h3>
-              {onOpenWarehouseManager && (
-                <button
-                  type="button"
-                  onClick={onOpenWarehouseManager}
-                  className="inline-flex items-center gap-1 text-xs text-indigo-700 hover:text-indigo-900 font-semibold cursor-pointer"
-                  title="Đổi tên kho hoặc thêm kho mới"
-                >
-                  <Edit2 className="w-3 h-3" />
-                  <span>Đổi tên & Quản lý kho</span>
-                </button>
-              )}
+              <p className="text-xs text-slate-500">Tỷ trọng vốn lưu động tại kho</p>
             </div>
-            <p className="text-xs text-slate-500 mb-3">
-              Quy mô hàng hóa và vốn tồn trữ theo từng vị trí kho
-            </p>
-            <div className="space-y-3">
-              {warehouseStats.map(wh => {
-                const pct = totalValue > 0 ? (wh.value / totalValue) * 100 : 0;
-                return (
-                  <div key={wh.name} className="space-y-1">
-                    <div className="flex items-center justify-between text-xs">
-                      <span className="font-medium text-slate-800">{wh.name}</span>
-                      <span className="font-mono text-slate-900 font-semibold">
-                        {formatVND(wh.value)} ({formatNumber(wh.count)} mục)
-                      </span>
-                    </div>
-                    <div className="w-full bg-slate-100 rounded-full h-2 overflow-hidden">
-                      <div
-                        className="bg-slate-700 h-2 rounded-full transition-all duration-300"
-                        style={{ width: `${Math.min(100, Math.max(3, pct))}%` }}
-                      />
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
+            <PieChart className="w-4 h-4 text-slate-400" />
           </div>
 
-          <div className="pt-4 border-t border-slate-100">
-            <div className="flex items-center justify-between mb-1">
-              <h3 className="text-sm font-bold text-slate-900">
-                Cơ cấu danh mục vật tư
-              </h3>
-              {onOpenCategoryManager && (
-                <button
-                  type="button"
-                  onClick={onOpenCategoryManager}
-                  className="inline-flex items-center gap-1 text-xs text-indigo-700 hover:text-indigo-900 font-semibold cursor-pointer"
-                  title="Quản lý & Xóa nhóm danh mục vật tư"
-                >
-                  <Edit2 className="w-3 h-3" />
-                  <span>Quản lý & Xóa danh mục</span>
-                </button>
-              )}
-            </div>
-            <div className="grid grid-cols-2 gap-3 mt-3">
-              {typeStats.map(t => (
-                <div key={t.label} className="p-3 bg-slate-50 rounded-lg border border-slate-100">
-                  <div className="text-xs text-slate-500">{t.label}</div>
-                  <div className="text-sm font-bold text-slate-900 mt-1 font-mono">
-                    {formatNumber(t.count)} mặt hàng
-                  </div>
-                  <div className="text-xs text-slate-600 font-mono mt-0.5">
-                    {formatVND(t.value)}
+          <div className="space-y-3.5">
+            {categoryBreakdown.map(cat => (
+              <div key={cat.category} className="space-y-1">
+                <div className="flex items-center justify-between text-xs">
+                  <span className="font-medium text-slate-700 truncate pr-2">
+                    {cat.category}
+                  </span>
+                  <div className="flex items-center gap-3 shrink-0 tabular-nums">
+                    <span className="text-slate-500">{cat.count} mặt hàng</span>
+                    <span className="font-semibold text-slate-900">
+                      {formatCurrency(cat.value)}
+                    </span>
+                    <span className="w-12 text-right text-slate-400">
+                      {cat.percentage.toFixed(1)}%
+                    </span>
                   </div>
                 </div>
-              ))}
-            </div>
+                {/* Progress bar */}
+                <div className="w-full h-2 bg-slate-100 rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-indigo-600 rounded-full transition-all duration-300"
+                    style={{ width: `${Math.max(cat.percentage, 2)}%` }}
+                  />
+                </div>
+              </div>
+            ))}
           </div>
         </div>
 
-        {/* Right: Recent Transactions Log */}
-        <div className="bg-white border border-slate-200 rounded-lg p-5">
-          <div className="flex items-center justify-between mb-3">
+        {/* Warehouse Breakdown (1 column) */}
+        <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-xs">
+          <div className="flex items-center justify-between mb-4">
             <div>
-              <h3 className="text-sm font-bold text-slate-900">
-                Giao dịch nhập xuất gần nhất
+              <h3 className="text-base font-semibold text-slate-900">
+                Tồn kho theo Chi nhánh & Dự án
               </h3>
-              <p className="text-xs text-slate-500">
-                Các phiếu giao dịch mới hoàn tất
-              </p>
+              <p className="text-xs text-slate-500">Tổng quan từng địa điểm</p>
             </div>
-            <button
-              onClick={() => onNavigateTab('report')}
-              className="text-xs text-slate-600 hover:text-slate-900 font-medium underline cursor-pointer"
-            >
-              Xem báo cáo NXT
-            </button>
+            <WarehouseIcon className="w-4 h-4 text-slate-400" />
           </div>
 
-          {recentTransactions.length === 0 ? (
-            <div className="text-center py-8 text-xs text-slate-400">
-              Chưa có giao dịch nhập xuất nào
-            </div>
-          ) : (
-            <div className="divide-y divide-slate-100">
-              {recentTransactions.map(trans => {
-                const isInbound = trans.type === 'INBOUND';
-                const isAudit = trans.type === 'AUDIT_ADJUSTMENT';
-
-                return (
+          <div className="space-y-4">
+            {warehouseBreakdown.map(wh => (
+              <div
+                key={wh.id}
+                className="p-3 bg-slate-50 rounded-lg border border-slate-100 space-y-1.5"
+              >
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-semibold text-slate-800 truncate" title={wh.name}>
+                    {wh.name}
+                  </span>
+                  <span className="text-xs font-bold text-slate-900 tabular-nums">
+                    {wh.percentage.toFixed(0)}%
+                  </span>
+                </div>
+                <div className="flex items-center justify-between text-xs text-slate-500">
+                  <span>{wh.itemCount} danh mục lưu trữ</span>
+                  <span className="font-medium text-indigo-700 tabular-nums">
+                    {formatCurrency(wh.totalValue)}
+                  </span>
+                </div>
+                <div className="w-full h-1.5 bg-slate-200 rounded-full overflow-hidden">
                   <div
-                    key={trans.id}
-                    onClick={() => onViewTransaction(trans.id)}
-                    className="py-3 flex items-center justify-between hover:bg-slate-50 px-2 rounded-md transition-colors cursor-pointer"
-                  >
-                    <div className="flex items-center gap-3">
-                      <div
-                        className={`w-8 h-8 rounded-md flex items-center justify-center shrink-0 ${
-                          isInbound
-                            ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
-                            : isAudit
-                            ? 'bg-blue-50 text-blue-700 border border-blue-200'
-                            : 'bg-amber-50 text-amber-700 border border-amber-200'
-                        }`}
-                      >
-                        {isInbound ? (
-                          <ArrowDownLeft className="w-4 h-4" />
-                        ) : isAudit ? (
-                          <PackageCheck className="w-4 h-4" />
-                        ) : (
-                          <ArrowUpRight className="w-4 h-4" />
-                        )}
-                      </div>
+                    className="h-full bg-emerald-600 rounded-full"
+                    style={{ width: `${Math.max(wh.percentage, 2)}%` }}
+                  />
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
 
-                      <div>
-                        <div className="flex items-center gap-2">
-                          <span className="text-xs font-mono font-bold text-slate-900">
-                            {trans.code}
-                          </span>
-                          <span className="text-xs text-slate-500">·</span>
-                          <span className="text-xs text-slate-600">
-                            {formatDate(trans.date)}
-                          </span>
-                        </div>
-                        <div className="text-xs text-slate-500 truncate max-w-[200px] sm:max-w-xs">
-                          {trans.receiverOrSupplier} · {trans.warehouse}
-                        </div>
-                      </div>
-                    </div>
+      {/* Comprehensive In-Out-Stock (NXT) Ledger Table */}
+      <div className="bg-white rounded-xl border border-slate-200 shadow-xs overflow-hidden">
+        {/* Table Header Controls */}
+        <div className="p-4 sm:p-5 border-b border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div>
+            <h3 className="text-base font-semibold text-slate-900">
+              Báo cáo Tổng hợp Nhập - Xuất - Tồn (NXT)
+            </h3>
+            <p className="text-xs text-slate-500">
+              Chi tiết luân chuyển đầu kỳ, nhập, xuất và số dư cuối kỳ theo từng mặt hàng
+            </p>
+          </div>
 
-                    <div className="text-right">
-                      <div className="text-xs font-bold font-mono text-slate-900">
-                        {formatVND(trans.totalAmount)}
-                      </div>
-                      <div className="text-[11px] text-slate-500 font-mono">
-                        {trans.items.length} mặt hàng
-                      </div>
+          <div className="flex items-center gap-2">
+            {/* Warehouse Filter */}
+            <select
+              value={selectedReportWarehouse}
+              onChange={e => setSelectedReportWarehouse(e.target.value)}
+              className="text-xs border border-slate-200 rounded-lg px-2.5 py-1.5 bg-slate-50 hover:bg-slate-100 outline-none text-slate-700 font-medium"
+            >
+              <option value="ALL">Tất cả kho ({warehouses.length})</option>
+              {warehouses.map(w => (
+                <option key={w.id} value={w.id}>
+                  {w.name}
+                </option>
+              ))}
+            </select>
+
+            {/* Export CSV button */}
+            <button
+              onClick={handleExportNXT}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-700 bg-white hover:bg-slate-50 border border-slate-200 rounded-lg transition-colors whitespace-nowrap"
+            >
+              <Download className="w-3.5 h-3.5" />
+              <span>Xuất Excel/CSV</span>
+            </button>
+          </div>
+        </div>
+
+        {/* The Table */}
+        <div className="overflow-x-auto">
+          <table className="w-full text-left border-collapse text-xs">
+            <thead>
+              <tr className="bg-slate-50/75 border-b border-slate-200 text-slate-500 font-semibold uppercase tracking-wider text-[11px]">
+                <th className="py-3 px-4">Mã SKU</th>
+                <th className="py-3 px-4">Tên vật tư / thiết bị</th>
+                <th className="py-3 px-3">ĐVT</th>
+                <th className="py-3 px-3">Kho lưu</th>
+                <th className="py-3 px-3 text-right">Tồn đầu</th>
+                <th className="py-3 px-3 text-right text-emerald-700">Nhập kỳ</th>
+                <th className="py-3 px-3 text-right text-amber-700">Xuất kỳ</th>
+                <th className="py-3 px-3 text-right font-bold text-slate-900">Tồn cuối</th>
+                <th className="py-3 px-3 text-right">Đơn giá vốn</th>
+                <th className="py-3 px-4 text-right">Thành tiền tồn</th>
+                <th className="py-3 px-4 text-center">Thẻ kho</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {nxtReportRows.map(row => (
+                <tr key={row.id} className="hover:bg-slate-50/80 transition-colors">
+                  <td className="py-3 px-4 font-mono font-medium text-slate-900 whitespace-nowrap">
+                    {row.code}
+                  </td>
+                  <td className="py-3 px-4 font-medium text-slate-900 min-w-[200px]">
+                    <div className="line-clamp-1">{row.name}</div>
+                    <div className="text-[11px] text-slate-400 font-normal">
+                      {getItemTypeLabel(row.type)}
                     </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
+                  </td>
+                  <td className="py-3 px-3 text-slate-600 whitespace-nowrap">{row.unit}</td>
+                  <td className="py-3 px-3 text-slate-600 whitespace-nowrap max-w-[140px] truncate" title={row.warehouseName}>
+                    {row.warehouseName}
+                  </td>
+                  <td className="py-3 px-3 text-right tabular-nums text-slate-600">
+                    {formatNumber(row.openingStock)}
+                  </td>
+                  <td className="py-3 px-3 text-right tabular-nums font-medium text-emerald-700 bg-emerald-50/30">
+                    {row.totalIn > 0 ? `+${formatNumber(row.totalIn)}` : '-'}
+                  </td>
+                  <td className="py-3 px-3 text-right tabular-nums font-medium text-amber-700 bg-amber-50/30">
+                    {row.totalOut > 0 ? `-${formatNumber(row.totalOut)}` : '-'}
+                  </td>
+                  <td className="py-3 px-3 text-right tabular-nums font-bold text-slate-900 bg-slate-50/50">
+                    {formatNumber(row.closingStock)}
+                  </td>
+                  <td className="py-3 px-3 text-right tabular-nums text-slate-600 whitespace-nowrap">
+                    {formatCurrency(row.unitPrice)}
+                  </td>
+                  <td className="py-3 px-4 text-right tabular-nums font-semibold text-slate-900 whitespace-nowrap">
+                    {formatCurrency(row.closingValue)}
+                  </td>
+                  <td className="py-3 px-4 text-center whitespace-nowrap">
+                    <button
+                      onClick={() => onSelectStockCard(row.id)}
+                      className="text-indigo-600 hover:text-indigo-800 font-semibold underline underline-offset-2 hover:bg-indigo-50 px-2 py-1 rounded"
+                    >
+                      Xem thẻ kho
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+            <tfoot>
+              <tr className="bg-slate-100/75 border-t-2 border-slate-300 font-semibold text-slate-900 text-xs">
+                <td colSpan={4} className="py-3 px-4 uppercase">
+                  Tổng cộng báo cáo ({nxtReportRows.length} mặt hàng)
+                </td>
+                <td className="py-3 px-3 text-right tabular-nums">
+                  {formatNumber(nxtReportRows.reduce((a, b) => a + b.openingStock, 0))}
+                </td>
+                <td className="py-3 px-3 text-right tabular-nums text-emerald-800">
+                  +{formatNumber(nxtReportRows.reduce((a, b) => a + b.totalIn, 0))}
+                </td>
+                <td className="py-3 px-3 text-right tabular-nums text-amber-800">
+                  -{formatNumber(nxtReportRows.reduce((a, b) => a + b.totalOut, 0))}
+                </td>
+                <td className="py-3 px-3 text-right tabular-nums font-bold">
+                  {formatNumber(nxtReportRows.reduce((a, b) => a + b.closingStock, 0))}
+                </td>
+                <td className="py-3 px-3 text-right text-slate-400">-</td>
+                <td className="py-3 px-4 text-right tabular-nums font-bold text-indigo-700">
+                  {formatCurrency(nxtReportRows.reduce((a, b) => a + b.closingValue, 0))}
+                </td>
+                <td></td>
+              </tr>
+            </tfoot>
+          </table>
         </div>
       </div>
     </div>

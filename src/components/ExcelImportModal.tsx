@@ -1,1029 +1,638 @@
-import React, { useState, useRef } from 'react';
+import React, { useRef, useState } from 'react';
+import * as XLSX from 'xlsx';
 import {
   X,
-  Upload,
   FileSpreadsheet,
+  UploadCloud,
   Download,
-  CheckCircle2,
   AlertTriangle,
-  XCircle,
-  Layers,
-  ArrowRight,
-  RotateCcw,
-  Printer,
-  ChevronDown,
-  Sparkles,
+  CheckCircle2,
+  PackagePlus,
+  PackageMinus,
+  Check,
+  AlertCircle,
 } from 'lucide-react';
 import { useInventory } from '../context/InventoryContext';
 import {
-  parseExcelFile,
-  detectColumnMapping,
-  validateAndNormalizeRows,
-  downloadInboundExcelTemplate,
-  ColumnMapping,
-  ValidatedInboundRow,
-} from '../utils/excelImport';
-import { formatVND, formatNumber } from '../utils/formatters';
-import {
-  InboundReason,
-  INBOUND_REASON_LABELS,
-  InventoryTransaction,
+  InventoryItem,
+  IssueSubtype,
+  ReceiptSubtype,
+  Transaction,
+  TransactionLineItem,
+  TransactionSubtype,
+  TransactionType,
 } from '../types/inventory';
+import {
+  formatCurrency,
+  formatNumber,
+  getSubtypeLabel,
+  getTransactionTypeLabel,
+} from '../utils/formatters';
 
 interface ExcelImportModalProps {
-  isOpen: boolean;
   onClose: () => void;
-  onViewPrint?: (transaction: InventoryTransaction) => void;
+  onSuccess: () => void;
 }
 
-type ImportStep = 'UPLOAD' | 'PREVIEW' | 'SUCCESS';
+interface ParsedGroupedTransaction {
+  id: string;
+  type: TransactionType;
+  subtype: TransactionSubtype;
+  date: string;
+  warehouseId: string;
+  warehouseName: string;
+  partnerName: string;
+  departmentOrProject: string;
+  notes: string;
+  items: TransactionLineItem[];
+  totalAmount: number;
+  isValid: boolean;
+  errors: string[];
+}
 
-export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
-  isOpen,
-  onClose,
-  onViewPrint,
-}) => {
-  const { items, warehouses, suppliers, importInboundFromExcel } = useInventory();
-
-  // Steps
-  const [step, setStep] = useState<ImportStep>('UPLOAD');
-  const [file, setFile] = useState<File | null>(null);
-  const [isDragging, setIsDragging] = useState(false);
-  const [loading, setLoading] = useState(false);
-  const [parseError, setParseError] = useState<string | null>(null);
-
-  // Raw data & Column mapping
-  const [headers, setHeaders] = useState<string[]>([]);
-  const [rawRows, setRawRows] = useState<Record<string, any>[]>([]);
-  const [mapping, setMapping] = useState<ColumnMapping | null>(null);
-  const [showMappingSettings, setShowMappingSettings] = useState(false);
-
-  // Import options
-  const [groupingMode, setGroupingMode] = useState<
-    'SINGLE_VOUCHER' | 'BY_RECEIPT_CODE' | 'BY_PACKING_LIST'
-  >('BY_PACKING_LIST');
-  const [defaultWarehouse, setDefaultWarehouse] = useState(
-    warehouses[0] || 'Kho Tổng A (Hà Nội)'
-  );
-  const [defaultDate, setDefaultDate] = useState(
-    new Date().toISOString().slice(0, 10)
-  );
-  const [defaultReason, setDefaultReason] = useState<InboundReason>('PURCHASE');
-  const [defaultSupplier, setDefaultSupplier] = useState(
-    suppliers[0] || 'Nhà cung cấp vật tư'
-  );
-  const [creator, setCreator] = useState('Admin Quản lý kho');
-  const [importNote, setImportNote] = useState('');
-
-  // Preview filtering
-  const [previewFilter, setPreviewFilter] = useState<'ALL' | 'VALID' | 'INVALID'>('ALL');
-
-  // Outcome
-  const [createdTransactions, setCreatedTransactions] = useState<InventoryTransaction[]>([]);
-  const [importSummary, setImportSummary] = useState<{
-    importedRows: number;
-    createdItems: number;
-    updatedItems: number;
-  } | null>(null);
+export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({ onClose, onSuccess }) => {
+  const { warehouses, items, importTransactionsBatch, currentUser } = useInventory();
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [fileName, setFileName] = useState('');
+  const [parsedTransactions, setParsedTransactions] = useState<ParsedGroupedTransaction[]>([]);
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [importSummary, setImportSummary] = useState<{
+    success: boolean;
+    importedCount: number;
+    errors: string[];
+  } | null>(null);
 
-  if (!isOpen) return null;
+  // Download Sample Template
+  const handleDownloadTemplate = () => {
+    const templateData = [
+      {
+        'Loại Phiếu (NHAP_KHO/XUAT_KHO)': 'NHAP_KHO',
+        'Nghiệp Vụ': 'NHAP_MUA_MOI',
+        'Ngày (YYYY-MM-DD)': '2026-10-16 09:00',
+        'Mã Kho': 'WH-HN',
+        'Đối Tác / Nhà Cung Cấp / Người Nhận': 'Công ty Cổ phần Cadivi Việt Nam',
+        'Dự Án / Phòng Ban': 'Dự án Cơ điện Hạ tầng Long Biên',
+        'Mã SKU Vật Tư': 'VT-CD-101',
+        'Tên Vật Tư': 'Dây cáp điện Cadivi CV 2.5mm2 (Cuộn 100m)',
+        'Đơn Vị Tính': 'Cuộn',
+        'Số Lượng': 200,
+        'Đơn Giá (VNĐ)': 185000,
+        'Số Serial / Lô': 'LOT-CAD-2026-X1',
+        'Ghi Chú': 'Nhập bổ sung đợt 2 theo hợp đồng số 42',
+      },
+      {
+        'Loại Phiếu (NHAP_KHO/XUAT_KHO)': 'NHAP_KHO',
+        'Nghiệp Vụ': 'NHAP_MUA_MOI',
+        'Ngày (YYYY-MM-DD)': '2026-10-16 09:00',
+        'Mã Kho': 'WH-HN',
+        'Đối Tác / Nhà Cung Cấp / Người Nhận': 'Công ty Cổ phần Cadivi Việt Nam',
+        'Dự Án / Phòng Ban': 'Dự án Cơ điện Hạ tầng Long Biên',
+        'Mã SKU Vật Tư': 'VT-CD-102',
+        'Tên Vật Tư': 'Aptomat Schneider MCB 3P 63A',
+        'Đơn Vị Tính': 'Cái',
+        'Số Lượng': 10,
+        'Đơn Giá (VNĐ)': 2850000,
+        'Số Serial / Lô': 'LOT-SCH-2026-X2',
+        'Ghi Chú': 'Aptomat Schneider nguyên kiện',
+      },
+      {
+        'Loại Phiếu (NHAP_KHO/XUAT_KHO)': 'XUAT_KHO',
+        'Nghiệp Vụ': 'XUAT_THI_CONG',
+        'Ngày (YYYY-MM-DD)': '2026-10-16 14:30',
+        'Mã Kho': 'WH-HP',
+        'Đối Tác / Nhà Cung Cấp / Người Nhận': 'Đội Thi công Thép (KS. Hùng)',
+        'Dự Án / Phòng Ban': 'Dự án Nhà xưởng Hải Phòng',
+        'Mã SKU Vật Tư': 'VT-KL-401',
+        'Tên Vật Tư': 'Thép hình chữ H Posco 200x200x8x12',
+        'Đơn Vị Tính': 'Cây',
+        'Số Lượng': 20,
+        'Đơn Giá (VNĐ)': 7200000,
+        'Số Serial / Lô': 'LOT-HP-H200-2026',
+        'Ghi Chú': 'Xuất dầm thép H200 thi công trục C-D',
+      },
+    ];
 
-  // Compute validated rows
-  const validatedRows: ValidatedInboundRow[] =
-    mapping && rawRows.length > 0
-      ? validateAndNormalizeRows(
-          rawRows,
-          mapping,
-          items,
-          defaultWarehouse,
-          defaultDate,
-          defaultSupplier,
-          defaultReason
-        )
-      : [];
+    const worksheet = XLSX.utils.json_to_sheet(templateData);
+    // Set column widths
+    worksheet['!cols'] = [
+      { wch: 20 },
+      { wch: 16 },
+      { wch: 18 },
+      { wch: 12 },
+      { wch: 32 },
+      { wch: 30 },
+      { wch: 16 },
+      { wch: 38 },
+      { wch: 14 },
+      { wch: 12 },
+      { wch: 16 },
+      { wch: 18 },
+      { wch: 32 },
+    ];
 
-  const validRows = validatedRows.filter(r => r.isValid);
-  const invalidRows = validatedRows.filter(r => !r.isValid);
-  const newItemsCount = validatedRows.filter(r => r.isValid && !r.isExistingItem).length;
-  const existingItemsCount = validatedRows.filter(r => r.isValid && r.isExistingItem).length;
-  const totalQuantity = validRows.reduce((acc, r) => acc + r.quantity, 0);
-  const totalAmount = validRows.reduce((acc, r) => acc + r.calculatedTotal, 0);
-
-  const displayedRows = validatedRows.filter(r => {
-    if (previewFilter === 'VALID') return r.isValid;
-    if (previewFilter === 'INVALID') return !r.isValid;
-    return true;
-  });
-
-  // Handle file read
-  const handleProcessFile = async (selectedFile: File) => {
-    setLoading(true);
-    setParseError(null);
-    try {
-      const { headers: detectedHeaders, rawRows: rows } = await parseExcelFile(selectedFile);
-      const detectedMapping = detectColumnMapping(detectedHeaders);
-
-      setFile(selectedFile);
-      setHeaders(detectedHeaders);
-      setRawRows(rows);
-      setMapping(detectedMapping);
-      setImportNote(`Nhập kho từ tệp ${selectedFile.name}`);
-      setStep('PREVIEW');
-    } catch (err: any) {
-      setParseError(err.message || 'Không thể đọc nội dung tệp Excel.');
-    } finally {
-      setLoading(false);
-    }
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, 'Mau_Nhap_Xuat_Kho');
+    XLSX.writeFile(workbook, 'Mau_Import_Phieu_Nhap_Xuat_Kho.xlsx');
   };
 
-  const handleDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDragging(false);
-    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-      const droppedFile = e.dataTransfer.files[0];
-      handleProcessFile(droppedFile);
-    }
-  };
-
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files.length > 0) {
-      handleProcessFile(e.target.files[0]);
-    }
-  };
-
-  const handleReset = () => {
-    setStep('UPLOAD');
-    setFile(null);
-    setHeaders([]);
-    setRawRows([]);
-    setMapping(null);
-    setParseError(null);
-    setCreatedTransactions([]);
-    setImportSummary(null);
-    if (fileInputRef.current) {
-      fileInputRef.current.value = '';
-    }
-  };
-
-  const handleConfirmImport = () => {
-    if (validRows.length === 0) return;
-
-    setLoading(true);
-    try {
-      const result = importInboundFromExcel(validatedRows, {
-        groupingMode,
-        defaultWarehouse,
-        defaultDate,
-        defaultReason,
-        defaultSupplier,
-        creator,
-        notes: importNote || `Nhập từ file ${file?.name || 'Excel'}`,
-      });
-
-      if (result.success) {
-        setCreatedTransactions(result.createdTransactions);
-        setImportSummary({
-          importedRows: result.importedRowsCount,
-          createdItems: result.createdItemsCount,
-          updatedItems: result.updatedItemsCount,
-        });
-        setStep('SUCCESS');
-      } else {
-        alert(result.error || 'Có lỗi xảy ra khi nhập kho.');
+  // Helper function to normalize keys
+  const getCleanVal = (row: any, ...candidates: string[]) => {
+    for (const cand of candidates) {
+      for (const key of Object.keys(row)) {
+        if (key.toLowerCase().trim() === cand.toLowerCase().trim()) {
+          return row[key];
+        }
       }
-    } catch (err: any) {
-      alert(`Lỗi thực hiện nhập kho: ${err.message}`);
-    } finally {
-      setLoading(false);
+    }
+    return undefined;
+  };
+
+  // Parse Uploaded File
+  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setFileName(file.name);
+    setIsProcessing(true);
+    setImportSummary(null);
+
+    const reader = new FileReader();
+    reader.onload = evt => {
+      try {
+        const bstr = evt.target?.result;
+        const wb = XLSX.read(bstr, { type: 'binary', cellDates: true });
+        const wsname = wb.SheetNames[0];
+        const ws = wb.Sheets[wsname];
+        const rawData: any[] = XLSX.utils.sheet_to_json(ws);
+
+        if (!rawData || rawData.length === 0) {
+          alert('File Excel trống hoặc không có dữ liệu hợp lệ.');
+          setIsProcessing(false);
+          return;
+        }
+
+        // Group rows into transactions by Type + Date + Partner + Warehouse
+        const groupedMap = new Map<string, ParsedGroupedTransaction>();
+
+        rawData.forEach((row, idx) => {
+          // Extract fields with multiple possible column names
+          const rawType = String(
+            getCleanVal(
+              row,
+              'Loại Phiếu (NHAP_KHO/XUAT_KHO)',
+              'Loại Phiếu',
+              'Loại',
+              'Type',
+              'loai_phieu'
+            ) || 'NHAP_KHO'
+          )
+            .toUpperCase()
+            .trim();
+
+          const type: TransactionType = rawType.includes('XUAT') ? 'XUAT_KHO' : 'NHAP_KHO';
+
+          const rawSubtype = String(
+            getCleanVal(row, 'Nghiệp Vụ', 'Phân loại', 'Subtype', 'nghiep_vu') ||
+              (type === 'NHAP_KHO' ? 'NHAP_MUA_MOI' : 'XUAT_THI_CONG')
+          ).trim();
+
+          const rawDate = getCleanVal(row, 'Ngày (YYYY-MM-DD)', 'Ngày', 'Date', 'ngay');
+          let dateStr = new Date().toISOString().substring(0, 16).replace('T', ' ');
+          if (rawDate instanceof Date) {
+            dateStr = rawDate.toISOString().substring(0, 16).replace('T', ' ');
+          } else if (typeof rawDate === 'string' && rawDate.trim()) {
+            dateStr = rawDate.trim();
+          }
+
+          const rawWh = String(
+            getCleanVal(row, 'Mã Kho', 'Kho', 'Kho hàng', 'Warehouse', 'ma_kho') || warehouses[0]?.id
+          ).trim();
+
+          // Find warehouse by code or id or name
+          const matchedWh =
+            warehouses.find(
+              w =>
+                w.id.toLowerCase() === rawWh.toLowerCase() ||
+                w.code.toLowerCase() === rawWh.toLowerCase() ||
+                w.name.toLowerCase().includes(rawWh.toLowerCase())
+            ) || warehouses[0];
+
+          const partner = String(
+            getCleanVal(
+              row,
+              'Đối Tác / Nhà Cung Cấp / Người Nhận',
+              'Đối tác',
+              'Nhà cung cấp',
+              'Người nhận',
+              'Partner',
+              'doi_tac'
+            ) || 'Đối tác chưa xác định'
+          ).trim();
+
+          const project = String(
+            getCleanVal(
+              row,
+              'Dự Án / Phòng Ban',
+              'Dự án',
+              'Phòng ban',
+              'Mục đích',
+              'Project',
+              'du_an'
+            ) || 'Công trình xây dựng'
+          ).trim();
+
+          const itemCode = String(
+            getCleanVal(
+              row,
+              'Mã SKU Vật Tư',
+              'Mã SKU',
+              'Mã vật tư',
+              'Mã VT',
+              'SKU',
+              'Code',
+              'ma_vt'
+            ) || ''
+          ).trim();
+
+          const qty = Number(getCleanVal(row, 'Số Lượng', 'Số lượng', 'Qty', 'so_luong') || 0);
+
+          const rawPrice = getCleanVal(row, 'Đơn Giá (VNĐ)', 'Đơn Giá', 'Giá', 'Price', 'don_gia');
+
+          const serial = String(
+            getCleanVal(row, 'Số Serial / Lô', 'Số serial', 'Số lô', 'Serial', 'so_serial') || ''
+          ).trim();
+
+          const note = String(getCleanVal(row, 'Ghi Chú', 'Ghi chú', 'Lưu ý', 'Note', 'ghi_chu') || '').trim();
+
+          // Grouping key: date (day) + type + partner + warehouseId
+          const groupKey = `${dateStr.substring(0, 10)}_${type}_${matchedWh.id}_${partner}`;
+
+          // Match item
+          const matchedItem = items.find(
+            i => i.code.toLowerCase() === itemCode.toLowerCase()
+          );
+
+          // Extract additional optional item info if introducing new item in Goods Receipt
+          const rawItemName = getCleanVal(
+            row,
+            'Tên Vật Tư / Thiết Bị',
+            'Tên Vật Tư',
+            'Tên Hàng',
+            'Tên',
+            'Item Name',
+            'Name',
+            'ten_vt'
+          );
+          const rawUnit = getCleanVal(row, 'Đơn Vị Tính', 'ĐVT', 'Unit', 'don_vi_tinh') || 'Cái';
+          const rawCat = getCleanVal(row, 'Danh Mục', 'Nhóm Ngành', 'Category', 'danh_muc') || 'Cơ điện & Vật tư công trình';
+          const rawLoc = getCleanVal(row, 'Vị Trí Kệ', 'Vị Trí', 'Location', 'vi_tri') || 'Khu vực tiếp nhận';
+
+          const isNewItem = !matchedItem && type === 'NHAP_KHO';
+
+          const errors: string[] = [];
+          if (!itemCode) {
+            errors.push(`Dòng ${idx + 2}: Thiếu mã SKU vật tư`);
+          } else if (!matchedItem) {
+            if (type !== 'NHAP_KHO') {
+              errors.push(`Dòng ${idx + 2}: Không tìm thấy mã SKU "${itemCode}" trong kho để xuất`);
+            }
+          }
+
+          if (qty <= 0) {
+            errors.push(`Dòng ${idx + 2}: Số lượng phải lớn hơn 0 (hiện tại: ${qty})`);
+          }
+
+          if (type === 'XUAT_KHO' && matchedItem && qty > matchedItem.currentStock) {
+            errors.push(
+              `Dòng ${idx + 2}: Số lượng xuất (${qty} ${matchedItem.unit}) vượt quá tồn khả dụng (${matchedItem.currentStock} ${matchedItem.unit})`
+            );
+          }
+
+          const unitPrice =
+            rawPrice !== undefined && Number(rawPrice) > 0
+              ? Number(rawPrice)
+              : matchedItem
+              ? matchedItem.unitPrice
+              : 0;
+
+          const lineItem: TransactionLineItem = {
+            itemId: matchedItem?.id || '',
+            itemCode: itemCode || 'CHƯA_RÕ',
+            itemName: rawItemName ? String(rawItemName).trim() : (matchedItem?.name || itemCode),
+            unit: rawUnit ? String(rawUnit).trim() : (matchedItem?.unit || 'Cái'),
+            quantity: qty,
+            unitPrice,
+            amount: qty * unitPrice,
+            serialNumber: serial,
+            note,
+            isNewItem,
+            category: String(rawCat),
+            location: String(rawLoc),
+          };
+
+          if (groupedMap.has(groupKey)) {
+            const existing = groupedMap.get(groupKey)!;
+            existing.items.push(lineItem);
+            existing.totalAmount += lineItem.amount;
+            if (errors.length > 0) {
+              existing.errors.push(...errors);
+              existing.isValid = false;
+            }
+          } else {
+            groupedMap.set(groupKey, {
+              id: `GROUP-${Date.now()}-${idx}`,
+              type,
+              subtype: rawSubtype as TransactionSubtype,
+              date: dateStr,
+              warehouseId: matchedWh.id,
+              warehouseName: matchedWh.name,
+              partnerName: partner,
+              departmentOrProject: project,
+              notes: `Import tự động từ file ${file.name}`,
+              items: [lineItem],
+              totalAmount: lineItem.amount,
+              isValid: errors.length === 0,
+              errors,
+            });
+          }
+        });
+
+        setParsedTransactions(Array.from(groupedMap.values()));
+      } catch (err: any) {
+        alert('Lỗi khi đọc file Excel: ' + (err.message || 'Định dạng file không phù hợp'));
+      } finally {
+        setIsProcessing(false);
+      }
+    };
+
+    reader.readAsBinaryString(file);
+  };
+
+  // Confirm Import
+  const handleConfirmImport = () => {
+    const validTransactions = parsedTransactions.filter(t => t.isValid);
+    if (validTransactions.length === 0) {
+      alert('Không có phiếu nào hợp lệ để import. Vui lòng kiểm tra lại lỗi dữ liệu.');
+      return;
+    }
+
+    const payload: Omit<Transaction, 'id' | 'code'>[] = validTransactions.map(t => ({
+      type: t.type,
+      subtype: t.subtype,
+      date: t.date,
+      warehouseId: t.warehouseId,
+      partnerName: t.partnerName,
+      departmentOrProject: t.departmentOrProject,
+      creatorName: currentUser ? currentUser.fullName : 'Hệ thống Import Excel',
+      approverName: 'Đã duyệt qua Excel',
+      notes: t.notes,
+      items: t.items,
+      totalAmount: t.totalAmount,
+      status: 'HOAN_THANH',
+    }));
+
+    const result = importTransactionsBatch(payload);
+    setImportSummary(result);
+
+    if (result.success && result.errors.length === 0) {
+      setTimeout(() => {
+        onSuccess();
+      }, 1200);
     }
   };
+
+  const validCount = parsedTransactions.filter(t => t.isValid).length;
+  const invalidCount = parsedTransactions.filter(t => !t.isValid).length;
+  const totalLines = parsedTransactions.reduce((acc, t) => acc + t.items.length, 0);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-900/60 backdrop-blur-xs overflow-y-auto">
-      <div className="relative w-full max-w-5xl bg-white rounded-xl shadow-2xl border border-slate-200 flex flex-col max-h-[92vh] overflow-hidden">
-        
+    <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
+      <div className="bg-white rounded-2xl max-w-4xl w-full border border-slate-200 shadow-2xl overflow-hidden flex flex-col max-h-[92vh]">
         {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200 bg-slate-50/70 shrink-0">
+        <div className="p-5 border-b border-slate-200 flex items-center justify-between bg-slate-50">
           <div className="flex items-center gap-3">
-            <div className="p-2 bg-emerald-100 text-emerald-800 rounded-lg">
+            <div className="w-10 h-10 rounded-xl bg-emerald-600 flex items-center justify-center text-white shadow-sm">
               <FileSpreadsheet className="w-5 h-5" />
             </div>
             <div>
-              <h2 className="text-base font-semibold text-slate-900 flex items-center gap-2">
-                <span>Nhập kho vật tư & thiết bị từ file Excel</span>
-                <span className="text-xs px-2 py-0.5 rounded-full font-normal bg-emerald-50 text-emerald-700 border border-emerald-200">
-                  .xlsx / .xls / .csv
-                </span>
+              <h2 className="text-base font-bold text-slate-900">
+                Import Phiếu Nhập &amp; Xuất Kho Từ File Excel
               </h2>
               <p className="text-xs text-slate-500">
-                Tự động đối chiếu mã, tăng tồn kho, thêm vật tư mới và lập phiếu nhập kho chuẩn
+                Hỗ trợ định dạng .xlsx, .xls hoặc .csv với tính năng kiểm tra tồn kho tự động
               </p>
             </div>
           </div>
-          <button
-            onClick={onClose}
-            className="p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-md transition-colors cursor-pointer"
+
+          <div className="flex items-center gap-2">
+            <button
+              onClick={handleDownloadTemplate}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 rounded-lg transition-colors"
+            >
+              <Download className="w-3.5 h-3.5" />
+              <span>Tải file mẫu Excel (.xlsx)</span>
+            </button>
+            <button
+              onClick={onClose}
+              className="p-1.5 text-slate-400 hover:text-slate-600 rounded-lg hover:bg-slate-200/50"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          </div>
+        </div>
+
+        {/* Modal Body */}
+        <div className="flex-1 overflow-y-auto p-5 space-y-5 text-xs">
+          {/* File Upload Zone */}
+          <div
+            onClick={() => fileInputRef.current?.click()}
+            className="border-2 border-dashed border-slate-300 hover:border-indigo-500 rounded-xl p-6 text-center cursor-pointer transition-colors bg-slate-50/50 hover:bg-indigo-50/30"
           >
-            <X className="w-5 h-5" />
+            <input
+              type="file"
+              ref={fileInputRef}
+              onChange={handleFileUpload}
+              accept=".xlsx, .xls, .csv"
+              className="hidden"
+            />
+            <UploadCloud className="w-8 h-8 text-slate-400 mx-auto mb-2" />
+            <p className="font-semibold text-slate-800">
+              {fileName ? fileName : 'Bấm vào đây để chọn file Excel hoặc kéo thả file'}
+            </p>
+            <p className="text-[11px] text-slate-400 mt-1">
+              Chấp nhận các file định dạng .xlsx, .xls, .csv theo mẫu quy định
+            </p>
+          </div>
+
+          {/* Import Result Notification if finished */}
+          {importSummary && (
+            <div
+              className={`p-4 rounded-xl border ${
+                importSummary.success
+                  ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
+                  : 'bg-rose-50 border-rose-200 text-rose-800'
+              }`}
+            >
+              <div className="flex items-center gap-2 font-bold text-sm mb-1">
+                {importSummary.success ? (
+                  <CheckCircle2 className="w-5 h-5 text-emerald-600" />
+                ) : (
+                  <AlertCircle className="w-5 h-5 text-rose-600" />
+                )}
+                <span>
+                  {importSummary.success
+                    ? `Import thành công ${importSummary.importedCount} phiếu vào kho!`
+                    : 'Import thất bại.'}
+                </span>
+              </div>
+              {importSummary.errors.length > 0 && (
+                <div className="mt-2 space-y-1 text-xs">
+                  {importSummary.errors.map((err, i) => (
+                    <div key={i} className="text-rose-700">
+                      &bull; {err}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Parsed Preview Table */}
+          {parsedTransactions.length > 0 && (
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h3 className="font-bold text-slate-900 text-sm">
+                    Xem Trước Dữ Liệu Import ({parsedTransactions.length} phiếu &bull; {totalLines} dòng vật tư)
+                  </h3>
+                  <div className="flex items-center gap-3 text-slate-500 mt-0.5">
+                    <span className="text-emerald-700 font-semibold flex items-center gap-1">
+                      <Check className="w-3.5 h-3.5" />
+                      <span>{validCount} phiếu hợp lệ</span>
+                    </span>
+                    {invalidCount > 0 && (
+                      <span className="text-rose-600 font-semibold flex items-center gap-1">
+                        <AlertTriangle className="w-3.5 h-3.5" />
+                        <span>{invalidCount} phiếu có lỗi cần kiểm tra</span>
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={handleConfirmImport}
+                  disabled={validCount === 0}
+                  className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-40 disabled:cursor-not-allowed text-white font-semibold rounded-lg shadow-xs flex items-center gap-1.5 transition-colors"
+                >
+                  <CheckCircle2 className="w-4 h-4" />
+                  <span>Xác nhận Import ({validCount} phiếu)</span>
+                </button>
+              </div>
+
+              {/* Transactions list */}
+              <div className="space-y-3 max-h-80 overflow-y-auto pr-1">
+                {parsedTransactions.map((trx, idx) => (
+                  <div
+                    key={trx.id}
+                    className={`p-3.5 rounded-xl border transition-all ${
+                      trx.isValid
+                        ? 'bg-white border-slate-200'
+                        : 'bg-rose-50/40 border-rose-200'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="flex items-center gap-2">
+                        <span
+                          className={`px-2 py-0.5 rounded font-bold text-[11px] ${
+                            trx.type === 'NHAP_KHO'
+                              ? 'bg-emerald-100 text-emerald-800'
+                              : 'bg-amber-100 text-amber-800'
+                          }`}
+                        >
+                          {getTransactionTypeLabel(trx.type)}
+                        </span>
+                        <span className="font-semibold text-slate-800">{trx.partnerName}</span>
+                        <span className="text-slate-400">&bull;</span>
+                        <span className="text-slate-600">{trx.departmentOrProject}</span>
+                      </div>
+
+                      <div className="flex items-center gap-3">
+                        <span className="text-slate-500 font-medium">
+                          Kho: <strong className="text-slate-800">{trx.warehouseName}</strong>
+                        </span>
+                        <span className="font-bold text-slate-900 tabular-nums">
+                          {formatCurrency(trx.totalAmount)}
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Errors if any */}
+                    {trx.errors.length > 0 && (
+                      <div className="mb-2 p-2 bg-rose-100/60 rounded text-[11px] text-rose-700 space-y-0.5">
+                        {trx.errors.map((e, ei) => (
+                          <div key={ei} className="flex items-center gap-1">
+                            <AlertCircle className="w-3 h-3 text-rose-600 shrink-0" />
+                            <span>{e}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* Line items mini table */}
+                    <div className="border border-slate-100 rounded-lg overflow-hidden bg-slate-50/50">
+                      <table className="w-full text-left border-collapse text-[11px]">
+                        <thead>
+                          <tr className="border-b border-slate-200 bg-slate-100/80 text-slate-500 font-semibold">
+                            <th className="py-1.5 px-3">Mã SKU</th>
+                            <th className="py-1.5 px-3">Tên vật tư</th>
+                            <th className="py-1.5 px-2 text-right">Số lượng</th>
+                            <th className="py-1.5 px-3 text-right">Đơn giá</th>
+                            <th className="py-1.5 px-3 text-right">Thành tiền</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100">
+                          {trx.items.map((line, li) => (
+                            <tr key={li}>
+                              <td className="py-1 px-3 font-mono font-medium text-slate-800">
+                                {line.itemCode}
+                              </td>
+                              <td className="py-1 px-3 text-slate-700">{line.itemName}</td>
+                              <td className="py-1 px-2 text-right font-bold tabular-nums">
+                                {formatNumber(line.quantity)} {line.unit}
+                              </td>
+                              <td className="py-1 px-3 text-right tabular-nums text-slate-600">
+                                {formatCurrency(line.unitPrice)}
+                              </td>
+                              <td className="py-1 px-3 text-right tabular-nums font-semibold text-slate-900">
+                                {formatCurrency(line.amount)}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div className="p-4 border-t border-slate-200 bg-slate-50 flex items-center justify-between">
+          <span className="text-xs text-slate-500">
+            * Dữ liệu sau khi import sẽ lập tức cộng/trừ vào số dư tồn kho thực tế.
+          </span>
+          <button
+            type="button"
+            onClick={onClose}
+            className="px-4 py-2 border border-slate-200 rounded-lg text-slate-700 hover:bg-slate-100 font-semibold text-xs transition-colors"
+          >
+            Đóng
           </button>
         </div>
-
-        {/* Content Body */}
-        <div className="flex-1 overflow-y-auto p-6 space-y-6">
-
-          {/* STEP 1: UPLOAD */}
-          {step === 'UPLOAD' && (
-            <div className="space-y-6">
-              {/* Template Download Banner */}
-              <div className="bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-200/80 rounded-lg p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
-                <div className="flex items-start gap-3">
-                  <div className="p-2 bg-blue-600 text-white rounded-md shrink-0 mt-0.5 sm:mt-0">
-                    <Download className="w-4 h-4" />
-                  </div>
-                  <div>
-                    <h3 className="text-sm font-semibold text-blue-900">
-                      Tải mẫu file Excel nhập kho chuẩn
-                    </h3>
-                    <p className="text-xs text-blue-700 mt-0.5">
-                      Bao gồm đầy đủ các cột: Số Packing List, Shipment, Hạng mục, Nhà sản xuất, Số kiện, Tên kiện, v.v.
-                    </p>
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => downloadInboundExcelTemplate(warehouses, suppliers)}
-                  className="inline-flex items-center gap-2 px-3.5 py-2 text-xs font-semibold text-blue-700 bg-white border border-blue-300 rounded-md hover:bg-blue-50 transition-colors shadow-xs shrink-0 cursor-pointer"
-                >
-                  <Download className="w-4 h-4" />
-                  <span>Tải file mẫu (.xlsx)</span>
-                </button>
-              </div>
-
-              {/* Drag and drop upload zone */}
-              <div
-                onDragOver={e => {
-                  e.preventDefault();
-                  setIsDragging(true);
-                }}
-                onDragLeave={() => setIsDragging(false)}
-                onDrop={handleDrop}
-                onClick={() => fileInputRef.current?.click()}
-                className={`border-2 border-dashed rounded-xl p-8 sm:p-12 text-center cursor-pointer transition-all ${
-                  isDragging
-                    ? 'border-emerald-500 bg-emerald-50/50 scale-[0.99]'
-                    : 'border-slate-300 hover:border-slate-400 bg-slate-50/40 hover:bg-slate-50'
-                }`}
-              >
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept=".xlsx, .xls, .csv"
-                  onChange={handleFileChange}
-                  className="hidden"
-                />
-                <div className="flex flex-col items-center justify-center space-y-3">
-                  <div className="p-4 bg-white rounded-full shadow-sm border border-slate-200 text-emerald-600">
-                    <Upload className="w-8 h-8" />
-                  </div>
-                  <div>
-                    <p className="text-sm font-medium text-slate-800">
-                      Nhấn vào đây để chọn tệp hoặc kéo thả file Excel vào vùng này
-                    </p>
-                    <p className="text-xs text-slate-500 mt-1">
-                      Hỗ trợ định dạng Microsoft Excel (.xlsx, .xls) hoặc tệp (.csv)
-                    </p>
-                  </div>
-                  <div className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-slate-100 text-slate-700 text-xs font-medium rounded-md">
-                    <span>Dung lượng khuyến nghị: dưới 15MB</span>
-                  </div>
-                </div>
-              </div>
-
-              {/* Error display */}
-              {parseError && (
-                <div className="p-3.5 bg-red-50 border border-red-200 rounded-lg flex items-center gap-3 text-red-800 text-xs">
-                  <XCircle className="w-5 h-5 shrink-0 text-red-600" />
-                  <div className="flex-1 font-medium">{parseError}</div>
-                </div>
-              )}
-
-              {/* Tips & Instructions */}
-              <div className="bg-slate-50 border border-slate-200 rounded-lg p-4 space-y-2 text-xs text-slate-600">
-                <h4 className="font-semibold text-slate-900 flex items-center gap-1.5">
-                  <Sparkles className="w-4 h-4 text-amber-500" />
-                  <span>Quy tắc nhập kho thông minh của hệ thống:</span>
-                </h4>
-                <ul className="list-disc pl-5 space-y-1 text-slate-600">
-                  <li>
-                    <strong>Mã vật tư đã có trong hệ thống:</strong> Tự động cộng dồn số lượng vào tồn kho hiện tại, đồng thời cập nhật đơn giá mới nhất.
-                  </li>
-                  <li>
-                    <strong>Mã vật tư chưa có:</strong> Hệ thống tự động tạo mã mới vào danh mục với thông số kỹ thuật, quy cách, nhà sản xuất trong file.
-                  </li>
-                  <li>
-                    <strong>Gom phiếu theo Packing List:</strong> Các dòng hàng thuộc cùng số Packing List hoặc số phiếu nhập có thể tự động gom chung thành 1 phiếu nhập kho chính thức.
-                  </li>
-                </ul>
-              </div>
-            </div>
-          )}
-
-          {/* STEP 2: PREVIEW & MAPPING */}
-          {step === 'PREVIEW' && mapping && (
-            <div className="space-y-5">
-              {/* Top File & Batch Configuration Box */}
-              <div className="bg-slate-50 border border-slate-200 rounded-lg p-4 space-y-4">
-                <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 pb-3 border-b border-slate-200">
-                  <div className="flex items-center gap-2">
-                    <FileSpreadsheet className="w-4 h-4 text-emerald-600" />
-                    <span className="text-xs font-semibold text-slate-800 truncate max-w-xs">
-                      {file?.name}
-                    </span>
-                    <span className="text-[11px] text-slate-500">
-                      ({rawRows.length} dòng dữ liệu đọc được)
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={() => setShowMappingSettings(!showMappingSettings)}
-                      className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-slate-700 bg-white border border-slate-300 rounded hover:bg-slate-50 cursor-pointer"
-                    >
-                      <Layers className="w-3.5 h-3.5 text-slate-500" />
-                      <span>{showMappingSettings ? 'Ẩn cấu hình ghép cột' : 'Cấu hình ghép cột'}</span>
-                      <ChevronDown className={`w-3.5 h-3.5 transition-transform ${showMappingSettings ? 'rotate-180' : ''}`} />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={handleReset}
-                      className="inline-flex items-center gap-1 px-2.5 py-1 text-xs text-slate-600 hover:text-slate-900 bg-white border border-slate-200 rounded hover:bg-slate-100 cursor-pointer"
-                    >
-                      <RotateCcw className="w-3.5 h-3.5" />
-                      <span>Chọn file khác</span>
-                    </button>
-                  </div>
-                </div>
-
-                {/* Column Mapping Panel (Collapsible) */}
-                {showMappingSettings && (
-                  <div className="p-4 bg-white border border-slate-200 rounded-lg space-y-3">
-                    <div className="text-xs font-semibold text-slate-800 flex items-center justify-between">
-                      <span>Ghép các cột trong file Excel với trường dữ liệu hệ thống:</span>
-                      <span className="text-[11px] text-slate-500 font-normal">
-                        (Hệ thống đã tự động nhận diện dựa trên tiêu đề)
-                      </span>
-                    </div>
-
-                    <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3 text-xs">
-                      <div>
-                        <label className="block text-slate-600 font-medium mb-1">
-                          Mã VT/TB <span className="text-red-500">*</span>
-                        </label>
-                        <select
-                          value={mapping.itemCode}
-                          onChange={e => setMapping({ ...mapping, itemCode: e.target.value })}
-                          className="w-full px-2 py-1.5 border border-slate-300 rounded text-xs bg-slate-50"
-                        >
-                          <option value="">-- Chưa chọn --</option>
-                          {headers.map(h => (
-                            <option key={h} value={h}>
-                              {h}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-
-                      <div>
-                        <label className="block text-slate-600 font-medium mb-1">
-                          Tên VT/TB <span className="text-red-500">*</span>
-                        </label>
-                        <select
-                          value={mapping.itemName}
-                          onChange={e => setMapping({ ...mapping, itemName: e.target.value })}
-                          className="w-full px-2 py-1.5 border border-slate-300 rounded text-xs bg-slate-50"
-                        >
-                          <option value="">-- Chưa chọn --</option>
-                          {headers.map(h => (
-                            <option key={h} value={h}>
-                              {h}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-
-                      <div>
-                        <label className="block text-slate-600 font-medium mb-1">
-                          Số lượng nhập <span className="text-red-500">*</span>
-                        </label>
-                        <select
-                          value={mapping.quantity}
-                          onChange={e => setMapping({ ...mapping, quantity: e.target.value })}
-                          className="w-full px-2 py-1.5 border border-slate-300 rounded text-xs bg-slate-50"
-                        >
-                          <option value="">-- Chưa chọn --</option>
-                          {headers.map(h => (
-                            <option key={h} value={h}>
-                              {h}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-
-                      <div>
-                        <label className="block text-slate-600 font-medium mb-1">Đơn vị tính</label>
-                        <select
-                          value={mapping.unit}
-                          onChange={e => setMapping({ ...mapping, unit: e.target.value })}
-                          className="w-full px-2 py-1.5 border border-slate-300 rounded text-xs bg-slate-50"
-                        >
-                          <option value="">-- Bỏ qua (mặc định: Cái) --</option>
-                          {headers.map(h => (
-                            <option key={h} value={h}>
-                              {h}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-
-                      <div>
-                        <label className="block text-slate-600 font-medium mb-1">Đơn giá nhập</label>
-                        <select
-                          value={mapping.unitPrice}
-                          onChange={e => setMapping({ ...mapping, unitPrice: e.target.value })}
-                          className="w-full px-2 py-1.5 border border-slate-300 rounded text-xs bg-slate-50"
-                        >
-                          <option value="">-- Bỏ qua --</option>
-                          {headers.map(h => (
-                            <option key={h} value={h}>
-                              {h}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-
-                      <div>
-                        <label className="block text-slate-600 font-medium mb-1">Số Packing List</label>
-                        <select
-                          value={mapping.packingListNo}
-                          onChange={e => setMapping({ ...mapping, packingListNo: e.target.value })}
-                          className="w-full px-2 py-1.5 border border-slate-300 rounded text-xs bg-slate-50"
-                        >
-                          <option value="">-- Bỏ qua --</option>
-                          {headers.map(h => (
-                            <option key={h} value={h}>
-                              {h}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-
-                      <div>
-                        <label className="block text-slate-600 font-medium mb-1">Lô hàng / Shipment</label>
-                        <select
-                          value={mapping.shipment}
-                          onChange={e => setMapping({ ...mapping, shipment: e.target.value })}
-                          className="w-full px-2 py-1.5 border border-slate-300 rounded text-xs bg-slate-50"
-                        >
-                          <option value="">-- Bỏ qua --</option>
-                          {headers.map(h => (
-                            <option key={h} value={h}>
-                              {h}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-
-                      <div>
-                        <label className="block text-slate-600 font-medium mb-1">Nhà sản xuất</label>
-                        <select
-                          value={mapping.manufacturer}
-                          onChange={e => setMapping({ ...mapping, manufacturer: e.target.value })}
-                          className="w-full px-2 py-1.5 border border-slate-300 rounded text-xs bg-slate-50"
-                        >
-                          <option value="">-- Bỏ qua --</option>
-                          {headers.map(h => (
-                            <option key={h} value={h}>
-                              {h}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-
-                      <div>
-                        <label className="block text-slate-600 font-medium mb-1">Số kiện</label>
-                        <select
-                          value={mapping.packageNo}
-                          onChange={e => setMapping({ ...mapping, packageNo: e.target.value })}
-                          className="w-full px-2 py-1.5 border border-slate-300 rounded text-xs bg-slate-50"
-                        >
-                          <option value="">-- Bỏ qua --</option>
-                          {headers.map(h => (
-                            <option key={h} value={h}>
-                              {h}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-
-                      <div>
-                        <label className="block text-slate-600 font-medium mb-1">Tên kiện</label>
-                        <select
-                          value={mapping.packageName}
-                          onChange={e => setMapping({ ...mapping, packageName: e.target.value })}
-                          className="w-full px-2 py-1.5 border border-slate-300 rounded text-xs bg-slate-50"
-                        >
-                          <option value="">-- Bỏ qua --</option>
-                          {headers.map(h => (
-                            <option key={h} value={h}>
-                              {h}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-
-                      <div>
-                        <label className="block text-slate-600 font-medium mb-1">Hạng mục</label>
-                        <select
-                          value={mapping.projectItem}
-                          onChange={e => setMapping({ ...mapping, projectItem: e.target.value })}
-                          className="w-full px-2 py-1.5 border border-slate-300 rounded text-xs bg-slate-50"
-                        >
-                          <option value="">-- Bỏ qua --</option>
-                          {headers.map(h => (
-                            <option key={h} value={h}>
-                              {h}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-
-                      <div>
-                        <label className="block text-slate-600 font-medium mb-1">Kho tiếp nhận</label>
-                        <select
-                          value={mapping.warehouse}
-                          onChange={e => setMapping({ ...mapping, warehouse: e.target.value })}
-                          className="w-full px-2 py-1.5 border border-slate-300 rounded text-xs bg-slate-50"
-                        >
-                          <option value="">-- Theo mặc định bên dưới --</option>
-                          {headers.map(h => (
-                            <option key={h} value={h}>
-                              {h}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                    </div>
-                  </div>
-                )}
-
-                {/* Import Defaults & Voucher Strategy */}
-                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3 text-xs">
-                  <div>
-                    <label className="block font-medium text-slate-700 mb-1">
-                      Cơ chế lập phiếu nhập:
-                    </label>
-                    <select
-                      value={groupingMode}
-                      onChange={e => setGroupingMode(e.target.value as any)}
-                      className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded-md text-xs text-slate-800 font-medium"
-                    >
-                      <option value="BY_PACKING_LIST">Tách phiếu theo Số Packing List</option>
-                      <option value="BY_RECEIPT_CODE">Tách phiếu theo Mã phiếu trong Excel</option>
-                      <option value="SINGLE_VOUCHER">Gom tất cả vào 1 phiếu nhập duy nhất</option>
-                    </select>
-                  </div>
-
-                  <div>
-                    <label className="block font-medium text-slate-700 mb-1">
-                      Kho tiếp nhận mặc định:
-                    </label>
-                    <select
-                      value={defaultWarehouse}
-                      onChange={e => setDefaultWarehouse(e.target.value)}
-                      className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded-md text-xs text-slate-800"
-                    >
-                      {warehouses.map(w => (
-                        <option key={w} value={w}>
-                          {w}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div>
-                    <label className="block font-medium text-slate-700 mb-1">
-                      Lý do nhập kho:
-                    </label>
-                    <select
-                      value={defaultReason}
-                      onChange={e => setDefaultReason(e.target.value as InboundReason)}
-                      className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded-md text-xs text-slate-800"
-                    >
-                      {Object.entries(INBOUND_REASON_LABELS).map(([k, label]) => (
-                        <option key={k} value={k}>
-                          {label}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div>
-                    <label className="block font-medium text-slate-700 mb-1">
-                      Ngày nhập phiếu:
-                    </label>
-                    <input
-                      type="date"
-                      value={defaultDate}
-                      onChange={e => setDefaultDate(e.target.value)}
-                      className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded-md text-xs text-slate-800"
-                    />
-                  </div>
-                </div>
-              </div>
-
-              {/* Data Summary Stats Bar */}
-              <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
-                <div className="bg-slate-50 border border-slate-200 rounded-lg p-3">
-                  <div className="text-[11px] text-slate-500">Tổng số dòng</div>
-                  <div className="text-lg font-bold font-mono text-slate-800">
-                    {validatedRows.length}
-                  </div>
-                </div>
-
-                <div className="bg-emerald-50 border border-emerald-200 rounded-lg p-3">
-                  <div className="text-[11px] text-emerald-700">Dòng hợp lệ</div>
-                  <div className="text-lg font-bold font-mono text-emerald-800">
-                    {validRows.length}
-                  </div>
-                </div>
-
-                <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
-                  <div className="text-[11px] text-blue-700">Vật tư mới / Có sẵn</div>
-                  <div className="text-sm font-bold font-mono text-blue-900 mt-1">
-                    <span className="text-emerald-700">+{newItemsCount} mới</span> · <span>{existingItemsCount} cũ</span>
-                  </div>
-                </div>
-
-                <div className="bg-amber-50 border border-amber-200 rounded-lg p-3">
-                  <div className="text-[11px] text-amber-700">Tổng số lượng nhập</div>
-                  <div className="text-lg font-bold font-mono text-amber-900">
-                    {formatNumber(totalQuantity)}
-                  </div>
-                </div>
-
-                <div className="bg-purple-50 border border-purple-200 rounded-lg p-3 col-span-2 sm:col-span-1">
-                  <div className="text-[11px] text-purple-700">Tổng giá trị ước tính</div>
-                  <div className="text-sm font-bold font-mono text-purple-900 mt-1">
-                    {formatVND(totalAmount)}
-                  </div>
-                </div>
-              </div>
-
-              {/* Preview Filter Tabs */}
-              <div className="flex items-center justify-between gap-2">
-                <div className="flex items-center gap-1.5 text-xs">
-                  <button
-                    onClick={() => setPreviewFilter('ALL')}
-                    className={`px-3 py-1 rounded-md font-medium transition-colors cursor-pointer ${
-                      previewFilter === 'ALL'
-                        ? 'bg-slate-900 text-white'
-                        : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                    }`}
-                  >
-                    Tất cả ({validatedRows.length})
-                  </button>
-                  <button
-                    onClick={() => setPreviewFilter('VALID')}
-                    className={`px-3 py-1 rounded-md font-medium transition-colors cursor-pointer ${
-                      previewFilter === 'VALID'
-                        ? 'bg-emerald-700 text-white'
-                        : 'bg-emerald-50 text-emerald-700 hover:bg-emerald-100'
-                    }`}
-                  >
-                    Hợp lệ ({validRows.length})
-                  </button>
-                  {invalidRows.length > 0 && (
-                    <button
-                      onClick={() => setPreviewFilter('INVALID')}
-                      className={`px-3 py-1 rounded-md font-medium transition-colors cursor-pointer ${
-                        previewFilter === 'INVALID'
-                          ? 'bg-red-700 text-white'
-                          : 'bg-red-50 text-red-700 hover:bg-red-100'
-                      }`}
-                    >
-                      Dòng có lỗi ({invalidRows.length})
-                    </button>
-                  )}
-                </div>
-
-                <div className="text-xs text-slate-500">
-                  Hiển thị {displayedRows.length} / {validatedRows.length} dòng
-                </div>
-              </div>
-
-              {/* Data Preview Table */}
-              <div className="bg-white border border-slate-200 rounded-lg overflow-hidden shadow-xs">
-                <div className="overflow-x-auto max-h-72">
-                  <table className="w-full text-left border-collapse text-xs">
-                    <thead className="sticky top-0 bg-slate-100 z-10 text-slate-700 font-semibold border-b border-slate-200">
-                      <tr>
-                        <th className="py-2 px-3 whitespace-nowrap">Dòng</th>
-                        <th className="py-2 px-3 whitespace-nowrap">Trạng thái</th>
-                        <th className="py-2 px-3 whitespace-nowrap">Mã VT/TB</th>
-                        <th className="py-2 px-3">Tên vật tư thiết bị</th>
-                        <th className="py-2 px-3 text-right whitespace-nowrap">SL nhập</th>
-                        <th className="py-2 px-3 whitespace-nowrap">ĐVT</th>
-                        <th className="py-2 px-3 text-right whitespace-nowrap">Đơn giá</th>
-                        <th className="py-2 px-3 text-right whitespace-nowrap">Thành tiền</th>
-                        <th className="py-2 px-3 whitespace-nowrap">Packing List</th>
-                        <th className="py-2 px-3 whitespace-nowrap">Shipment</th>
-                        <th className="py-2 px-3 whitespace-nowrap">Số / Tên kiện</th>
-                        <th className="py-2 px-3 whitespace-nowrap">Hạng mục</th>
-                        <th className="py-2 px-3 whitespace-nowrap">Kho tiếp nhận</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-100">
-                      {displayedRows.length === 0 ? (
-                        <tr>
-                          <td colSpan={13} className="py-8 text-center text-slate-400">
-                            Không có dòng nào phù hợp bộ lọc.
-                          </td>
-                        </tr>
-                      ) : (
-                        displayedRows.map((row, idx) => (
-                          <tr
-                            key={idx}
-                            className={`hover:bg-slate-50 transition-colors ${
-                              !row.isValid ? 'bg-red-50/40' : ''
-                            }`}
-                          >
-                            <td className="py-2 px-3 font-mono text-slate-400 text-[11px]">
-                              {row.rowIndex}
-                            </td>
-                            <td className="py-2 px-3 whitespace-nowrap">
-                              {row.isValid ? (
-                                <div className="flex items-center gap-1.5">
-                                  <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-emerald-100 text-emerald-800">
-                                    <CheckCircle2 className="w-3 h-3" />
-                                    <span>Hợp lệ</span>
-                                  </span>
-                                  {row.isExistingItem ? (
-                                    <span className="text-[10px] text-blue-700 bg-blue-50 px-1 py-0.5 rounded border border-blue-200">
-                                      Tồn: {row.matchedItem?.currentStock}
-                                    </span>
-                                  ) : (
-                                    <span className="text-[10px] text-amber-700 bg-amber-50 px-1 py-0.5 rounded border border-amber-200 font-semibold">
-                                      VT Mới
-                                    </span>
-                                  )}
-                                </div>
-                              ) : (
-                                <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-red-100 text-red-800">
-                                  <XCircle className="w-3 h-3" />
-                                  <span>{row.errors[0] || 'Lỗi'}</span>
-                                </span>
-                              )}
-                            </td>
-                            <td className="py-2 px-3 font-mono font-bold text-slate-900 whitespace-nowrap">
-                              {row.itemCode || <span className="text-red-500 font-normal">[Trống]</span>}
-                            </td>
-                            <td className="py-2 px-3 text-slate-800 max-w-xs truncate font-medium">
-                              {row.itemName || <span className="text-red-500 font-normal">[Trống]</span>}
-                              {row.manufacturer && (
-                                <div className="text-[10px] text-slate-500">
-                                  NSX: {row.manufacturer}
-                                </div>
-                              )}
-                            </td>
-                            <td className="py-2 px-3 text-right font-mono font-bold text-slate-900">
-                              {row.quantity > 0 ? (
-                                formatNumber(row.quantity)
-                              ) : (
-                                <span className="text-red-500">0</span>
-                              )}
-                            </td>
-                            <td className="py-2 px-3 text-slate-600 whitespace-nowrap">
-                              {row.unit}
-                            </td>
-                            <td className="py-2 px-3 text-right font-mono text-slate-700">
-                              {formatVND(row.unitPrice || 0)}
-                            </td>
-                            <td className="py-2 px-3 text-right font-mono font-semibold text-slate-900">
-                              {formatVND(row.calculatedTotal)}
-                            </td>
-                            <td className="py-2 px-3 font-mono text-blue-700 text-[11px] whitespace-nowrap">
-                              {row.packingListNo || '-'}
-                            </td>
-                            <td className="py-2 px-3 text-slate-600 text-[11px] whitespace-nowrap">
-                              {row.shipment || '-'}
-                            </td>
-                            <td className="py-2 px-3 text-slate-600 text-[11px] whitespace-nowrap">
-                              {row.packageNo ? (
-                                <span>
-                                  <strong>{row.packageNo}</strong>
-                                  {row.packageName && ` - ${row.packageName}`}
-                                </span>
-                              ) : (
-                                '-'
-                              )}
-                            </td>
-                            <td className="py-2 px-3 text-indigo-700 text-[11px] whitespace-nowrap">
-                              {row.projectItem || '-'}
-                            </td>
-                            <td className="py-2 px-3 text-slate-700 text-[11px] whitespace-nowrap">
-                              {row.warehouse}
-                            </td>
-                          </tr>
-                        ))
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* STEP 3: SUCCESS */}
-          {step === 'SUCCESS' && importSummary && (
-            <div className="py-6 space-y-6 text-center">
-              <div className="w-14 h-14 bg-emerald-100 text-emerald-600 rounded-full flex items-center justify-center mx-auto">
-                <CheckCircle2 className="w-8 h-8" />
-              </div>
-
-              <div>
-                <h3 className="text-lg font-bold text-slate-900">
-                  Nhập kho từ Excel thành công!
-                </h3>
-                <p className="text-xs text-slate-600 mt-1 max-w-md mx-auto">
-                  Dữ liệu đã được ghi nhận vào kho, số lượng tồn kho đã được cập nhật và phiếu nhập kho đã được tạo lập tự động.
-                </p>
-              </div>
-
-              {/* Summary Badges */}
-              <div className="flex flex-wrap items-center justify-center gap-3">
-                <div className="px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-lg text-left">
-                  <div className="text-[11px] text-slate-500">Số dòng đã nạp</div>
-                  <div className="text-base font-bold font-mono text-slate-800">
-                    {importSummary.importedRows} dòng
-                  </div>
-                </div>
-
-                <div className="px-4 py-2.5 bg-emerald-50 border border-emerald-200 rounded-lg text-left">
-                  <div className="text-[11px] text-emerald-700">Mặt hàng tạo mới</div>
-                  <div className="text-base font-bold font-mono text-emerald-800">
-                    +{importSummary.createdItems} mặt hàng
-                  </div>
-                </div>
-
-                <div className="px-4 py-2.5 bg-blue-50 border border-blue-200 rounded-lg text-left">
-                  <div className="text-[11px] text-blue-700">Tồn kho cập nhật</div>
-                  <div className="text-base font-bold font-mono text-blue-900">
-                    {importSummary.updatedItems} mặt hàng
-                  </div>
-                </div>
-
-                <div className="px-4 py-2.5 bg-purple-50 border border-purple-200 rounded-lg text-left">
-                  <div className="text-[11px] text-purple-700">Phiếu nhập kho đã tạo</div>
-                  <div className="text-base font-bold font-mono text-purple-900">
-                    {createdTransactions.length} phiếu
-                  </div>
-                </div>
-              </div>
-
-              {/* Created vouchers list */}
-              {createdTransactions.length > 0 && (
-                <div className="max-w-2xl mx-auto text-left bg-slate-50 border border-slate-200 rounded-lg p-4 space-y-3">
-                  <div className="text-xs font-semibold text-slate-800">
-                    Danh sách phiếu nhập kho vừa lập:
-                  </div>
-                  <div className="space-y-2">
-                    {createdTransactions.map(trans => (
-                      <div
-                        key={trans.id}
-                        className="flex items-center justify-between bg-white p-3 rounded border border-slate-200 text-xs"
-                      >
-                        <div>
-                          <div className="font-mono font-bold text-slate-900 flex items-center gap-2">
-                            <span>{trans.code}</span>
-                            {trans.packingListNo && (
-                              <span className="text-[11px] text-blue-700 font-normal">
-                                (PL: {trans.packingListNo})
-                              </span>
-                            )}
-                          </div>
-                          <div className="text-slate-500 text-[11px] mt-0.5">
-                            {trans.warehouse} · {trans.items.length} mặt hàng ·{' '}
-                            <span className="font-mono font-semibold text-slate-700">
-                              {formatVND(trans.totalAmount)}
-                            </span>
-                          </div>
-                        </div>
-
-                        {onViewPrint && (
-                          <button
-                            type="button"
-                            onClick={() => {
-                              onViewPrint(trans);
-                              onClose();
-                            }}
-                            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-slate-900 text-white rounded text-xs font-medium hover:bg-slate-800 cursor-pointer"
-                          >
-                            <Printer className="w-3.5 h-3.5" />
-                            <span>In phiếu nhập</span>
-                          </button>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
-
-        </div>
-
-        {/* Footer Actions */}
-        <div className="flex items-center justify-between px-6 py-4 border-t border-slate-200 bg-slate-50/70 shrink-0">
-          {step === 'UPLOAD' && (
-            <>
-              <button
-                type="button"
-                onClick={onClose}
-                className="px-4 py-2 text-xs font-medium text-slate-700 bg-white border border-slate-300 rounded-md hover:bg-slate-50 transition-colors cursor-pointer"
-              >
-                Đóng
-              </button>
-              <div className="text-xs text-slate-500">
-                Hãy chọn tệp Excel hoặc CSV để bắt đầu xem trước
-              </div>
-            </>
-          )}
-
-          {step === 'PREVIEW' && (
-            <>
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={handleReset}
-                  className="px-4 py-2 text-xs font-medium text-slate-700 bg-white border border-slate-300 rounded-md hover:bg-slate-50 transition-colors cursor-pointer"
-                >
-                  Quay lại
-                </button>
-                {invalidRows.length > 0 && (
-                  <span className="text-xs text-amber-700 flex items-center gap-1">
-                    <AlertTriangle className="w-3.5 h-3.5" />
-                    <span>Hệ thống sẽ chỉ nhập {validRows.length} dòng hợp lệ.</span>
-                  </span>
-                )}
-              </div>
-
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={onClose}
-                  className="px-4 py-2 text-xs font-medium text-slate-600 hover:text-slate-900 cursor-pointer"
-                >
-                  Hủy bỏ
-                </button>
-                <button
-                  type="button"
-                  disabled={validRows.length === 0 || loading}
-                  onClick={handleConfirmImport}
-                  className={`inline-flex items-center gap-2 px-5 py-2 text-xs font-semibold rounded-md shadow-xs transition-colors cursor-pointer ${
-                    validRows.length > 0 && !loading
-                      ? 'bg-emerald-600 hover:bg-emerald-700 text-white'
-                      : 'bg-slate-300 text-slate-500 cursor-not-allowed'
-                  }`}
-                >
-                  <span>Xác nhận nhập kho ({validRows.length} dòng)</span>
-                  <ArrowRight className="w-4 h-4" />
-                </button>
-              </div>
-            </>
-          )}
-
-          {step === 'SUCCESS' && (
-            <div className="w-full flex items-center justify-end gap-2">
-              <button
-                type="button"
-                onClick={handleReset}
-                className="px-4 py-2 text-xs font-medium text-slate-700 bg-white border border-slate-300 rounded-md hover:bg-slate-50 transition-colors cursor-pointer"
-              >
-                Nhập tiếp file khác
-              </button>
-              <button
-                type="button"
-                onClick={onClose}
-                className="px-5 py-2 text-xs font-semibold text-white bg-slate-900 rounded-md hover:bg-slate-800 transition-colors cursor-pointer"
-              >
-                Hoàn tất & Đóng
-              </button>
-            </div>
-          )}
-        </div>
-
       </div>
     </div>
   );

@@ -1,300 +1,222 @@
 import React from 'react';
-import { InventoryItem } from '../types/inventory';
+import {
+  X,
+  FileSpreadsheet,
+  Download,
+  Warehouse as WarehouseIcon,
+  Layers,
+  ArrowUpRight,
+  ArrowDownLeft,
+} from 'lucide-react';
 import { useInventory } from '../context/InventoryContext';
 import {
-  formatVND,
-  formatNumber,
-  formatDate,
   exportToCSV,
+  formatCurrency,
+  formatDateTime,
+  formatNumber,
+  getItemTypeLabel,
+  getStockStatus,
+  getStockStatusLabel,
+  getSubtypeLabel,
 } from '../utils/formatters';
-import { X, Printer, Download, ArrowDownLeft, ArrowUpRight } from 'lucide-react';
 
 interface StockCardModalProps {
-  item: InventoryItem | null;
-  isOpen: boolean;
+  itemId: string | null;
   onClose: () => void;
 }
 
-export const StockCardModal: React.FC<StockCardModalProps> = ({
-  item,
-  isOpen,
-  onClose,
-}) => {
-  const { transactions } = useInventory();
+export const StockCardModal: React.FC<StockCardModalProps> = ({ itemId, onClose }) => {
+  const { items, warehouses, getItemLedger } = useInventory();
 
-  if (!isOpen || !item) return null;
+  if (!itemId) return null;
 
-  // Filter all transactions containing this item, sorted chronologically ascending
-  const itemTransactions = transactions
-    .filter(t => t.items.some(line => line.itemId === item.id))
-    .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+  const item = items.find(i => i.id === itemId);
+  if (!item) return null;
 
-  // Compute running balance
-  // We can calculate backwards from current stock, or forward
-  // Let's compute delta forward
-  let runningBalance = item.currentStock;
-  // Calculate total in & out in historical list
-  const totalInHistorical = itemTransactions
-    .filter(t => t.type === 'INBOUND' || (t.type === 'AUDIT_ADJUSTMENT' && t.subReason === 'AUDIT_SURPLUS'))
-    .reduce((sum, t) => {
-      const line = t.items.find(l => l.itemId === item.id);
-      return sum + (line?.quantity || 0);
-    }, 0);
+  const wh = warehouses.find(w => w.id === item.warehouseId);
+  const ledger = getItemLedger(item.id);
+  const status = getStockStatus(item);
 
-  const totalOutHistorical = itemTransactions
-    .filter(t => t.type === 'OUTBOUND' || (t.type === 'AUDIT_ADJUSTMENT' && t.subReason === 'AUDIT_DEFICIT'))
-    .reduce((sum, t) => {
-      const line = t.items.find(l => l.itemId === item.id);
-      return sum + (line?.quantity || 0);
-    }, 0);
-
-  // Initial balance before these recorded transactions
-  const openingStock = Math.max(0, item.currentStock - totalInHistorical + totalOutHistorical);
-
-  // Build rows with running balance
-  let currentBalance = openingStock;
-  const historyRows = itemTransactions.map(trans => {
-    const line = trans.items.find(l => l.itemId === item.id);
-    const qty = line?.quantity || 0;
-    const isIn = trans.type === 'INBOUND' || trans.subReason === 'AUDIT_SURPLUS';
-
-    if (isIn) {
-      currentBalance += qty;
-    } else {
-      currentBalance -= qty;
-    }
-
-    return {
-      date: trans.date,
-      code: trans.code,
-      type: trans.type,
-      explanation: trans.note || (isIn ? 'Nhập kho hàng hóa' : 'Xuất kho sử dụng'),
-      party: trans.receiverOrSupplier,
-      inQty: isIn ? qty : 0,
-      outQty: !isIn ? qty : 0,
-      balance: currentBalance,
-      unitPrice: line?.unitPrice || item.unitPrice,
-    };
-  });
-
-  const handleExportCSV = () => {
+  const handleExportCard = () => {
     const headers = [
-      'Ngày chứng từ',
-      'Số hiệu chứng từ',
-      'Diễn giải',
-      'Đơn vị giao/nhận',
-      'Số lượng Nhập',
-      'Số lượng Xuất',
-      'Tồn lũy kế',
-      'Đơn vị tính',
+      'Ngày Giao Dịch',
+      'Số Phiếu Chứng Từ',
+      'Loại Nghiệp Vụ',
+      'Đối Tác / Người Nhận / Dự Án',
+      'Số Lượng Nhập',
+      'Số Lượng Xuất',
+      'Tồn Lũy Kế',
+      'Đơn Giá (VNĐ)',
+      'Ghi Chú',
     ];
-    const rows = [
-      [item.createdAt, 'SDDK', 'Số dư ban đầu', 'Kho vật tư', 0, 0, openingStock, item.unit],
-      ...historyRows.map(r => [
-        r.date,
-        r.code,
-        r.explanation,
-        r.party,
-        r.inQty,
-        r.outQty,
-        r.balance,
-        item.unit,
-      ]),
-    ];
-    exportToCSV(`The_Kho_${item.code}_${new Date().toISOString().slice(0, 10)}`, headers, rows);
-  };
 
-  const handlePrint = () => {
-    window.print();
+    const rows = ledger.map(l => [
+      formatDateTime(l.date),
+      l.transactionCode,
+      getSubtypeLabel(l.subtype),
+      `${l.partner} (${l.departmentOrProject})`,
+      l.inQty || '',
+      l.outQty || '',
+      l.balanceQty,
+      l.unitPrice,
+      l.notes,
+    ]);
+
+    exportToCSV(`The_Kho_${item.code}_${new Date().toISOString().substring(0, 10)}`, headers, rows);
   };
 
   return (
-    <div className="fixed inset-0 bg-black/50 backdrop-blur-xs flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-lg shadow-xl w-full max-w-4xl max-h-[90vh] flex flex-col overflow-hidden print-card">
+    <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
+      <div className="bg-white rounded-2xl max-w-4xl w-full border border-slate-200 shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
         {/* Header */}
-        <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between bg-slate-50 no-print">
+        <div className="p-5 border-b border-slate-200 flex items-start justify-between bg-slate-50">
           <div>
-            <h3 className="text-base font-bold text-slate-900">
-              Thẻ Kho Chi Tiết (Stock Card)
-            </h3>
-            <p className="text-xs text-slate-500">
-              Lịch sử biến động nhập xuất tồn chi tiết của mặt hàng theo chứng từ
-            </p>
+            <div className="flex items-center gap-2 mb-1">
+              <span className="font-mono text-xs font-bold text-indigo-700 bg-indigo-50 border border-indigo-200 px-2 py-0.5 rounded">
+                {item.code}
+              </span>
+              <span className="text-xs text-slate-500 font-medium">
+                {getItemTypeLabel(item.type)} &bull; {item.category}
+              </span>
+            </div>
+            <h2 className="text-lg font-bold text-slate-900">{item.name}</h2>
+            <div className="text-xs text-slate-500 mt-1 flex items-center gap-2">
+              <WarehouseIcon className="w-3.5 h-3.5 text-slate-400" />
+              <span>{wh?.name}</span>
+              <span aria-hidden="true">&bull;</span>
+              <span>Vị trí: {item.location || 'Chưa định vị'}</span>
+            </div>
           </div>
 
           <div className="flex items-center gap-2">
             <button
-              onClick={handleExportCSV}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-700 bg-white border border-slate-300 rounded hover:bg-slate-50 transition-colors"
+              onClick={handleExportCard}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-700 bg-white hover:bg-slate-50 border border-slate-200 rounded-lg shadow-xs"
             >
               <Download className="w-3.5 h-3.5" />
-              <span>Xuất CSV</span>
-            </button>
-            <button
-              onClick={handlePrint}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-700 bg-white border border-slate-300 rounded hover:bg-slate-50 transition-colors"
-            >
-              <Printer className="w-3.5 h-3.5" />
-              <span>In thẻ kho</span>
+              <span>Xuất Thẻ Kho</span>
             </button>
             <button
               onClick={onClose}
-              className="p-1.5 text-slate-400 hover:text-slate-700 rounded-md hover:bg-slate-200 ml-2"
+              className="p-1.5 text-slate-400 hover:text-slate-600 rounded-lg hover:bg-slate-200/50"
             >
               <X className="w-5 h-5" />
             </button>
           </div>
         </div>
 
-        {/* Printable Card Body */}
-        <div className="p-6 overflow-y-auto space-y-4 flex-1">
-          {/* Card Meta */}
-          <div className="text-center pb-2 border-b border-slate-200">
-            <h2 className="text-lg font-bold text-slate-900 uppercase tracking-wide">
-              THẺ KHO VẬT TƯ - THIẾT BỊ
-            </h2>
-            <div className="text-xs text-slate-500 mt-1">
-              Kho hàng: <strong className="text-slate-800">{item.warehouse}</strong> · Vị trí:{' '}
-              <strong className="text-slate-800">{item.locationBin || 'Chưa định vị'}</strong>
+        {/* Quick Stock Metrics */}
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 p-4 bg-white border-b border-slate-100 text-xs">
+          <div className="p-2.5 rounded-lg bg-slate-50 border border-slate-100">
+            <span className="text-slate-400 block mb-0.5">Tồn kho hiện tại</span>
+            <div className="text-base font-bold text-slate-900 tabular-nums">
+              {formatNumber(item.currentStock)} {item.unit}
             </div>
+            <span className="text-[11px] text-slate-500">{getStockStatusLabel(status)}</span>
           </div>
 
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 bg-slate-50 p-3.5 rounded-lg border border-slate-200 text-xs">
-            <div>
-              <span className="text-slate-500 block">Mã vật tư:</span>
-              <strong className="font-mono text-slate-900 text-sm">{item.code}</strong>
+          <div className="p-2.5 rounded-lg bg-slate-50 border border-slate-100">
+            <span className="text-slate-400 block mb-0.5">Định mức an toàn</span>
+            <div className="text-base font-bold text-slate-800 tabular-nums">
+              {item.minStock} - {item.maxStock} {item.unit}
             </div>
-            <div>
-              <span className="text-slate-500 block">Tên vật tư thiết bị:</span>
-              <strong className="text-slate-900">{item.name}</strong>
-            </div>
-            <div>
-              <span className="text-slate-500 block">Đơn vị tính:</span>
-              <strong className="text-slate-900">{item.unit}</strong>
-            </div>
-            <div>
-              <span className="text-slate-500 block">Tồn kho hiện thời:</span>
-              <strong className="text-slate-900 font-mono text-sm">
-                {formatNumber(item.currentStock)} {item.unit}
-              </strong>
-            </div>
-            {item.manufacturer && (
-              <div>
-                <span className="text-slate-500 block">Nhà sản xuất (Hãng SX):</span>
-                <strong className="text-slate-800">{item.manufacturer}</strong>
-              </div>
-            )}
-            {item.projectItem && (
-              <div>
-                <span className="text-slate-500 block">Hạng mục công trình:</span>
-                <strong className="text-indigo-800">{item.projectItem}</strong>
-              </div>
-            )}
-            {item.packingListNo && (
-              <div>
-                <span className="text-slate-500 block">Số Packing List (P/L):</span>
-                <strong className="text-blue-700 font-mono">{item.packingListNo}</strong>
-              </div>
-            )}
-            {item.shipment && (
-              <div>
-                <span className="text-slate-500 block">Lô hàng / Shipment:</span>
-                <strong className="text-slate-700 font-mono">{item.shipment}</strong>
-              </div>
-            )}
-            {item.packageNo && (
-              <div className="col-span-2">
-                <span className="text-slate-500 block">Kiện hàng (Số & Tên kiện):</span>
-                <strong className="text-slate-800 font-mono">
-                  {item.packageNo} {item.packageName ? `· ${item.packageName}` : ''}
-                </strong>
-              </div>
-            )}
+            <span className="text-[11px] text-slate-500">Mức min - max</span>
           </div>
 
-          {/* Ledger Table */}
-          <div className="border border-slate-200 rounded-lg overflow-hidden">
-            <table className="w-full text-left text-xs border-collapse">
-              <thead>
-                <tr className="bg-slate-100 border-b border-slate-200 text-slate-700 font-semibold">
-                  <th className="py-2.5 px-3 whitespace-nowrap">Ngày tháng</th>
-                  <th className="py-2.5 px-3 whitespace-nowrap">Số chứng từ</th>
-                  <th className="py-2.5 px-3">Diễn giải nội dung</th>
-                  <th className="py-2.5 px-3">Đối tác / Đơn vị</th>
-                  <th className="py-2.5 px-3 text-right whitespace-nowrap">Nhập (+)</th>
-                  <th className="py-2.5 px-3 text-right whitespace-nowrap">Xuất (-)</th>
-                  <th className="py-2.5 px-3 text-right whitespace-nowrap">Tồn cuối</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100 font-mono">
-                {/* Initial Balance */}
-                <tr className="bg-slate-50/60 text-slate-600">
-                  <td className="py-2 px-3 font-sans text-slate-400">{formatDate(item.createdAt)}</td>
-                  <td className="py-2 px-3 text-slate-500">DK-DAU-KY</td>
-                  <td className="py-2 px-3 font-sans italic">Số dư đầu kỳ</td>
-                  <td className="py-2 px-3 font-sans text-slate-400">—</td>
-                  <td className="py-2 px-3 text-right text-slate-400">—</td>
-                  <td className="py-2 px-3 text-right text-slate-400">—</td>
-                  <td className="py-2 px-3 text-right font-bold text-slate-900">
-                    {formatNumber(openingStock)}
-                  </td>
-                </tr>
+          <div className="p-2.5 rounded-lg bg-slate-50 border border-slate-100">
+            <span className="text-slate-400 block mb-0.5">Đơn giá vốn bình quân</span>
+            <div className="text-base font-bold text-slate-800 tabular-nums">
+              {formatCurrency(item.unitPrice)}
+            </div>
+            <span className="text-[11px] text-slate-500">Trên 1 {item.unit}</span>
+          </div>
 
-                {historyRows.length === 0 ? (
-                  <tr>
-                    <td colSpan={7} className="py-8 text-center text-slate-400 font-sans">
-                      Chưa phát sinh giao dịch nhập xuất nào trong kỳ đối với mặt hàng này.
-                    </td>
+          <div className="p-2.5 rounded-lg bg-slate-50 border border-slate-100">
+            <span className="text-slate-400 block mb-0.5">Tổng giá trị tồn kho</span>
+            <div className="text-base font-bold text-indigo-700 tabular-nums">
+              {formatCurrency(item.currentStock * item.unitPrice)}
+            </div>
+            <span className="text-[11px] text-slate-500">Vốn hàng hóa</span>
+          </div>
+        </div>
+
+        {/* Chronological Ledger Table */}
+        <div className="flex-1 overflow-y-auto p-4">
+          <div className="mb-2 text-xs font-semibold text-slate-700">
+            Nhật Ký Biến Động Nhập - Xuất - Tồn Lũy Kế ({ledger.length} giao dịch)
+          </div>
+
+          {ledger.length === 0 ? (
+            <div className="p-8 text-center text-slate-400 text-xs">
+              Chưa có giao dịch nhập xuất nào được ghi nhận cho mặt hàng này.
+            </div>
+          ) : (
+            <div className="border border-slate-200 rounded-lg overflow-hidden">
+              <table className="w-full text-left border-collapse text-xs">
+                <thead>
+                  <tr className="bg-slate-50 border-b border-slate-200 text-slate-500 font-semibold uppercase text-[10px]">
+                    <th className="py-2.5 px-3">Thời gian</th>
+                    <th className="py-2.5 px-3">Số chứng từ</th>
+                    <th className="py-2.5 px-3">Nghiệp vụ</th>
+                    <th className="py-2.5 px-3">Đối tác / Dự án</th>
+                    <th className="py-2.5 px-3 text-right text-emerald-700">Nhập (+)</th>
+                    <th className="py-2.5 px-3 text-right text-amber-700">Xuất (-)</th>
+                    <th className="py-2.5 px-3 text-right font-bold text-slate-900">Tồn sau GD</th>
+                    <th className="py-2.5 px-3">Ghi chú</th>
                   </tr>
-                ) : (
-                  historyRows.map((row, idx) => (
-                    <tr key={idx} className="hover:bg-slate-50/50">
-                      <td className="py-2 px-3 whitespace-nowrap text-slate-600">
-                        {formatDate(row.date)}
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {ledger.map((entry, idx) => (
+                    <tr key={idx} className="hover:bg-slate-50/70 transition-colors">
+                      <td className="py-2.5 px-3 text-slate-600 whitespace-nowrap tabular-nums">
+                        {formatDateTime(entry.date)}
                       </td>
-                      <td className="py-2 px-3 whitespace-nowrap font-bold text-slate-900">
-                        {row.code}
+                      <td className="py-2.5 px-3 font-mono font-bold whitespace-nowrap">
+                        <span
+                          className={
+                            entry.type === 'NHAP_KHO' ? 'text-emerald-700' : 'text-amber-800'
+                          }
+                        >
+                          {entry.transactionCode}
+                        </span>
                       </td>
-                      <td className="py-2 px-3 font-sans text-slate-700 max-w-xs truncate">
-                        {row.explanation}
+                      <td className="py-2.5 px-3 whitespace-nowrap">
+                        {getSubtypeLabel(entry.subtype)}
                       </td>
-                      <td className="py-2 px-3 font-sans text-slate-600 max-w-[150px] truncate">
-                        {row.party}
+                      <td className="py-2.5 px-3 max-w-[200px] truncate" title={`${entry.partner} - ${entry.departmentOrProject}`}>
+                        <span className="font-medium text-slate-800">{entry.partner}</span>
+                        <span className="text-slate-400 block text-[11px] truncate">
+                          {entry.departmentOrProject}
+                        </span>
                       </td>
-                      <td className="py-2 px-3 text-right text-emerald-700 font-semibold">
-                        {row.inQty > 0 ? `+${formatNumber(row.inQty)}` : '—'}
+                      <td className="py-2.5 px-3 text-right tabular-nums font-semibold text-emerald-700">
+                        {entry.inQty > 0 ? `+${formatNumber(entry.inQty)}` : '-'}
                       </td>
-                      <td className="py-2 px-3 text-right text-amber-700 font-semibold">
-                        {row.outQty > 0 ? `-${formatNumber(row.outQty)}` : '—'}
+                      <td className="py-2.5 px-3 text-right tabular-nums font-semibold text-amber-700">
+                        {entry.outQty > 0 ? `-${formatNumber(entry.outQty)}` : '-'}
                       </td>
-                      <td className="py-2 px-3 text-right font-bold text-slate-900">
-                        {formatNumber(row.balance)}
+                      <td className="py-2.5 px-3 text-right tabular-nums font-bold text-slate-900 bg-slate-50/60">
+                        {formatNumber(entry.balanceQty)} {item.unit}
+                      </td>
+                      <td className="py-2.5 px-3 text-slate-500 max-w-[160px] truncate" title={entry.notes}>
+                        {entry.notes || '-'}
                       </td>
                     </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
-          </div>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
 
-          {/* Signatures for Print */}
-          <div className="grid grid-cols-3 gap-6 pt-8 text-center text-xs text-slate-700 print-only">
-            <div>
-              <p className="font-bold">Người lập thẻ</p>
-              <p className="text-[10px] text-slate-400 italic">(Ký và ghi rõ họ tên)</p>
-              <div className="h-16" />
-            </div>
-            <div>
-              <p className="font-bold">Thủ kho</p>
-              <p className="text-[10px] text-slate-400 italic">(Ký và ghi rõ họ tên)</p>
-              <div className="h-16" />
-            </div>
-            <div>
-              <p className="font-bold">Kế toán trưởng / Phụ trách</p>
-              <p className="text-[10px] text-slate-400 italic">(Ký và ghi rõ họ tên)</p>
-              <div className="h-16" />
-            </div>
-          </div>
+        {/* Footer */}
+        <div className="p-4 border-t border-slate-200 bg-slate-50 flex items-center justify-end">
+          <button
+            onClick={onClose}
+            className="px-4 py-2 text-xs font-semibold text-slate-700 bg-white hover:bg-slate-100 border border-slate-200 rounded-lg transition-colors"
+          >
+            Đóng thẻ kho
+          </button>
         </div>
       </div>
     </div>
