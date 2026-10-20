@@ -25,6 +25,7 @@ import {
   getItemTypeLabel,
   getStockStatus,
   getStockStatusLabel,
+  calculateItemWarehouseStocks,
 } from '../utils/formatters';
 import { MultiFilterBar } from './MultiFilterBar';
 import { ConfirmDeleteModal } from './ConfirmDeleteModal';
@@ -48,6 +49,7 @@ export const InventoryTableView: React.FC<InventoryTableViewProps> = ({
     filteredItems,
     items,
     warehouses,
+    transactions,
     deleteItem,
     deleteItemsBatch,
     currentUser,
@@ -130,7 +132,7 @@ export const InventoryTableView: React.FC<InventoryTableViewProps> = ({
         getItemTypeLabel(item.type),
         item.category,
         item.unit,
-        wh?.name || item.warehouseId,
+        wh?.name || item.warehouseId || '',
         item.location,
         item.currentStock,
         item.minStock,
@@ -138,7 +140,7 @@ export const InventoryTableView: React.FC<InventoryTableViewProps> = ({
         item.unitPrice,
         item.currentStock * item.unitPrice,
         item.serialOrLot || '',
-        getConditionLabel(item.condition),
+        getConditionLabel(item.condition) || '',
         formatDate(item.inspectionDueDate),
         item.supplierDefault || '',
         item.spec || '',
@@ -361,13 +363,41 @@ export const InventoryTableView: React.FC<InventoryTableViewProps> = ({
                       </td>
 
                       {/* Warehouse & Shelf */}
-                      <td className="py-3.5 px-3 whitespace-nowrap max-w-[160px]">
-                        <div className="text-slate-800 font-medium truncate" title={wh?.name}>
-                          {wh?.name}
-                        </div>
-                        <div className="text-[11px] text-slate-400">
-                          {item.location || 'Chưa xếp kệ'}
-                        </div>
+                      <td className="py-3.5 px-3 whitespace-nowrap max-w-[180px]">
+                        {(() => {
+                          const stocks = calculateItemWarehouseStocks(item, warehouses, transactions);
+                          const whWithStock = warehouses.filter(w => (stocks[w.id] || 0) > 0);
+                          const tooltip =
+                            whWithStock.length > 0
+                              ? whWithStock
+                                  .map(w => `${w.name}: ${formatNumber(stocks[w.id])} ${item.unit}`)
+                                  .join('\n')
+                              : wh?.name || 'Kho hệ thống';
+
+                          return (
+                            <>
+                              <div
+                                className="text-slate-800 font-semibold truncate flex items-center gap-1.5"
+                                title={tooltip}
+                              >
+                                {whWithStock.length > 1 ? (
+                                  <span className="bg-indigo-50 text-indigo-800 px-1.5 py-0.5 rounded text-[11px] font-bold border border-indigo-100">
+                                    Đa kho ({whWithStock.length})
+                                  </span>
+                                ) : whWithStock.length === 1 ? (
+                                  <span className="truncate">{whWithStock[0].name}</span>
+                                ) : (
+                                  <span className="truncate text-slate-500">
+                                    {wh?.name || 'Chưa phân kho'}
+                                  </span>
+                                )}
+                              </div>
+                              <div className="text-[11px] text-slate-500 font-medium mt-0.5">
+                                Kệ: <span className="text-slate-800 font-semibold">{item.location || 'Chưa xếp kệ'}</span>
+                              </div>
+                            </>
+                          );
+                        })()}
                       </td>
 
                       {/* Current Stock */}

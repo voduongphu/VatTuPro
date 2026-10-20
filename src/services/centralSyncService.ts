@@ -12,6 +12,8 @@ export interface CentralDataPayload {
   users?: User[];
   lastUpdatedBy?: string;
   source?: string;
+  resetEpoch?: string;
+  cleanReset?: boolean;
 }
 
 export interface SyncResult {

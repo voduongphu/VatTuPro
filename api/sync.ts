@@ -277,6 +277,92 @@ export default async function handler(req: any, res: any) {
     });
   }
 
+function mergeStateAdditive(existing: any, incoming: any) {
+  if (!existing) return incoming;
+  if (!incoming) return existing;
+
+  const userMap = new Map<string, any>();
+  (existing.users || []).forEach((u: any) => {
+    const key = (u.username || u.id || '').trim().toLowerCase();
+    if (key) userMap.set(key, u);
+  });
+  (incoming.users || []).forEach((u: any) => {
+    const key = (u.username || u.id || '').trim().toLowerCase();
+    if (!key) return;
+    const prev = userMap.get(key);
+    if (!prev) {
+      userMap.set(key, u);
+    } else {
+      userMap.set(key, { ...prev, ...u });
+    }
+  });
+
+  const trxMap = new Map<string, any>();
+  (existing.transactions || []).forEach((t: any) => {
+    const key = (t.id || t.code || '').trim();
+    if (key) trxMap.set(key, t);
+  });
+  (incoming.transactions || []).forEach((t: any) => {
+    const key = (t.id || t.code || '').trim();
+    if (!key) return;
+    const prev = trxMap.get(key);
+    if (!prev) {
+      trxMap.set(key, t);
+    } else {
+      trxMap.set(key, { ...prev, ...t });
+    }
+  });
+
+  const whMap = new Map<string, any>();
+  (existing.warehouses || []).forEach((w: any) => {
+    const key = (w.id || w.code || '').trim();
+    if (key) whMap.set(key, w);
+  });
+  (incoming.warehouses || []).forEach((w: any) => {
+    const key = (w.id || w.code || '').trim();
+    if (!key) return;
+    const prev = whMap.get(key);
+    if (!prev) {
+      whMap.set(key, w);
+    } else {
+      whMap.set(key, { ...prev, ...w });
+    }
+  });
+
+  const itemMap = new Map<string, any>();
+  (existing.items || []).forEach((i: any) => {
+    const key = (i.code || i.id || '').trim().toUpperCase();
+    if (key) itemMap.set(key, i);
+  });
+  (incoming.items || []).forEach((i: any) => {
+    const key = (i.code || i.id || '').trim().toUpperCase();
+    if (!key) return;
+    const prev = itemMap.get(key);
+    if (!prev) {
+      itemMap.set(key, i);
+    } else {
+      itemMap.set(key, {
+        ...prev,
+        ...i,
+        warehouseStocks: { ...(prev.warehouseStocks || {}), ...(i.warehouseStocks || {}) },
+        currentStock: i.currentStock !== undefined ? i.currentStock : prev.currentStock,
+      });
+    }
+  });
+
+  return {
+    version: Math.max(Number(existing.version) || 0, Number(incoming.version) || 0) + 1,
+    lastUpdated: new Date().toISOString(),
+    users: Array.from(userMap.values()),
+    transactions: Array.from(trxMap.values()).sort(
+      (a: any, b: any) => new Date(b.date).getTime() - new Date(a.date).getTime()
+    ),
+    warehouses: Array.from(whMap.values()),
+    items: Array.from(itemMap.values()),
+    source: incoming.source || 'server-additive-merge',
+  };
+}
+
   // POST: Update central state
   if (req.method === 'POST') {
     const body = typeof req.body === 'string' ? JSON.parse(req.body) : req.body;
@@ -286,20 +372,36 @@ export default async function handler(req: any, res: any) {
       return res.status(400).json({ success: false, error: 'Thiếu dữ liệu payload' });
     }
 
-    localMemoryState = payload;
+    // 1. Fetch current existing state to perform additive merge
+    let existingState = null;
+    if (hasEdgeConfig) {
+      existingState = await fetchFromEdgeConfig();
+    } else if (hasKV) {
+      existingState = await fetchFromVercelKV();
+    } else if (hasSupabase) {
+      existingState = await fetchFromSupabase();
+    }
+    if (!existingState) {
+      existingState = localMemoryState;
+    }
+
+    // 2. Merge additively: never overwrite or erase existing items, transactions, or users
+    const mergedPayload =
+      body.cleanReset || payload.cleanReset
+        ? payload
+        : mergeStateAdditive(existingState, payload);
+    localMemoryState = mergedPayload;
 
     let saved = false;
     if (hasEdgeConfig) {
-      saved = await saveToEdgeConfig(payload);
-      // If saving directly to Edge Config API failed (e.g. no write token yet),
-      // we still maintain localMemoryState so within this deployment it acts as a hot cache
+      saved = await saveToEdgeConfig(mergedPayload);
       if (!saved && !process.env.VERCEL_API_TOKEN && !process.env.EDGE_CONFIG_WRITE_TOKEN) {
         console.warn('EDGE_CONFIG is active for reading, but VERCEL_API_TOKEN is needed for cloud write persistence.');
       }
     } else if (hasKV) {
-      saved = await saveToVercelKV(payload);
+      saved = await saveToVercelKV(mergedPayload);
     } else if (hasSupabase) {
-      saved = await saveToSupabase(payload);
+      saved = await saveToSupabase(mergedPayload);
     } else {
       saved = true;
     }
@@ -308,8 +410,9 @@ export default async function handler(req: any, res: any) {
       success: true,
       provider,
       savedToCloud: saved,
-      version: payload.version,
-      lastUpdated: payload.lastUpdated,
+      version: mergedPayload.version,
+      lastUpdated: mergedPayload.lastUpdated,
+      payload: mergedPayload,
     });
   }
 

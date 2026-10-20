@@ -15,6 +15,7 @@ import {
   X,
   Smartphone,
   LogOut,
+  RotateCcw,
 } from 'lucide-react';
 import { useInventory } from '../context/InventoryContext';
 import { User, UserRole } from '../types/inventory';
@@ -22,10 +23,20 @@ import { formatDate, getUserRoleLabel } from '../utils/formatters';
 import { ConfirmDeleteModal } from './ConfirmDeleteModal';
 
 export const UserManagementView: React.FC = () => {
-  const { users, currentUser, warehouses, addUser, updateUser, deleteUser, revokeUserSession } = useInventory();
+  const {
+    users,
+    currentUser,
+    warehouses,
+    addUser,
+    updateUser,
+    deleteUser,
+    revokeUserSession,
+    resetToDefaultData,
+  } = useInventory();
 
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingUser, setEditingUser] = useState<User | null>(null);
+  const [showResetAllModal, setShowResetAllModal] = useState(false);
 
   const handleRevokeSession = (user: User) => {
     if (
@@ -203,13 +214,23 @@ export const UserManagementView: React.FC = () => {
         </div>
 
         {isAdmin && (
-          <button
-            onClick={handleOpenAdd}
-            className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-700 rounded-lg transition-colors shadow-xs self-start sm:self-auto"
-          >
-            <UserPlus className="w-4 h-4" />
-            <span>Thêm người dùng mới</span>
-          </button>
+          <div className="flex items-center gap-2 self-start sm:self-auto flex-wrap">
+            <button
+              onClick={() => setShowResetAllModal(true)}
+              className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-rose-700 bg-rose-50 hover:bg-rose-100 border border-rose-200 rounded-lg transition-colors shadow-2xs"
+              title="Xóa tất cả người dùng và dữ liệu để admin tạo lại từ đầu"
+            >
+              <RotateCcw className="w-3.5 h-3.5" />
+              <span>Xóa sạch dữ liệu &amp; Bắt đầu lại</span>
+            </button>
+            <button
+              onClick={handleOpenAdd}
+              className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-700 rounded-lg transition-colors shadow-xs"
+            >
+              <UserPlus className="w-4 h-4" />
+              <span>Thêm người dùng mới</span>
+            </button>
+          </div>
         )}
       </div>
 
@@ -661,6 +682,32 @@ export const UserManagementView: React.FC = () => {
           confirmLabel="Xác nhận xóa tài khoản"
           onConfirm={handleConfirmDeleteUser}
           onClose={() => setUserToDelete(null)}
+        />
+      )}
+
+      {/* Reset All Data In-App Modal */}
+      {showResetAllModal && (
+        <ConfirmDeleteModal
+          isOpen={showResetAllModal}
+          title="Xác nhận xóa toàn bộ dữ liệu & người dùng"
+          message="Bạn có chắc chắn muốn xóa TOÀN BỘ dữ liệu hiện tại (bao gồm tất cả người dùng, vật tư và giao dịch) để bắt đầu lại từ đầu?"
+          itemDetails={[
+            { label: 'Tài khoản admin mặc định', value: 'admin' },
+            { label: 'Mật khẩu mặc định', value: 'admin123' },
+            { label: 'Dữ liệu vật tư & giao dịch', value: 'Xóa hoàn toàn về 0' },
+            { label: 'Danh sách người dùng khác', value: 'Xóa toàn bộ' },
+          ]}
+          warningNote="Hành động này sẽ xóa sạch dữ liệu trên toàn bộ hệ thống và thiết bị đồng bộ. Chỉ giữ lại duy nhất tài khoản admin (admin/admin123)."
+          confirmLabel="Xác nhận xóa sạch & Bắt đầu lại"
+          onConfirm={() => {
+            resetToDefaultData();
+            setShowResetAllModal(false);
+            setNotification({
+              text: 'Đã xóa toàn bộ dữ liệu thành công. Tài khoản admin duy nhất hiện tại: admin / admin123',
+              type: 'success',
+            });
+          }}
+          onClose={() => setShowResetAllModal(false)}
         />
       )}
     </div>

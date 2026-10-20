@@ -19,6 +19,12 @@ import { SyncStatus, CloudProvider, CentralDataPayload, centralSyncService } fro
 import { supabaseRealtimeService, RealtimeConnectionState } from '../services/supabaseRealtimeService';
 import { DeviceInfo, getDeviceId, getDeviceInfo, getDeviceName } from '../utils/deviceHelper';
 import { sessionBus, SessionBusMessage } from '../services/sessionBus';
+import {
+  mergeItemsAdditive,
+  mergeTransactionsAdditive,
+  mergeUsersAdditive,
+  mergeWarehousesAdditive,
+} from '../utils/mergeSyncData';
 
 interface InventoryContextType {
   warehouses: Warehouse[];
@@ -99,7 +105,7 @@ interface InventoryContextType {
   };
   updateTransaction: (
     id: string,
-    updates: Partial<Omit<Transaction, 'id' | 'code' | 'type'>>
+    updates: Partial<Transaction>
   ) => { success: boolean; error?: string };
   deleteTransaction: (id: string) => { success: boolean; error?: string };
   importTransactionsBatch: (
@@ -145,12 +151,51 @@ const defaultCriteria: MultiFilterCriteria = {
 };
 
 const STORAGE_KEYS = {
-  ITEMS: 'nxt_inventory_items_v1',
-  TRANSACTIONS: 'nxt_inventory_transactions_v1',
-  WAREHOUSES: 'nxt_inventory_warehouses_v1',
-  USERS: 'nxt_inventory_users_v1',
-  AUTH: 'nxt_inventory_current_user_v1',
+  ITEMS: 'nxt_inventory_items_v3',
+  TRANSACTIONS: 'nxt_inventory_transactions_v3',
+  WAREHOUSES: 'nxt_inventory_warehouses_v3',
+  USERS: 'nxt_inventory_users_v3',
+  AUTH: 'nxt_inventory_current_user_v3',
 };
+
+const RESET_EPOCH = '2026-10-20T10:00:00.000Z';
+
+// Automatic cleanup of legacy data so admin starts fresh with admin/admin123
+if (typeof window !== 'undefined') {
+  try {
+    const CLEAN_KEY = 'nxt_clean_admin_v4_clean_users';
+    if (!localStorage.getItem(CLEAN_KEY)) {
+      Object.keys(localStorage).forEach(k => {
+        if (k.startsWith('nxt_')) {
+          localStorage.removeItem(k);
+        }
+      });
+      localStorage.setItem(CLEAN_KEY, 'true');
+
+      // Sync clean state to central endpoint immediately
+      fetch('/api/sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          cleanReset: true,
+          payload: {
+            cleanReset: true,
+            resetEpoch: RESET_EPOCH,
+            version: 1,
+            lastUpdated: new Date().toISOString(),
+            users: INITIAL_USERS,
+            warehouses: INITIAL_WAREHOUSES,
+            items: INITIAL_ITEMS,
+            transactions: INITIAL_TRANSACTIONS,
+            source: 'admin-clean-reset',
+          },
+        }),
+      }).catch(() => {});
+    }
+  } catch {
+    // ignore
+  }
+}
 
 const InventoryContext = createContext<InventoryContextType | null>(null);
 
@@ -249,6 +294,118 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
   const clearRealtimeMessage = useCallback(() => setLastRealtimeUpdateMessage(null), []);
 
+  // Central additive merge helper: ensures remote data is added/merged rather than replacing local items/users/transactions
+  const applyRemotePayloadAdditive = useCallback(
+    (payload: CentralDataPayload) => {
+      if (!payload) return;
+
+      isRemoteUpdatingRef.current = true;
+
+      // If this is a clean reset command from admin or payload is from before the reset epoch, wipe cleanly
+      if (
+        (payload as any).cleanReset ||
+        (payload.resetEpoch && payload.resetEpoch !== RESET_EPOCH) ||
+        (!payload.resetEpoch && (payload as any).version > 1)
+      ) {
+        setWarehouses(payload.warehouses && payload.warehouses.length > 0 ? payload.warehouses : INITIAL_WAREHOUSES);
+        setUsers(payload.users && payload.users.length > 0 ? payload.users : INITIAL_USERS);
+        setTransactions(payload.transactions || []);
+        setItems(payload.items || []);
+        try {
+          localStorage.setItem(
+            STORAGE_KEYS.WAREHOUSES,
+            JSON.stringify(payload.warehouses && payload.warehouses.length > 0 ? payload.warehouses : INITIAL_WAREHOUSES)
+          );
+          localStorage.setItem(
+            STORAGE_KEYS.USERS,
+            JSON.stringify(payload.users && payload.users.length > 0 ? payload.users : INITIAL_USERS)
+          );
+          localStorage.setItem(STORAGE_KEYS.TRANSACTIONS, JSON.stringify(payload.transactions || []));
+          localStorage.setItem(STORAGE_KEYS.ITEMS, JSON.stringify(payload.items || []));
+        } catch {
+          // ignore
+        }
+        if (payload.lastUpdated) {
+          setLastServerTimestamp(payload.lastUpdated);
+        }
+        setLastSyncedAt(new Date());
+        setSyncStatus('synced');
+        setTimeout(() => {
+          isRemoteUpdatingRef.current = false;
+        }, 350);
+        return;
+      }
+
+      // 1. Merge warehouses additively
+      let currentWh = warehouses;
+      if (Array.isArray(payload.warehouses) && payload.warehouses.length > 0) {
+        setWarehouses(prevWh => {
+          const mergedWh = mergeWarehousesAdditive(prevWh, payload.warehouses);
+          currentWh = mergedWh;
+          try {
+            localStorage.setItem(STORAGE_KEYS.WAREHOUSES, JSON.stringify(mergedWh));
+          } catch {
+            // ignore
+          }
+          return mergedWh;
+        });
+      }
+
+      // 2. Merge users additively (never lose any user created on any device)
+      if (Array.isArray(payload.users) && payload.users.length > 0) {
+        const remoteUsers = payload.users;
+        setUsers(prevUsers => {
+          const mergedUsers = mergeUsersAdditive(prevUsers, remoteUsers);
+          try {
+            localStorage.setItem(STORAGE_KEYS.USERS, JSON.stringify(mergedUsers));
+          } catch {
+            // ignore
+          }
+          return mergedUsers;
+        });
+      }
+
+      // 3. Merge transactions additively & recalculate stock per warehouse
+      setTransactions(prevTrx => {
+        const mergedTrx =
+          Array.isArray(payload.transactions) && payload.transactions.length > 0
+            ? mergeTransactionsAdditive(prevTrx, payload.transactions)
+            : prevTrx;
+        try {
+          localStorage.setItem(STORAGE_KEYS.TRANSACTIONS, JSON.stringify(mergedTrx));
+        } catch {
+          // ignore
+        }
+
+        // 4. Merge items additively
+        if (Array.isArray(payload.items) && payload.items.length > 0) {
+          setItems(prevItems => {
+            const mergedItems = mergeItemsAdditive(prevItems, payload.items, currentWh, mergedTrx);
+            try {
+              localStorage.setItem(STORAGE_KEYS.ITEMS, JSON.stringify(mergedItems));
+            } catch {
+              // ignore
+            }
+            return mergedItems;
+          });
+        }
+
+        return mergedTrx;
+      });
+
+      if (payload.lastUpdated) {
+        setLastServerTimestamp(payload.lastUpdated);
+      }
+      setLastSyncedAt(new Date());
+      setSyncStatus('synced');
+
+      setTimeout(() => {
+        isRemoteUpdatingRef.current = false;
+      }, 350);
+    },
+    [warehouses]
+  );
+
   const saveSupabaseCredentials = useCallback((url: string, key: string) => {
     const configured = supabaseRealtimeService.setCredentials(url, key);
     setSupabaseCredentials({ url, key });
@@ -257,21 +414,12 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       // Immediately attempt fetch from Supabase
       supabaseRealtimeService.fetchLatest().then((remoteData) => {
         if (remoteData) {
-          if (Array.isArray(remoteData.items) && remoteData.items.length > 0) setItems(remoteData.items);
-          if (Array.isArray(remoteData.transactions) && remoteData.transactions.length > 0)
-            setTransactions(remoteData.transactions);
-          if (Array.isArray(remoteData.warehouses) && remoteData.warehouses.length > 0)
-            setWarehouses(remoteData.warehouses);
-          if (Array.isArray(remoteData.users) && remoteData.users.length > 0)
-            setUsers(remoteData.users);
-          setLastServerTimestamp(remoteData.lastUpdated);
-          setLastSyncedAt(new Date());
-          setSyncStatus('synced');
+          applyRemotePayloadAdditive(remoteData);
         }
       });
     }
     return configured;
-  }, []);
+  }, [applyRemotePayloadAdditive]);
 
   // Listen to Supabase Realtime WebSocket events
   useEffect(() => {
@@ -279,39 +427,18 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       if (!payload) return;
       console.log('[InventoryContext] Instant Supabase Realtime update received:', payload);
 
-      isRemoteUpdatingRef.current = true;
-      if (Array.isArray(payload.items) && payload.items.length > 0) {
-        setItems(payload.items);
-      }
-      if (Array.isArray(payload.transactions) && payload.transactions.length > 0) {
-        setTransactions(payload.transactions);
-      }
-      if (Array.isArray(payload.warehouses) && payload.warehouses.length > 0) {
-        setWarehouses(payload.warehouses);
-      }
-      if (Array.isArray(payload.users) && payload.users.length > 0) {
-        setUsers(payload.users);
-      }
-
-      setLastServerTimestamp(payload.lastUpdated);
-      setLastSyncedAt(new Date());
-      setSyncStatus('synced');
-      setSyncProvider('supabase');
+      applyRemotePayloadAdditive(payload);
 
       const isAI = payload.source === 'google-ai';
       const msg = isAI
         ? `⚡ Số liệu mới từ Google AI vừa được cập nhật tức thì (Supabase Realtime)!`
-        : `⚡ Dữ liệu vừa được đồng bộ tức thì qua Supabase Realtime WebSocket!`;
+        : `⚡ Dữ liệu vừa được hợp nhất tự động qua Supabase Realtime WebSocket!`;
       setLastRealtimeUpdateMessage(msg);
 
       // Auto clear message after 6 seconds
       setTimeout(() => {
         setLastRealtimeUpdateMessage(prev => (prev === msg ? null : prev));
       }, 6000);
-
-      setTimeout(() => {
-        isRemoteUpdatingRef.current = false;
-      }, 350);
     });
 
     const unsubscribeStatus = supabaseRealtimeService.onConnectionStateChange((state) => {
@@ -324,7 +451,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     return () => {
       unsubscribeStatus();
     };
-  }, []);
+  }, [applyRemotePayloadAdditive]);
 
   // Direct push helper for instant cloud broadcast without debounce delay
   const pushCloudSyncImmediately = useCallback(
@@ -342,6 +469,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         transactions: newTransactions,
         warehouses: newWarehouses,
         users: newUsers,
+        resetEpoch: RESET_EPOCH,
         source,
       };
 
@@ -359,6 +487,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           transactions: newTransactions,
           warehouses: newWarehouses,
           users: newUsers,
+          resetEpoch: RESET_EPOCH,
           source,
         });
       } catch (err) {
@@ -429,26 +558,8 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       if (supabaseRealtimeService.isConfigured()) {
         const directPayload = await supabaseRealtimeService.fetchLatest();
         if (directPayload) {
-          isRemoteUpdatingRef.current = true;
-          if (Array.isArray(directPayload.items) && directPayload.items.length > 0) {
-            setItems(directPayload.items);
-          }
-          if (Array.isArray(directPayload.transactions) && directPayload.transactions.length > 0) {
-            setTransactions(directPayload.transactions);
-          }
-          if (Array.isArray(directPayload.warehouses) && directPayload.warehouses.length > 0) {
-            setWarehouses(directPayload.warehouses);
-          }
-          if (Array.isArray(directPayload.users) && directPayload.users.length > 0) {
-            setUsers(directPayload.users);
-          }
-          setLastServerTimestamp(directPayload.lastUpdated);
-          setLastSyncedAt(new Date());
-          setSyncStatus('synced');
+          applyRemotePayloadAdditive(directPayload);
           setSyncProvider('supabase');
-          setTimeout(() => {
-            isRemoteUpdatingRef.current = false;
-          }, 350);
           return;
         }
       }
@@ -456,24 +567,8 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       const result = await centralSyncService.fetchLatestData(lastServerTimestamp);
       if (result.success) {
         setSyncProvider(result.provider);
-        if (result.isNewer && result.payload) {
-          isRemoteUpdatingRef.current = true;
-          if (Array.isArray(result.payload.items) && result.payload.items.length > 0) {
-            setItems(result.payload.items);
-          }
-          if (Array.isArray(result.payload.transactions) && result.payload.transactions.length > 0) {
-            setTransactions(result.payload.transactions);
-          }
-          if (Array.isArray(result.payload.warehouses) && result.payload.warehouses.length > 0) {
-            setWarehouses(result.payload.warehouses);
-          }
-          if (Array.isArray(result.payload.users) && result.payload.users.length > 0) {
-            setUsers(result.payload.users);
-          }
-          setLastServerTimestamp(result.payload.lastUpdated);
-          setTimeout(() => {
-            isRemoteUpdatingRef.current = false;
-          }, 350);
+        if (result.payload) {
+          applyRemotePayloadAdditive(result.payload);
         }
         setSyncStatus('synced');
         setLastSyncedAt(new Date());
@@ -483,9 +578,9 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     } catch {
       setSyncStatus('offline');
     }
-  }, [lastServerTimestamp]);
+  }, [lastServerTimestamp, applyRemotePayloadAdditive]);
 
-  // Real-time automatic polling every 5 seconds (5000ms) as heartbeat fallback
+  // Real-time automatic polling every 3 seconds (3000ms) as heartbeat fallback
   useEffect(() => {
     if (!autoSyncEnabled) return;
 
@@ -498,7 +593,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         return;
       }
       triggerManualSync();
-    }, 5000);
+    }, 3000);
 
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
@@ -532,6 +627,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           transactions: newTransactions,
           warehouses: newWarehouses,
           users: usersToPush,
+          resetEpoch: RESET_EPOCH,
           source: 'web-client',
         };
 
@@ -553,6 +649,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
             transactions: newTransactions,
             warehouses: newWarehouses,
             users: usersToPush,
+            resetEpoch: RESET_EPOCH,
           })
           .then((res) => {
             if (res.success && res.payload) {
@@ -722,13 +819,14 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       }
 
       if (remotePayload && Array.isArray(remotePayload.users) && remotePayload.users.length > 0) {
-        setUsers(remotePayload.users);
+        const mergedUsers = mergeUsersAdditive(users, remotePayload.users);
+        setUsers(mergedUsers);
         try {
-          localStorage.setItem(STORAGE_KEYS.USERS, JSON.stringify(remotePayload.users));
+          localStorage.setItem(STORAGE_KEYS.USERS, JSON.stringify(mergedUsers));
         } catch {
           // ignore
         }
-        currentUsersList = remotePayload.users;
+        currentUsersList = mergedUsers;
       }
     } catch (err) {
       console.warn('Could not refresh remote users during login:', err);
@@ -1231,8 +1329,15 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       }
 
       // 2. Warehouses
-      if (filterCriteria.warehouses.length > 0 && !filterCriteria.warehouses.includes(item.warehouseId)) {
-        return false;
+      if (filterCriteria.warehouses.length > 0) {
+        const itemWh = item.warehouseId || '';
+        const inPrimary = Boolean(itemWh && filterCriteria.warehouses.includes(itemWh));
+        const inStocks = item.warehouseStocks
+          ? filterCriteria.warehouses.some(wId => (item.warehouseStocks?.[wId] || 0) > 0)
+          : false;
+        if (!inPrimary && !inStocks) {
+          return false;
+        }
       }
 
       // 3. Item Types
@@ -1506,10 +1611,10 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     return { success: true, transaction: newTransaction };
   };
 
-  // Update Transaction
+  // Update Transaction (Admin has full rights to edit details, items, quantities and recalculate stock)
   const updateTransaction = (
     id: string,
-    updates: Partial<Omit<Transaction, 'id' | 'code' | 'type'>>
+    updates: Partial<Transaction>
   ): { success: boolean; error?: string } => {
     if (!currentUser || (currentUser.role !== 'ADMIN' && currentUser.role !== 'THU_KHO')) {
       return { success: false, error: 'Bạn không có quyền chỉnh sửa phiếu này.' };
@@ -1520,10 +1625,117 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       return { success: false, error: 'Không tìm thấy phiếu giao dịch.' };
     }
 
-    setTransactions(prev =>
-      prev.map(t => (t.id === id ? { ...t, ...updates } : t))
-    );
+    if (updates.items && currentUser.role !== 'ADMIN') {
+      return {
+        success: false,
+        error: 'Chỉ Quản trị viên (Admin) mới có quyền chỉnh sửa chi tiết danh mục và số lượng vật tư trong phiếu.',
+      };
+    }
 
+    let updatedItemsList = [...items];
+
+    // If items or warehouse were updated, adjust inventory balances
+    if (updates.items) {
+      // 1. Revert existing transaction's stock effects:
+      for (const oldLine of existing.items) {
+        const idx = updatedItemsList.findIndex(
+          i =>
+            i.id === oldLine.itemId ||
+            (oldLine.itemCode &&
+              i.code.trim().toUpperCase() === oldLine.itemCode.trim().toUpperCase() &&
+              i.warehouseId === existing.warehouseId)
+        );
+        if (idx !== -1) {
+          const item = updatedItemsList[idx];
+          const revertDelta = existing.type === 'NHAP_KHO' ? -oldLine.quantity : oldLine.quantity;
+          updatedItemsList[idx] = {
+            ...item,
+            currentStock: Math.max(0, item.currentStock + revertDelta),
+          };
+        }
+      }
+
+      // 2. Apply new items' stock effects:
+      const targetWarehouseId = updates.warehouseId || existing.warehouseId;
+      const targetType = updates.type || existing.type;
+
+      for (const newLine of updates.items) {
+        const idx = updatedItemsList.findIndex(
+          i =>
+            i.id === newLine.itemId ||
+            (newLine.itemCode &&
+              i.code.trim().toUpperCase() === newLine.itemCode.trim().toUpperCase() &&
+              i.warehouseId === targetWarehouseId)
+        );
+        if (idx !== -1) {
+          const item = updatedItemsList[idx];
+          const applyDelta = targetType === 'NHAP_KHO' ? newLine.quantity : -newLine.quantity;
+          const newUnitPrice =
+            targetType === 'NHAP_KHO' && newLine.unitPrice > 0 ? newLine.unitPrice : item.unitPrice;
+          updatedItemsList[idx] = {
+            ...item,
+            currentStock: Math.max(0, item.currentStock + applyDelta),
+            unitPrice: newUnitPrice,
+            updatedAt: new Date().toISOString().replace('T', ' ').substring(0, 16),
+          };
+        } else if (targetType === 'NHAP_KHO') {
+          // If new item row was added into a Goods Receipt
+          const newItemId = newLine.itemId || `ITEM-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+          const cleanCode = (newLine.itemCode || `VT-${Date.now().toString().slice(-4)}`).trim().toUpperCase();
+          const newItem: InventoryItem = {
+            id: newItemId,
+            code: cleanCode,
+            name: (newLine.itemName || 'Vật tư nhập mới').trim(),
+            type: newLine.type || 'VAT_TU',
+            category: (newLine.category || 'Vật tư dự án').trim(),
+            unit: (newLine.unit || 'Cái').trim(),
+            warehouseId: targetWarehouseId,
+            location: (newLine.location || 'Khu vực tiếp nhận').trim(),
+            minStock: newLine.minStock ?? 5,
+            maxStock: newLine.maxStock ?? 200,
+            currentStock: Math.max(0, newLine.quantity),
+            unitPrice: Math.max(0, newLine.unitPrice || 0),
+            serialOrLot: (newLine.serialNumber || '').trim(),
+            condition: newLine.condition || 'SAN_SANG',
+            supplierDefault: (updates.partnerName || existing.partnerName).trim(),
+            spec: (newLine.spec || '').trim(),
+            updatedAt: new Date().toISOString().replace('T', ' ').substring(0, 16),
+          };
+          updatedItemsList.unshift(newItem);
+        }
+      }
+
+      setItems(updatedItemsList);
+      try {
+        localStorage.setItem(STORAGE_KEYS.ITEMS, JSON.stringify(updatedItemsList));
+      } catch {
+        // ignore
+      }
+    }
+
+    const finalItems = updates.items || existing.items;
+    const computedTotalAmount =
+      updates.totalAmount !== undefined
+        ? updates.totalAmount
+        : finalItems.reduce((acc, it) => acc + (it.amount || it.quantity * it.unitPrice), 0);
+
+    const updatedTrx: Transaction = {
+      ...existing,
+      ...updates,
+      items: finalItems,
+      totalAmount: computedTotalAmount,
+    };
+
+    const newTransactionsList = transactions.map(t => (t.id === id ? updatedTrx : t));
+    setTransactions(newTransactionsList);
+    try {
+      localStorage.setItem(STORAGE_KEYS.TRANSACTIONS, JSON.stringify(newTransactionsList));
+    } catch {
+      // ignore
+    }
+
+    pushCloudSyncImmediately(updatedItemsList, newTransactionsList, warehouses, users);
+    pushLocalChanges(updatedItemsList, newTransactionsList, warehouses, users);
     return { success: true };
   };
 
@@ -1674,18 +1886,26 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     };
   };
 
-  // Generate Chronological Stock Ledger for an Item
+  // Generate Chronological Stock Ledger for an Item (Scoped strictly to item's storage warehouse)
   const getItemLedger = (itemId: string): StockLedgerEntry[] => {
-    const sorted = [...transactions].sort(
-      (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime()
-    );
+    const targetItem = items.find(i => i.id === itemId);
+    const sorted = [...transactions]
+      .filter(t => t.status !== 'DA_HUY' && (!targetItem || t.warehouseId === targetItem.warehouseId))
+      .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
 
     let runningBalance = 0;
     const entries: StockLedgerEntry[] = [];
 
     for (const trx of sorted) {
-      const line = trx.items.find(i => i.itemId === itemId);
-      if (line) {
+      const matchingLines = trx.items.filter(
+        i =>
+          i.itemId === itemId ||
+          (targetItem &&
+            i.itemCode &&
+            i.itemCode.trim().toUpperCase() === targetItem.code.trim().toUpperCase())
+      );
+
+      for (const line of matchingLines) {
         const inQty = trx.type === 'NHAP_KHO' ? line.quantity : 0;
         const outQty = trx.type === 'XUAT_KHO' ? line.quantity : 0;
         runningBalance = runningBalance + inQty - outQty;
@@ -1719,6 +1939,27 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     localStorage.removeItem(STORAGE_KEYS.ITEMS);
     localStorage.removeItem(STORAGE_KEYS.TRANSACTIONS);
     localStorage.removeItem(STORAGE_KEYS.USERS);
+    localStorage.removeItem(STORAGE_KEYS.AUTH);
+
+    // Sync clean state to /api/sync
+    fetch('/api/sync', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        cleanReset: true,
+        payload: {
+          cleanReset: true,
+          resetEpoch: RESET_EPOCH,
+          version: 1,
+          lastUpdated: new Date().toISOString(),
+          users: INITIAL_USERS,
+          warehouses: INITIAL_WAREHOUSES,
+          items: INITIAL_ITEMS,
+          transactions: INITIAL_TRANSACTIONS,
+          source: 'admin-clean-reset',
+        },
+      }),
+    }).catch(() => {});
   };
 
   return (

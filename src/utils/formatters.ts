@@ -8,6 +8,8 @@ import {
   TransactionSubtype,
   TransactionType,
   UserRole,
+  Warehouse,
+  Transaction,
 } from '../types/inventory';
 
 export const formatCurrency = (amount: number): string => {
@@ -165,3 +167,90 @@ export const exportToCSV = (filename: string, headers: string[], rows: (string |
   document.body.removeChild(link);
   URL.revokeObjectURL(url);
 };
+
+/**
+ * Tính toán phân bổ số lượng tồn kho của một mặt hàng theo từng kho lưu trữ cụ thể.
+ * Kết hợp thông tin cấu hình ban đầu và toàn bộ luồng giao dịch Nhập - Xuất kho thực tế.
+ */
+export const calculateItemWarehouseStocks = (
+  item: InventoryItem,
+  warehouses: Warehouse[],
+  transactions: Transaction[]
+): Record<string, number> => {
+  const result: Record<string, number> = {};
+  warehouses.forEach(w => {
+    result[w.id] = 0;
+  });
+
+  // 1. Nếu mặt hàng đã có cấu hình explicit warehouseStocks
+  if (item.warehouseStocks && Object.keys(item.warehouseStocks).length > 0) {
+    warehouses.forEach(w => {
+      if (item.warehouseStocks?.[w.id] !== undefined) {
+        result[w.id] = Math.max(0, item.warehouseStocks[w.id]);
+      }
+    });
+    return result;
+  }
+
+  // 2. Tính toán theo luồng giao dịch thực tế tại từng kho
+  const activeTrx = transactions.filter(t => t.status !== 'DA_HUY');
+  const whMovements: Record<string, { inQty: number; outQty: number }> = {};
+  warehouses.forEach(w => {
+    whMovements[w.id] = { inQty: 0, outQty: 0 };
+  });
+
+  let totalNetTransactions = 0;
+
+  activeTrx.forEach(trx => {
+    const whId = trx.warehouseId;
+    if (!whMovements[whId]) {
+      whMovements[whId] = { inQty: 0, outQty: 0 };
+    }
+    const matchingLines = trx.items.filter(
+      l =>
+        l.itemId === item.id ||
+        (l.itemCode &&
+          item.code &&
+          l.itemCode.trim().toUpperCase() === item.code.trim().toUpperCase())
+    );
+    matchingLines.forEach(line => {
+      if (trx.type === 'NHAP_KHO') {
+        whMovements[whId].inQty += line.quantity;
+        totalNetTransactions += line.quantity;
+      } else if (trx.type === 'XUAT_KHO') {
+        whMovements[whId].outQty += line.quantity;
+        totalNetTransactions -= line.quantity;
+      }
+    });
+  });
+
+  const primaryWhId = item.warehouseId || warehouses[0]?.id || 'WH-HN';
+  const baselineOpening = Math.max(0, item.currentStock - totalNetTransactions);
+
+  warehouses.forEach(w => {
+    const net = (whMovements[w.id]?.inQty || 0) - (whMovements[w.id]?.outQty || 0);
+    if (w.id === primaryWhId) {
+      result[w.id] = Math.max(0, baselineOpening + net);
+    } else {
+      result[w.id] = Math.max(0, net);
+    }
+  });
+
+  const sumAll = Object.values(result).reduce((a, b) => a + b, 0);
+  if (sumAll === 0 && item.currentStock > 0) {
+    result[primaryWhId] = item.currentStock;
+  }
+
+  return result;
+};
+
+export const getItemStockInWarehouse = (
+  item: InventoryItem,
+  warehouseId: string,
+  warehouses: Warehouse[],
+  transactions: Transaction[]
+): number => {
+  const stocks = calculateItemWarehouseStocks(item, warehouses, transactions);
+  return stocks[warehouseId] || 0;
+};
+

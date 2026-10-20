@@ -23,11 +23,12 @@ export interface InventoryItem {
   type: ItemType;
   category: string; // e.g. Cơ điện, Xây dựng, An toàn BHLĐ, Thiết bị đo đạc, v.v.
   unit: string; // e.g. Cái, Mét, Kg, Bộ, Cuộn, Cây, Thùng
-  warehouseId: string;
+  warehouseId?: string;
   location: string; // e.g. Kệ A2-03, Khoang B
+  warehouseStocks?: Record<string, number>; // Phân bổ số lượng tồn theo từng kho (key là warehouseId, value là số lượng tồn)
   minStock: number; // Mức tồn tối thiểu
   maxStock: number; // Mức tồn tối đa
-  currentStock: number; // Tồn hiện tại
+  currentStock: number; // Tổng tồn hiện tại các kho
   unitPrice: number; // Đơn giá vốn bình quân (VNĐ)
   serialOrLot?: string; // Số serial thiết bị hoặc số lô vật tư
   condition?: EquipmentCondition; // Dành cho thiết bị, công cụ

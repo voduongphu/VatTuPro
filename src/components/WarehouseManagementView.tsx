@@ -19,7 +19,7 @@ import {
 } from 'lucide-react';
 import { useInventory } from '../context/InventoryContext';
 import { Warehouse } from '../types/inventory';
-import { formatCurrency, formatNumber } from '../utils/formatters';
+import { formatCurrency, formatNumber, calculateItemWarehouseStocks } from '../utils/formatters';
 import { ConfirmDeleteModal } from './ConfirmDeleteModal';
 
 interface WarehouseManagementViewProps {
@@ -88,11 +88,15 @@ export const WarehouseManagementView: React.FC<WarehouseManagementViewProps> = (
     });
 
     items.forEach(item => {
-      if (stats[item.warehouseId]) {
-        stats[item.warehouseId].itemCount += 1;
-        stats[item.warehouseId].totalStock += item.currentStock;
-        stats[item.warehouseId].totalValue += item.currentStock * item.unitPrice;
-      }
+      const stocks = calculateItemWarehouseStocks(item, warehouses, transactions);
+      warehouses.forEach(wh => {
+        const qty = stocks[wh.id] || 0;
+        if (qty > 0 && stats[wh.id]) {
+          stats[wh.id].itemCount += 1;
+          stats[wh.id].totalStock += qty;
+          stats[wh.id].totalValue += qty * item.unitPrice;
+        }
+      });
     });
 
     transactions.forEach(t => {

@@ -19,10 +19,12 @@ import {
 import { useInventory } from '../context/InventoryContext';
 import { Transaction, TransactionType } from '../types/inventory';
 import { ConfirmDeleteModal } from './ConfirmDeleteModal';
+import * as XLSX from 'xlsx';
 import {
   exportToCSV,
   formatCurrency,
   formatDateTime,
+  formatNumber,
   getSubtypeLabel,
   getTransactionTypeLabel,
 } from '../utils/formatters';
@@ -71,41 +73,188 @@ export const TransactionListView: React.FC<TransactionListViewProps> = ({
     return true;
   });
 
-  const handleExportCSV = () => {
-    const headers = [
-      'Số Phiếu',
-      'Loại Nghiệp Vụ',
-      'Phân Loại Chi Tiết',
-      'Ngày Lập Phiếu',
-      'Kho Hàng',
-      'Đối Tác / Nhà Cung Cấp / Đơn Vị Nhận',
-      'Dự Án / Phòng Ban',
-      'Người Lập Phiếu',
-      'Số Mặt Hàng',
-      'Tổng Giá Trị (VNĐ)',
-      'Ghi Chú',
-      'Trạng Thái',
-    ];
-
-    const rows = filteredTransactions.map(t => {
+  // 1. Export Summary of vouchers with "Số Lượng Vật Tư" column
+  const handleExportSummaryExcel = () => {
+    const excelData = filteredTransactions.map((t, idx) => {
       const wh = warehouses.find(w => w.id === t.warehouseId);
-      return [
-        t.code,
-        getTransactionTypeLabel(t.type),
-        getSubtypeLabel(t.subtype),
-        formatDateTime(t.date),
-        wh?.name || t.warehouseId,
-        t.partnerName,
-        t.departmentOrProject,
-        t.creatorName,
-        t.items.length,
-        t.totalAmount,
-        t.notes,
-        t.status === 'HOAN_THANH' ? 'Hoàn thành' : 'Chờ duyệt',
-      ];
+      const totalQuantity = t.items.reduce((acc, it) => acc + (Number(it.quantity) || 0), 0);
+      return {
+        STT: idx + 1,
+        'Số Phiếu': t.code,
+        'Loại Nghiệp Vụ': getTransactionTypeLabel(t.type),
+        'Phân Loại': getSubtypeLabel(t.subtype),
+        'Ngày Lập Phiếu': formatDateTime(t.date),
+        'Kho Hàng': wh?.name || t.warehouseId,
+        'Đối Tác / Nhà Cung Cấp / Đơn Vị Nhận': t.partnerName,
+        'Dự Án / Phòng Ban': t.departmentOrProject,
+        'Người Lập Phiếu': t.creatorName,
+        'Số Mặt Hàng': t.items.length,
+        'Số Lượng Vật Tư': totalQuantity, // Crucial column
+        'Tổng Giá Trị (VNĐ)': t.totalAmount,
+        'Ghi Chú': t.notes || '',
+        'Trạng Thái': t.status === 'HOAN_THANH' ? 'Hoàn thành' : 'Chờ duyệt',
+      };
     });
 
-    exportToCSV(`So_Luu_Chuyen_Kho_${new Date().toISOString().substring(0, 10)}`, headers, rows);
+    const totalLinesCount = filteredTransactions.reduce((acc, t) => acc + t.items.length, 0);
+    const grandTotalQuantity = filteredTransactions.reduce(
+      (acc, t) => acc + t.items.reduce((s, it) => s + (Number(it.quantity) || 0), 0),
+      0
+    );
+    const grandTotalAmount = filteredTransactions.reduce((acc, t) => acc + (Number(t.totalAmount) || 0), 0);
+
+    excelData.push({
+      STT: 'TỔNG CỘNG' as any,
+      'Số Phiếu': `${filteredTransactions.length} phiếu`,
+      'Loại Nghiệp Vụ': '',
+      'Phân Loại': '',
+      'Ngày Lập Phiếu': '',
+      'Kho Hàng': '',
+      'Đối Tác / Nhà Cung Cấp / Đơn Vị Nhận': '',
+      'Dự Án / Phòng Ban': '',
+      'Người Lập Phiếu': '',
+      'Số Mặt Hàng': totalLinesCount,
+      'Số Lượng Vật Tư': grandTotalQuantity,
+      'Tổng Giá Trị (VNĐ)': grandTotalAmount,
+      'Ghi Chú': '',
+      'Trạng Thái': '',
+    });
+
+    const ws = XLSX.utils.json_to_sheet(excelData);
+    const wb = XLSX.utils.book_new();
+    const sheetPrefix =
+      initialType === 'NHAP_KHO'
+        ? 'Tong_Hop_Phieu_Nhap_Kho'
+        : initialType === 'XUAT_KHO'
+        ? 'Tong_Hop_Phieu_Xuat_Kho'
+        : 'Tong_Hop_So_Luu_Chuyen_Kho';
+    XLSX.utils.book_append_sheet(wb, ws, sheetPrefix);
+    XLSX.writeFile(wb, `${sheetPrefix}_${new Date().toISOString().substring(0, 10)}.xlsx`);
+  };
+
+  // 2. Export detailed items table for all vouchers with "Số Lượng Vật Tư" column
+  const handleExportDetailExcel = () => {
+    const detailData: any[] = [];
+    let rowIdx = 1;
+
+    filteredTransactions.forEach(t => {
+      const wh = warehouses.find(w => w.id === t.warehouseId);
+      t.items.forEach(line => {
+        detailData.push({
+          STT: rowIdx++,
+          'Số Phiếu': t.code,
+          'Loại Phiếu': getTransactionTypeLabel(t.type),
+          'Hình Thức': getSubtypeLabel(t.subtype),
+          'Ngày Lập': formatDateTime(t.date),
+          'Kho Hàng': wh?.name || t.warehouseId,
+          'Đối Tác / Đơn Vị Nhận': t.partnerName,
+          'Dự Án': t.departmentOrProject,
+          'Mã Vật Tư': line.itemCode,
+          'Tên Vật Tư Thiết Bị': line.itemName,
+          'ĐVT': line.unit,
+          'Số Lượng Vật Tư': line.quantity, // Crucial column
+          'Đơn Giá (VNĐ)': line.unitPrice,
+          'Thành Tiền (VNĐ)': line.amount || line.quantity * line.unitPrice,
+          'Số Lô / Serial': line.serialNumber || '-',
+          'Ghi Chú': line.note || t.notes || '',
+        });
+      });
+    });
+
+    const totalQty = detailData.reduce((acc, row) => acc + (Number(row['Số Lượng Vật Tư']) || 0), 0);
+    const totalAmt = detailData.reduce((acc, row) => acc + (Number(row['Thành Tiền (VNĐ)']) || 0), 0);
+
+    detailData.push({
+      STT: 'TỔNG CỘNG' as any,
+      'Số Phiếu': '',
+      'Loại Phiếu': '',
+      'Hình Thức': '',
+      'Ngày Lập': '',
+      'Kho Hàng': '',
+      'Đối Tác / Đơn Vị Nhận': '',
+      'Dự Án': '',
+      'Mã Vật Tư': '',
+      'Tên Vật Tư Thiết Bị': `Tổng ${detailData.length} dòng vật tư`,
+      'ĐVT': '',
+      'Số Lượng Vật Tư': totalQty,
+      'Đơn Giá (VNĐ)': '',
+      'Thành Tiền (VNĐ)': totalAmt,
+      'Số Lô / Serial': '',
+      'Ghi Chú': '',
+    });
+
+    const ws = XLSX.utils.json_to_sheet(detailData);
+    const wb = XLSX.utils.book_new();
+    const sheetPrefix =
+      initialType === 'NHAP_KHO'
+        ? 'Chi_Tiet_Vat_Tu_Nhap_Kho'
+        : initialType === 'XUAT_KHO'
+        ? 'Chi_Tiet_Vat_Tu_Xuat_Kho'
+        : 'Chi_Tiet_Vat_Tu_Chung_Tu';
+    XLSX.utils.book_append_sheet(wb, ws, sheetPrefix);
+    XLSX.writeFile(wb, `${sheetPrefix}_${new Date().toISOString().substring(0, 10)}.xlsx`);
+  };
+
+  // 3. Export single voucher to Excel with "Số Lượng Vật Tư" column
+  const handleExportSingleTrx = (trx: Transaction) => {
+    const wh = warehouses.find(w => w.id === trx.warehouseId);
+    const isReceipt = trx.type === 'NHAP_KHO';
+    const title = isReceipt ? 'PHIẾU NHẬP KHO' : 'PHIẾU XUẤT KHO';
+
+    const sheetData: any[] = [
+      { A: 'CÔNG TY CỔ PHẦN DỊCH VỤ DẦU KHÍ QUẢNG NGÃI PTSC', B: '', C: '', D: '', E: '', F: '', G: `Số phiếu: ${trx.code}` },
+      { A: `BỘ PHẬN: ${trx.departmentOrProject || 'DỰ ÁN'}`, B: '', C: '', D: '', E: '', F: '', G: `Ngày lập: ${trx.date}` },
+      { A: title, B: '', C: '', D: '', E: '', F: '', G: '' },
+      {},
+      { A: isReceipt ? `Đơn vị giao hàng / NCC: ${trx.partnerName}` : `Người nhận / Đơn vị nhận: ${trx.partnerName}`, B: '', C: '', D: '', E: `Kho lưu trữ: ${wh?.name || trx.warehouseId}`, F: '', G: '' },
+      { A: `Dự án / Phòng ban: ${trx.departmentOrProject}`, B: '', C: '', D: '', E: `Hình thức: ${getSubtypeLabel(trx.subtype)}`, F: '', G: '' },
+      { A: `Ghi chú: ${trx.notes || 'Không'}`, B: '', C: '', D: '', E: '', F: '', G: '' },
+      {},
+      {
+        A: 'STT',
+        B: 'Mã Vật Tư',
+        C: 'Tên Vật Tư Thiết Bị',
+        D: 'ĐVT',
+        E: 'Số Lượng Vật Tư', // Crucial column
+        F: 'Đơn Giá (VNĐ)',
+        G: 'Thành Tiền (VNĐ)',
+        H: 'Số Lô / Serial',
+        I: 'Ghi Chú',
+      },
+    ];
+
+    trx.items.forEach((it, idx) => {
+      sheetData.push({
+        A: idx + 1,
+        B: it.itemCode,
+        C: it.itemName,
+        D: it.unit,
+        E: it.quantity,
+        F: it.unitPrice,
+        G: it.amount || it.quantity * it.unitPrice,
+        H: it.serialNumber || '-',
+        I: it.note || '',
+      });
+    });
+
+    const sumQty = trx.items.reduce((s, it) => s + (Number(it.quantity) || 0), 0);
+    sheetData.push({
+      A: 'CỘNG',
+      B: '',
+      C: `Tổng cộng ${trx.items.length} mặt hàng`,
+      D: '',
+      E: sumQty,
+      F: '',
+      G: trx.totalAmount,
+      H: '',
+      I: '',
+    });
+
+    const ws = XLSX.utils.json_to_sheet(sheetData, { skipHeader: true });
+    const wb = XLSX.utils.book_new();
+    const sheetName = isReceipt ? 'Phieu_Nhap' : 'Phieu_Xuat';
+    XLSX.utils.book_append_sheet(wb, ws, sheetName);
+    XLSX.writeFile(wb, `${sheetName}_${trx.code.replace(/[^a-zA-Z0-9_-]/g, '_')}.xlsx`);
   };
 
   const [transactionToDelete, setTransactionToDelete] = useState<Transaction | null>(null);
@@ -152,13 +301,24 @@ export const TransactionListView: React.FC<TransactionListViewProps> = ({
             </button>
           )}
 
-          {/* Export CSV */}
+          {/* Export Excel Summary */}
           <button
-            onClick={handleExportCSV}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-700 bg-white hover:bg-slate-50 border border-slate-200 rounded-lg transition-colors whitespace-nowrap"
+            onClick={handleExportSummaryExcel}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-700 bg-white hover:bg-slate-50 border border-slate-200 rounded-lg transition-colors whitespace-nowrap shadow-xs cursor-pointer"
+            title="Xuất file Excel tổng hợp các phiếu kèm cột số lượng vật tư"
           >
-            <Download className="w-3.5 h-3.5" />
-            <span>Xuất Excel</span>
+            <Download className="w-3.5 h-3.5 text-slate-600" />
+            <span>Xuất Excel (Tổng hợp)</span>
+          </button>
+
+          {/* Export Excel Details */}
+          <button
+            onClick={handleExportDetailExcel}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-emerald-800 bg-emerald-50 hover:bg-emerald-100 border border-emerald-300 rounded-lg transition-colors whitespace-nowrap shadow-xs cursor-pointer"
+            title="Xuất file Excel chi tiết từng dòng vật tư trong phiếu kèm cột số lượng"
+          >
+            <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600" />
+            <span>Xuất Excel (Chi tiết vật tư)</span>
           </button>
 
           {/* Create Goods In */}
@@ -270,6 +430,7 @@ export const TransactionListView: React.FC<TransactionListViewProps> = ({
                   <th className="py-3 px-4 min-w-[180px]">Đối tác / Bên nhận</th>
                   <th className="py-3 px-4 min-w-[160px]">Dự án / Mục đích</th>
                   <th className="py-3 px-3 text-center">Số khoản</th>
+                  <th className="py-3 px-3 text-right">Số lượng vật tư</th>
                   <th className="py-3 px-4 text-right">Tổng thành tiền</th>
                   <th className="py-3 px-3 text-center">Trạng thái</th>
                   <th className="py-3 px-4 text-center">Thao tác</th>
@@ -279,6 +440,10 @@ export const TransactionListView: React.FC<TransactionListViewProps> = ({
                 {filteredTransactions.map(trx => {
                   const wh = warehouses.find(w => w.id === trx.warehouseId);
                   const isReceipt = trx.type === 'NHAP_KHO';
+                  const totalVoucherQty = trx.items.reduce(
+                    (acc, it) => acc + (Number(it.quantity) || 0),
+                    0
+                  );
 
                   return (
                     <tr key={trx.id} className="hover:bg-slate-50/80 transition-colors">
@@ -343,6 +508,11 @@ export const TransactionListView: React.FC<TransactionListViewProps> = ({
                         {trx.items.length} mặt hàng
                       </td>
 
+                      {/* Total Quantity Column */}
+                      <td className="py-3.5 px-3 text-right tabular-nums font-bold text-indigo-700 whitespace-nowrap bg-indigo-50/20">
+                        {formatNumber(totalVoucherQty)}
+                      </td>
+
                       {/* Total Amount */}
                       <td className="py-3.5 px-4 text-right tabular-nums font-bold text-slate-900 whitespace-nowrap">
                         {formatCurrency(trx.totalAmount)}
@@ -359,6 +529,15 @@ export const TransactionListView: React.FC<TransactionListViewProps> = ({
                       {/* Actions */}
                       <td className="py-3.5 px-4 text-center whitespace-nowrap">
                         <div className="flex items-center justify-center gap-1">
+                          {/* Export voucher Excel button */}
+                          <button
+                            onClick={() => handleExportSingleTrx(trx)}
+                            className="p-1.5 text-slate-500 hover:text-emerald-700 hover:bg-emerald-50 rounded transition-colors"
+                            title="Xuất phiếu này ra file Excel (.xlsx) kèm cột số lượng vật tư"
+                          >
+                            <FileSpreadsheet className="w-4 h-4 text-emerald-600" />
+                          </button>
+
                           <button
                             onClick={() => onPrintTransaction(trx)}
                             className="p-1.5 text-slate-600 hover:text-indigo-600 hover:bg-indigo-50 rounded transition-colors"

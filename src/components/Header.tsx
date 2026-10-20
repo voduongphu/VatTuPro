@@ -8,7 +8,6 @@ import {
   Users,
   Plus,
   LogOut,
-  RotateCcw,
   ChevronDown,
   Building2,
   Zap,
@@ -42,7 +41,6 @@ export const Header: React.FC<HeaderProps> = ({
 }) => {
   const {
     items,
-    resetToDefaultData,
     currentUser,
     logout,
     syncStatus,
@@ -365,20 +363,6 @@ export const Header: React.FC<HeaderProps> = ({
                 </button>
               </div>
             )}
-
-            {/* Reset data */}
-            <button
-              type="button"
-              onClick={() => {
-                if (window.confirm('Khôi phục lại toàn bộ dữ liệu mẫu ban đầu?')) {
-                  resetToDefaultData();
-                }
-              }}
-              title="Khôi phục dữ liệu mẫu ban đầu"
-              className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-lg transition-colors hidden xl:block shrink-0"
-            >
-              <RotateCcw className="w-4 h-4" />
-            </button>
 
             {/* Mobile / Tablet Menu Button (< 1024px) */}
             <button

@@ -1,5 +1,6 @@
 import React, { useState, useMemo } from 'react';
-import { X, Printer, Edit3, Check, RotateCcw } from 'lucide-react';
+import { X, Printer, Edit3, Check, RotateCcw, Download, FileSpreadsheet } from 'lucide-react';
+import * as XLSX from 'xlsx';
 import { useInventory } from '../context/InventoryContext';
 import { Transaction } from '../types/inventory';
 import { numberToWordsVietnamese } from '../utils/numberToWords';
@@ -188,6 +189,116 @@ export const TransactionPrintModal: React.FC<TransactionPrintModalProps> = ({
     window.print();
   };
 
+  // Export voucher to genuine Excel (.xlsx) file with detailed items & quantity column
+  const handleExportExcel = () => {
+    const title = isReceipt ? 'PHIẾU NHẬP KHO' : 'PHIẾU XUẤT KHO';
+    const formStandardCode = formCode;
+
+    const data: any[] = [
+      { A: companyName, B: '', C: '', D: '', E: '', F: '', G: '', H: `Mẫu số: ${formStandardCode}` },
+      { A: `BỘ PHẬN: ${departmentName}`, B: '', C: '', D: '', E: '', F: '', G: '', H: `Số phiếu: ${ticketNo}` },
+      { A: '', B: '', C: '', D: '', E: '', F: '', G: '', H: `Ngày: ${nhlDate || '02/08/2024'}` },
+      { A: title, B: '', C: '', D: '', E: '', F: '', G: '', H: '' },
+      { A: docDateText, B: '', C: '', D: '', E: '', F: '', G: '', H: '' },
+      {},
+    ];
+
+    if (isReceipt) {
+      data.push(
+        { A: `Họ tên người giao / Đơn vị giao hàng: ${deliveryUnit}`, B: '', C: '', D: '', E: `Kho lưu trữ: ${wh?.name || transaction.warehouseId}`, F: '', G: '', H: '' },
+        { A: `Theo Hợp đồng / Đơn hàng số: ${contractNo || '..............................'}`, B: '', C: '', D: '', E: `Giấy đề nghị số: ${proposalNo || '..............................'}`, F: '', G: '', H: '' },
+        { A: `Nội dung / Mục đích nhập: ${receiptContent}`, B: '', C: '', D: '', E: '', F: '', G: '', H: '' },
+        {}
+      );
+    } else {
+      data.push(
+        { A: `Họ tên người nhận hàng: ${receiverName}`, B: '', C: '', D: '', E: `Kho xuất: ${wh?.name || transaction.warehouseId}`, F: '', G: '', H: '' },
+        { A: `Đơn vị / Đội thi công: ${receiverTeam}`, B: '', C: '', D: '', E: `Lý do / Mục đích xuất: ${issueReason}`, F: '', G: '', H: '' },
+        { A: `Địa chỉ kho: ${wh?.address || ''}`, B: '', C: '', D: '', E: '', F: '', G: '', H: '' },
+        {}
+      );
+    }
+
+    // Detailed Table Header - Explicitly includes 'Số Lượng Vật Tư'
+    data.push({
+      A: 'STT',
+      B: 'Mã Vật Tư / Thiết Bị',
+      C: 'Tên, Nhãn Hiệu, Quy Cách',
+      D: 'Số Lô / Serial',
+      E: 'ĐVT',
+      F: 'Số Lượng Vật Tư', // Crucial column
+      G: 'Khối Lượng (Kg)',
+      H: 'Đơn Giá (VNĐ)',
+      I: 'Thành Tiền (VNĐ)',
+      J: 'Ghi Chú',
+    });
+
+    lineItems.forEach((item, index) => {
+      data.push({
+        A: index + 1,
+        B: item.itemCode,
+        C: `${item.itemName}${item.spec ? ` (${item.spec})` : ''}`,
+        D: item.lotNumber || '-',
+        E: item.unit,
+        F: item.quantity,
+        G: item.weightKg || 0,
+        H: item.unitPrice,
+        I: item.amount,
+        J: item.note || '',
+      });
+    });
+
+    // Totals row
+    data.push({
+      A: 'CỘNG',
+      B: '',
+      C: `Tổng cộng ${lineItems.length} mặt hàng`,
+      D: '',
+      E: '',
+      F: totals.totalQty,
+      G: totals.totalWeightKg,
+      H: '',
+      I: totals.totalAmount,
+      J: '',
+    });
+
+    data.push(
+      {},
+      { A: `Tổng số tiền (viết bằng chữ): ${numberToWordsVietnamese(totals.totalAmount)}`, B: '', C: '', D: '', E: '', F: '', G: '', H: '', I: '', J: '' },
+      {},
+      {
+        A: 'NGƯỜI LẬP PHIẾU',
+        B: '',
+        C: isReceipt ? 'NGƯỜI GIAO HÀNG' : 'NGƯỜI NHẬN HÀNG',
+        D: '',
+        E: 'THỦ KHO',
+        F: '',
+        G: 'KẾ TOÁN',
+        H: '',
+        I: 'GIÁM ĐỐC / PHÊ DUYỆT',
+        J: '',
+      },
+      {
+        A: '(Ký, ghi rõ họ tên)',
+        B: '',
+        C: '(Ký, ghi rõ họ tên)',
+        D: '',
+        E: '(Ký, ghi rõ họ tên)',
+        F: '',
+        G: '(Ký, ghi rõ họ tên)',
+        H: '',
+        I: '(Ký, đóng dấu)',
+        J: '',
+      }
+    );
+
+    const ws = XLSX.utils.json_to_sheet(data, { skipHeader: true });
+    const wb = XLSX.utils.book_new();
+    const sheetName = isReceipt ? 'Phieu_Nhap_Kho' : 'Phieu_Xuat_Kho';
+    XLSX.utils.book_append_sheet(wb, ws, sheetName);
+    XLSX.writeFile(wb, `${sheetName}_${ticketNo.replace(/[^a-zA-Z0-9_-]/g, '_')}.xlsx`);
+  };
+
   const handleUpdateLine = (index: number, field: keyof EditableLineItem, val: any) => {
     setLineItems(prev => {
       const next = [...prev];
@@ -272,6 +383,16 @@ export const TransactionPrintModal: React.FC<TransactionPrintModalProps> = ({
               title="Điền dữ liệu mẫu như hình mẫu"
             >
               <RotateCcw className="w-4 h-4" />
+            </button>
+
+            <button
+              type="button"
+              onClick={handleExportExcel}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-emerald-800 bg-emerald-50 hover:bg-emerald-100 border border-emerald-300 rounded-lg transition-colors shadow-xs cursor-pointer"
+              title="Xuất phiếu ra file Excel (.xlsx) kèm cột số lượng vật tư"
+            >
+              <FileSpreadsheet className="w-4 h-4 text-emerald-600" />
+              <span>Xuất Excel (.xlsx)</span>
             </button>
 
             <button
