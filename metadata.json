@@ -1,0 +1,6 @@
+{
+  "name": "Hệ Thống Quản Lý Nhập Xuất Tồn Vật Tư Thiết Bị",
+  "description": "Ứng dụng chuyên nghiệp quản lý Nhập - Xuất - Tồn vật tư thiết bị dự án công trình theo Packing List, Shipment, Bản vẽ, Kiện hàng, Nhà cung cấp và Nhà sản xuất.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
