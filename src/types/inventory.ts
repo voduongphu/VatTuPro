@@ -48,14 +48,15 @@ export interface MaterialItem {
   updatedAt?: number;
 }
 
-// Chi tiết 1 dòng vật tư trong phiếu Nhập kho
+// Chi tiết 1 dòng vật tư trong phiếu Nhập kho (Mẫu QN-OPR-PR11-FM05.01)
 export interface InboundItemDetail {
   id: string;
   materialCode: string; // Mã vật tư
   materialName: string; // Tên vật tư
   unit: string; // Đơn vị tính
+  batchCode?: string; // Mã lô (trên mẫu PNK QLVT, vd: 183A0108)
   
-  // Các điều kiện quan trọng theo yêu cầu:
+  // Các điều kiện quản trị kho vận chuyên sâu:
   packingListNo: string; // Số Packing List
   shipment: string; // Shipment (Lô hàng / chuyến vận chuyển / Bill of Lading)
   manufacturer: string; // Nhà sản xuất
@@ -64,33 +65,42 @@ export interface InboundItemDetail {
   packageName: string; // Tên kiện (ví dụ: Kiện cụm van áp lực, Kiện dầm thép H-Beam)
   category: string; // Hạng mục (ví dụ: Kết cấu thép, Cơ điện, P&ID)
   drawingNo: string; // Bản vẽ kỹ thuật (ví dụ: DWG-STR-101 Rev 2)
-  weightKg: number; // Khối lượng (kg hoặc tấn)
-  quantity: number; // Số lượng
+  weightKg: number; // Khối lượng (Kg)
+  quantity: number; // Số lượng (cây/tấm)
   
-  unitPrice?: number; // Đơn giá nếu có
-  totalPrice?: number; // Thành tiền
+  unitPrice?: number; // Đơn giá (VNĐ)
+  totalPrice?: number; // Thành tiền (VNĐ)
   storageLocation?: string; // Vị trí lưu kho (vd: Dãy A - Kệ 03)
   warehouseName?: string; // Tên kho / Nhập vào kho nào
-  conditionNote?: string; // Tình trạng kiện/hàng (Mới 100%, có tem niêm phong...)
+  conditionNote?: string; // Tình trạng kiện/hàng
+  note?: string; // Ghi chú dòng vật tư trên phiếu in PNK
 }
 
 export interface InboundReceipt {
   id: string;
-  receiptCode: string; // Mã phiếu nhập (PN-YYYYMMDD-XXX)
+  receiptCode: string; // Số phiếu nhập (vd: PNK25-0019)
   receiptDate: string; // Ngày nhập (YYYY-MM-DD)
   warehouseId: string; // Mã kho bãi lưu trữ
   warehouseName: string;
   
+  // Thông tin theo mẫu PNK QLVT (QN-OPR-PR11-FM05.01)
+  departmentName?: string; // Bộ phận (vd: DỰ ÁN LTIA-4.9)
+  contractNo?: string; // Hợp đồng
+  requestNo?: string; // Đề xuất số
+  inboundType?: 'new' | 'return'; // Nhập mới | Nhập trả kho
+  amountInWords?: string; // Viết bằng chữ
+  attachedDocs?: string; // Số chứng từ gốc kèm theo
+
   // Tóm tắt chung của phiếu
   supplier: string;
   manufacturer?: string;
   shipment: string;
   packingListNo: string;
   
-  delivererName: string; // Người giao hàng / Đơn vị vận chuyển
-  receiverName: string; // Người nhận / Thủ kho
+  delivererName: string; // Đơn vị giao hàng / Người giao hàng
+  receiverName: string; // Người nhận / Thủ kho / NV QLVT
   driverVehicleNo?: string; // Biển số xe / Tàu
-  notes?: string;
+  notes?: string; // Nội dung nhập kho
   
   items: InboundItemDetail[];
   packageCount?: number;
@@ -103,12 +113,13 @@ export interface InboundReceipt {
   updatedAt?: number;
 }
 
-// Chi tiết 1 dòng vật tư trong phiếu Xuất kho
+// Chi tiết 1 dòng vật tư trong phiếu Xuất kho (Mẫu QN-OPR-PR11-FM06)
 export interface OutboundItemDetail {
   id: string;
   materialCode: string;
   materialName: string;
   unit: string;
+  batchCode?: string; // Mã lô (trên mẫu PXK QLVT, vd: 76C-061.35)
   warehouseName?: string; // Tên kho / Xuất từ kho nào
   
   // Các điều kiện tương ứng để truy xuất đúng nguồn gốc:
@@ -120,26 +131,32 @@ export interface OutboundItemDetail {
   packageName: string;
   category: string;
   drawingNo: string;
-  weightKg: number; // Khối lượng xuất
-  quantity: number; // Số lượng xuất
+  weightKg: number; // Khối lượng (Kg)
+  quantity: number; // Số lượng (cây/tấm)
   
   unitPrice?: number;
   totalPrice?: number;
   purpose?: string; // Mục đích xuất
+  note?: string; // Ghi chú dòng vật tư trên phiếu in PXK
 }
 
 export interface OutboundReceipt {
   id: string;
-  issueCode: string; // Mã phiếu xuất (PX-YYYYMMDD-XXX)
+  issueCode: string; // Số phiếu xuất (vd: PXK25-0001)
   issueDate: string; // Ngày xuất (YYYY-MM-DD)
   warehouseId: string; // Kho xuất
   warehouseName: string;
   
+  // Thông tin theo mẫu PXK QLVT (QN-OPR-PR11-FM06)
+  departmentName?: string; // Bộ phận trên đầu phiếu (vd: DỰ ÁN LTIA-4.9)
+  requestNo?: string; // Số PYC/PĐX (vd: PYC25-0001)
+  outboundType?: 'issue' | 'transfer'; // Phiếu xuất kho | Phiếu xuất điều chuyển
+
   projectName?: string; // Tên dự án / Công trình nhận
-  recipientDepartment: string; // Bộ phận nhận / Đội thi công
-  recipientName: string; // Người nhận vật tư
-  issuerName: string; // Người lập phiếu / Thủ kho xuất
-  notes?: string;
+  recipientDepartment: string; // Đơn vị/Tổ/Nhóm nhận (vd: Tổ thi công)
+  recipientName: string; // Người nhận (vd: Nguyễn Văn Long)
+  issuerName: string; // Người lập phiếu / Thủ kho
+  notes?: string; // Lý do xuất kho
   
   items: OutboundItemDetail[];
   packingListSummary?: string;

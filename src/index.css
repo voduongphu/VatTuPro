@@ -27,3 +27,66 @@
     font-variant-numeric: tabular-nums;
   }
 }
+
+@media print {
+  @page {
+    size: A4 portrait;
+    margin: 10mm 12mm;
+  }
+
+  html,
+  body {
+    background: #ffffff !important;
+    overflow: visible !important;
+    height: auto !important;
+  }
+
+  body:has(.vtp-print-portal) > #root {
+    display: none !important;
+  }
+
+  .vtp-print-portal {
+    position: static !important;
+    inset: auto !important;
+    display: block !important;
+    background: #ffffff !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    overflow: visible !important;
+    backdrop-filter: none !important;
+  }
+
+  .vtp-print-shell {
+    max-width: none !important;
+    max-height: none !important;
+    width: 100% !important;
+    border: none !important;
+    border-radius: 0 !important;
+    box-shadow: none !important;
+    overflow: visible !important;
+  }
+
+  .vtp-print-paper {
+    padding: 0 !important;
+    overflow: visible !important;
+  }
+
+  .vtp-voucher-table {
+    page-break-inside: auto;
+  }
+
+  .vtp-voucher-table thead {
+    display: table-header-group;
+  }
+
+  .vtp-voucher-table tr {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  .vtp-signature-block {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+}
+

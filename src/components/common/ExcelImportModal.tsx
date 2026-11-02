@@ -380,12 +380,11 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
                       </span>
                       <span>{progressInfo.percent}%</span>
                     </div>
-                    <div className="w-full bg-slate-200 h-2 rounded-full overflow-hidden">
-                      <div
-                        className="bg-blue-600 h-full rounded-full transition-all duration-150"
-                        style={{ width: `${Math.max(5, progressInfo.percent)}%` }}
-                      />
-                    </div>
+                    <progress
+                      value={Math.max(5, progressInfo.percent)}
+                      max={100}
+                      className="w-full h-2 rounded-full overflow-hidden accent-blue-600 [&::-webkit-progress-bar]:bg-slate-200 [&::-webkit-progress-bar]:rounded-full [&::-webkit-progress-value]:bg-blue-600 [&::-webkit-progress-value]:rounded-full [&::-moz-progress-bar]:bg-blue-600"
+                    />
                   </div>
                 )}
               </div>
@@ -433,36 +432,36 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
                 ) : (
                   <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2 text-xs text-slate-600">
                     <div className="bg-blue-50/70 p-2 rounded-lg border border-blue-200">
-                      <span className="font-bold text-blue-800 block">• {type === 'inbound' ? 'Số phiếu nhập kho (*)' : 'Số phiếu xuất kho (*)'}</span>
-                      <span className="text-[11px] text-blue-600 font-medium">Tự động gom nhóm tạo phiếu</span>
+                      <span className="font-bold text-blue-800 block">• {type === 'inbound' ? 'Số phiếu PNK (*)' : 'Số phiếu PXK (*)'}</span>
+                      <span className="text-[11px] text-blue-600 font-medium">{type === 'inbound' ? 'Mẫu QN-OPR-PR11-FM05.01' : 'Mẫu QN-OPR-PR11-FM06'}</span>
                     </div>
                     <div className="bg-white p-2 rounded-lg border border-slate-200/70">
-                      <span className="font-semibold text-slate-800 block">• Ngày {type === 'inbound' ? 'nhập kho' : 'xuất kho'}</span>
-                      <span className="text-[11px] text-slate-400">2026-10-14 (YYYY-MM-DD)</span>
+                      <span className="font-semibold text-slate-800 block">• Ngày & Kho (*)</span>
+                      <span className="text-[11px] text-slate-400">2026-10-14, Kho PTSC...</span>
                     </div>
                     <div className="bg-white p-2 rounded-lg border border-slate-200/70">
-                      <span className="font-semibold text-blue-800 block">• {type === 'inbound' ? 'Kho tiếp nhận (*)' : 'Kho xuất (*)'}</span>
-                      <span className="text-[11px] text-slate-400">Kho Cát Lái, Bãi Phú Mỹ...</span>
+                      <span className="font-semibold text-blue-800 block">• Bộ phận & {type === 'inbound' ? 'Đơn vị giao hàng' : 'Người nhận'}</span>
+                      <span className="text-[11px] text-slate-400">DỰ ÁN LTIA-4.9, Nhà thầu...</span>
                     </div>
                     <div className="bg-white p-2 rounded-lg border border-slate-200/70">
-                      <span className="font-semibold text-slate-900 block">• Số Packing List (*)</span>
-                      <span className="text-[11px] text-slate-400">PL-2026-OCT-001</span>
+                      <span className="font-semibold text-slate-900 block">• {type === 'inbound' ? 'Hợp đồng & Đề xuất số' : 'Đơn vị/Tổ/Nhóm & Số PYC/PĐX'}</span>
+                      <span className="text-[11px] text-slate-400">{type === 'inbound' ? 'HĐ-2026-01, ĐX-VT-008' : 'Tổ Lắp máy, PYC-015'}</span>
                     </div>
                     <div className="bg-white p-2 rounded-lg border border-slate-200/70">
-                      <span className="font-semibold text-slate-900 block">• Shipment / Lô hàng (*)</span>
-                      <span className="text-[11px] text-slate-400">SHP-PACIFIC-V04</span>
+                      <span className="font-semibold text-slate-900 block">• Mã vật tư & Tên vật tư (*)</span>
+                      <span className="text-[11px] text-slate-400">VT-PIPE-01, Ống thép đúc...</span>
                     </div>
                     <div className="bg-white p-2 rounded-lg border border-slate-200/70">
-                      <span className="font-semibold text-indigo-800 block">• Package No. / Số kiện (*)</span>
-                      <span className="text-[11px] text-slate-400">PKG-01/15, BOX-03/08</span>
+                      <span className="font-semibold text-indigo-800 block">• Mã lô / Package No.</span>
+                      <span className="text-[11px] text-slate-400">HEAT-8821, LOT-01, PKG-01</span>
                     </div>
                     <div className="bg-white p-2 rounded-lg border border-slate-200/70">
-                      <span className="font-semibold text-slate-900 block">• NSX & Nhà cung cấp (*)</span>
-                      <span className="text-[11px] text-slate-400">Kitz, PetroSteel, Hòa Phát...</span>
+                      <span className="font-semibold text-slate-900 block">• Số lượng, ĐVT & KL (Kg) (*)</span>
+                      <span className="text-[11px] text-slate-400">Số lượng (cây/tấm), ĐVT, Kg</span>
                     </div>
                     <div className="bg-white p-2 rounded-lg border border-slate-200/70">
-                      <span className="font-semibold text-slate-900 block">• Khối lượng & Số lượng (*)</span>
-                      <span className="text-[11px] text-slate-400">Khối lượng kg, Số lượng</span>
+                      <span className="font-semibold text-slate-900 block">• {type === 'inbound' ? 'Đơn giá, Thành tiền & Ghi chú' : 'Lý do xuất kho & Ghi chú'}</span>
+                      <span className="text-[11px] text-slate-400">{type === 'inbound' ? 'VNĐ, chứng từ gốc kèm theo' : 'Nội dung xuất & ghi chú dòng'}</span>
                     </div>
                   </div>
                 )}
@@ -598,27 +597,31 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
                       </tbody>
                     </table>
                   ) : (
-                    <table className="w-full min-w-[920px] text-left text-xs">
+                    <table className="w-full min-w-[980px] text-left text-xs">
                       <thead className="bg-slate-100 text-slate-700 sticky top-0 font-semibold border-b border-slate-200">
                         <tr>
                           <th className="p-2.5">STT</th>
                           <th className="p-2.5">{type === 'inbound' ? 'Số Phiếu Nhập' : 'Số Phiếu Xuất'}</th>
                           <th className="p-2.5">{type === 'inbound' ? 'Kho Tiếp Nhận' : 'Kho Xuất Hàng'}</th>
-                          <th className="p-2.5">Packing List</th>
-                          <th className="p-2.5">Shipment</th>
-                          <th className="p-2.5">Kiện hàng</th>
-                          <th className="p-2.5">Vật tư thiết bị</th>
-                          <th className="p-2.5">Hạng mục & Bản vẽ</th>
-                          <th className="p-2.5">NSX & NCC</th>
-                          <th className="p-2.5 text-right">SL</th>
-                          <th className="p-2.5 text-right">KL (kg)</th>
+                          <th className="p-2.5">Bộ phận & Chứng từ</th>
+                          <th className="p-2.5">{type === 'inbound' ? 'Đơn vị giao hàng' : 'Người nhận & Đơn vị'}</th>
+                          <th className="p-2.5">Mã vật tư & Tên vật tư</th>
+                          <th className="p-2.5">Mã lô</th>
+                          <th className="p-2.5 text-right">SL (cây/tấm)</th>
+                          <th className="p-2.5 text-center">ĐVT</th>
+                          <th className="p-2.5 text-right">KL (Kg)</th>
+                          {type === 'inbound' && <th className="p-2.5 text-right">Thành tiền (VNĐ)</th>}
+                          <th className="p-2.5">Ghi chú</th>
                           <th className="p-2.5 text-center">Xóa</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-100">
                         {pagedPreviewRows.map((r, i) => {
                           const globalIdx = (previewPage - 1) * previewPageSize + i;
-                          const customCode = (r as any).receiptCode || (r as any).issueCode;
+                          const rowAny = r as any;
+                          const customCode = rowAny.receiptCode || rowAny.issueCode;
+                          const batchOrPkg = rowAny.batchCode || r.packageNo || '-';
+                          const lineAmount = Number(rowAny.totalAmount) || (Number(r.quantity || 0) * Number(rowAny.unitPrice || 0));
                           return (
                             <tr key={r.id || globalIdx} className="hover:bg-slate-50">
                               <td className="p-2.5 font-mono text-slate-400">{(globalIdx + 1).toLocaleString('vi-VN')}</td>
@@ -638,29 +641,43 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
                                   <span>{getRowWarehouseDisplay(r)}</span>
                                 </span>
                               </td>
-                              <td className="p-2.5 font-mono font-medium text-blue-700">{r.packingListNo || 'N/A'}</td>
-                              <td className="p-2.5 font-mono text-slate-600">{r.shipment || 'N/A'}</td>
                               <td className="p-2.5">
-                                <div className="font-semibold text-slate-800">{r.packageNo}</div>
-                                <div className="text-[11px] text-slate-500 line-clamp-1">{r.packageName}</div>
+                                <div className="font-semibold text-slate-800">{rowAny.departmentName || 'DỰ ÁN LTIA-4.9'}</div>
+                                <div className="text-[11px] font-mono text-slate-500">
+                                  {type === 'inbound'
+                                    ? [rowAny.contractNo && `HĐ: ${rowAny.contractNo}`, rowAny.requestNo && `ĐX: ${rowAny.requestNo}`].filter(Boolean).join(' • ') || (r.packingListNo ? `PL: ${r.packingListNo}` : '-')
+                                    : [rowAny.requestNo && `PYC: ${rowAny.requestNo}`, r.packingListNo && `PL: ${r.packingListNo}`].filter(Boolean).join(' • ') || '-'}
+                                </div>
+                              </td>
+                              <td className="p-2.5">
+                                {type === 'inbound' ? (
+                                  <div className="text-[11px] font-medium text-slate-800">{r.supplier || '-'}</div>
+                                ) : (
+                                  <>
+                                    <div className="text-[11px] font-semibold text-slate-800">{rowAny.receiverName || '-'}</div>
+                                    <div className="text-[10px] text-slate-500">{rowAny.contractorName || ''}</div>
+                                  </>
+                                )}
                               </td>
                               <td className="p-2.5">
                                 <div className="font-semibold text-slate-900">{r.materialName}</div>
-                                <div className="text-[11px] font-mono text-slate-500">{r.materialCode} ({r.unit})</div>
+                                <div className="text-[11px] font-mono text-blue-700">{r.materialCode}</div>
                               </td>
-                              <td className="p-2.5">
-                                <div className="text-slate-700 font-medium">{r.category}</div>
-                                <div className="text-[11px] font-mono text-indigo-700">{r.drawingNo}</div>
-                              </td>
-                              <td className="p-2.5">
-                                <div className="text-[11px]">NSX: {r.manufacturer}</div>
-                                <div className="text-[11px] text-slate-500">NCC: {r.supplier}</div>
-                              </td>
+                              <td className="p-2.5 font-mono font-semibold text-indigo-700">{batchOrPkg}</td>
                               <td className="p-2.5 text-right font-bold text-slate-800">
-                                {Number(r.quantity)?.toLocaleString('vi-VN')}
+                                {Number(r.quantity || 0).toLocaleString('vi-VN')}
                               </td>
+                              <td className="p-2.5 text-center text-slate-600">{r.unit || '-'}</td>
                               <td className="p-2.5 text-right font-mono font-medium text-slate-800">
-                                {Number(r.weightKg)?.toLocaleString('vi-VN')}
+                                {Number(r.weightKg || 0).toLocaleString('vi-VN')}
+                              </td>
+                              {type === 'inbound' && (
+                                <td className="p-2.5 text-right font-mono font-semibold text-emerald-700">
+                                  {lineAmount > 0 ? lineAmount.toLocaleString('vi-VN') : '-'}
+                                </td>
+                              )}
+                              <td className="p-2.5 max-w-[160px] truncate text-slate-500" title={rowAny.note || ''}>
+                                {rowAny.note || '-'}
                               </td>
                               <td className="p-2.5 text-center">
                                 <button

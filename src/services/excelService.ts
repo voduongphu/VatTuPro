@@ -157,208 +157,172 @@ export function downloadMaterialTemplate(): void {
   XLSX.writeFile(wb, 'Mau_Import_Danh_Muc_Vat_Tu.xlsx');
 }
 
-// Hàm tải file mẫu Excel Nhập kho
+// Hàm tải file mẫu Excel Nhập kho (Chuẩn QN-OPR-PR11-FM05.01 + Logistics)
 export function downloadInboundTemplate(): void {
   const sampleRows = [
     {
-      'Số phiếu nhập kho (*)': 'PN-20261014-001',
-      'Ngày nhập kho': '2026-10-14',
-      'Kho tiếp nhận / Nhập vào kho (*)': 'Kho Tổng Trung Tâm Cát Lái',
-      'Số Packing List (*)': 'PL-2026-OCT-001',
-      'Shipment / Lô hàng (*)': 'SHP-PACIFIC-V04',
-      'Package No. / Số kiện (*)': 'PKG-01/15',
-      'Tên kiện (*)': 'Kiện cụm van áp lực cao DN200',
-      'Mã vật tư / Thiết bị (*)': 'TB-VAL-200H',
-      'Tên vật tư thiết bị (*)': 'Van cầu áp lực cao Class 600 DN200',
-      'Đơn vị tính (*)': 'Bộ',
-      'Số lượng (*)': 4,
-      'Khối lượng (kg) (*)': 1250,
-      'Hạng mục (*)': 'Đường ống công nghệ P&ID',
-      'Bản vẽ kỹ thuật (*)': 'DWG-PID-PIPE-04 Rev.C',
-      'Nhà sản xuất (*)': 'Kitz Corporation (Japan)',
-      'Nhà cung cấp (*)': 'Công ty CP Kỹ thuật PetroSteel',
-      'Đơn giá (VNĐ)': 45000000,
-      'Vị trí kho': 'Khu A - Dãy 02 - Kệ 01',
-      'Tình trạng kiện hàng': 'Mới 100%, nguyên niêm phong pallet gỗ'
+      'Số phiếu (*)': 'PNK25-0019',
+      'Ngày nhập kho': '2025-03-07',
+      'Bộ phận': 'DỰ ÁN LTIA-4.9',
+      'Kho tiếp nhận (*)': 'Kho Long Phú 1',
+      'Đơn vị giao hàng (*)': 'Việt Xuân Mới',
+      'Hợp đồng': '',
+      'Đề xuất số': '',
+      'Nội dung': 'Phục vụ thi công hạng mục PIPING',
+      'Mã vật tư (*)': 'PI-P.AA.S.2.0.0.1AG2-1.0.G.0',
+      'Tên vật tư (*)': '20"x12m PIPE, API 5L B PSL1 SAWL, BE, SCH 40, UG',
+      'Mã lô': '183A0108',
+      'Số lượng (cây/tấm) (*)': 1,
+      'ĐVT (*)': 'Ống',
+      'Khối lượng (Kg) (*)': 2202.0,
+      'Đơn giá (VNĐ)': 0,
+      'Thành tiền (VNĐ)': 0,
+      'Ghi chú': '',
+      'Số Packing List': 'PL-LTIA-01',
+      'Shipment': 'SHP-LTIA-01',
+      'Package No.': '183A0108',
+      'Nhà sản xuất': 'API 5L Maker',
+      'Nhà cung cấp': 'Việt Xuân Mới'
     },
     {
-      'Số phiếu nhập kho (*)': 'PN-20261014-001',
-      'Ngày nhập kho': '2026-10-14',
-      'Kho tiếp nhận / Nhập vào kho (*)': 'Kho Tổng Trung Tâm Cát Lái',
-      'Số Packing List (*)': 'PL-2026-OCT-001',
-      'Shipment / Lô hàng (*)': 'SHP-PACIFIC-V04',
-      'Package No. / Số kiện (*)': 'PKG-02/15',
-      'Tên kiện (*)': 'Kiện mặt bích áp lực cao DN150',
-      'Mã vật tư / Thiết bị (*)': 'VT-FLANGE-DN150',
-      'Tên vật tư thiết bị (*)': 'Mặt bích cổ hàn WNRF Class 300 DN150 A105',
-      'Đơn vị tính (*)': 'Cái',
-      'Số lượng (*)': 20,
-      'Khối lượng (kg) (*)': 370,
-      'Hạng mục (*)': 'Đường ống công nghệ P&ID',
-      'Bản vẽ kỹ thuật (*)': 'DWG-PID-FLG-01',
-      'Nhà sản xuất (*)': 'Ulma Forja (Spain)',
-      'Nhà cung cấp (*)': 'Công ty TNHH Thép Việt Nhật',
-      'Đơn giá (VNĐ)': 3500000,
-      'Vị trí kho': 'Khu A - Dãy 02 - Kệ 02',
-      'Tình trạng kiện hàng': 'Mới 100%, đã phủ mỡ bảo quản'
+      'Số phiếu (*)': 'PNK25-0019',
+      'Ngày nhập kho': '2025-03-07',
+      'Bộ phận': 'DỰ ÁN LTIA-4.9',
+      'Kho tiếp nhận (*)': 'Kho Long Phú 1',
+      'Đơn vị giao hàng (*)': 'Việt Xuân Mới',
+      'Hợp đồng': '',
+      'Đề xuất số': '',
+      'Nội dung': 'Phục vụ thi công hạng mục PIPING',
+      'Mã vật tư (*)': 'PI-P.AA.S.2.0.0.1AG2-1.0.G.0',
+      'Tên vật tư (*)': '20"x12m PIPE, API 5L B PSL1 SAWL, BE, SCH 40, UG',
+      'Mã lô': '183A0248',
+      'Số lượng (cây/tấm) (*)': 1,
+      'ĐVT (*)': 'Ống',
+      'Khối lượng (Kg) (*)': 2202.0,
+      'Đơn giá (VNĐ)': 0,
+      'Thành tiền (VNĐ)': 0,
+      'Ghi chú': '',
+      'Số Packing List': 'PL-LTIA-01',
+      'Shipment': 'SHP-LTIA-01',
+      'Package No.': '183A0248',
+      'Nhà sản xuất': 'API 5L Maker',
+      'Nhà cung cấp': 'Việt Xuân Mới'
     },
     {
-      'Số phiếu nhập kho (*)': 'PN-20261014-002',
-      'Ngày nhập kho': '2026-10-14',
-      'Kho tiếp nhận / Nhập vào kho (*)': 'Bãi Cảng Phú Mỹ (Hàng Siêu Trường Siêu Trọng)',
-      'Số Packing List (*)': 'PL-2026-OCT-002',
-      'Shipment / Lô hàng (*)': 'SHP-PACIFIC-V04',
-      'Package No. / Số kiện (*)': 'PKG-01/05',
-      'Tên kiện (*)': 'Kiện dầm thép hình H-Beam H350',
-      'Mã vật tư / Thiết bị (*)': 'KC-BEAM-H350',
-      'Tên vật tư thiết bị (*)': 'Thép hình H-Beam H350x350x12x19 L=12m',
-      'Đơn vị tính (*)': 'Cây',
-      'Số lượng (*)': 16,
-      'Khối lượng (kg) (*)': 26300,
-      'Hạng mục (*)': 'Kết cấu thép nhà xưởng chính',
-      'Bản vẽ kỹ thuật (*)': 'DWG-STR-BEAM-12 Rev.B',
-      'Nhà sản xuất (*)': 'Posco E&C (Korea)',
-      'Nhà cung cấp (*)': 'Tập đoàn Thép Hòa Phát',
-      'Đơn giá (VNĐ)': 32000000,
-      'Vị trí kho': 'Bãi ngoài trời số 01',
-      'Tình trạng kiện hàng': 'Sơn chống rỉ epoxy đạt chuẩn'
-    },
-    {
-      'Số phiếu nhập kho (*)': 'PN-20261014-003',
-      'Ngày nhập kho': '2026-10-14',
-      'Kho tiếp nhận / Nhập vào kho (*)': 'Kho Kỹ Thuật Điện & Tự Động Hóa',
-      'Số Packing List (*)': 'PL-2026-OCT-003',
-      'Shipment / Lô hàng (*)': 'SHP-MAERSK-L08',
-      'Package No. / Số kiện (*)': 'BOX-01/02',
-      'Tên kiện (*)': 'Tủ điều khiển PLC biến tần trung thế',
-      'Mã vật tư / Thiết bị (*)': 'EL-PLC-S7-1500',
-      'Tên vật tư thiết bị (*)': 'Hệ thống tủ điện điều khiển PLC Siemens S7-1500',
-      'Đơn vị tính (*)': 'Tủ',
-      'Số lượng (*)': 2,
-      'Khối lượng (kg) (*)': 850,
-      'Hạng mục (*)': 'Hệ thống Điện & Tự động hóa',
-      'Bản vẽ kỹ thuật (*)': 'DWG-ELE-PLC-003',
-      'Nhà sản xuất (*)': 'Siemens AG (Germany)',
-      'Nhà cung cấp (*)': 'Công ty Thiết bị Điện Schneider VN',
-      'Đơn giá (VNĐ)': 280000000,
-      'Vị trí kho': 'Kho kín điều hòa - Phòng 01',
-      'Tình trạng kiện hàng': 'Kiện kín chống ẩm, nguyên vẹn tem seal'
+      'Số phiếu (*)': 'PNK25-0019',
+      'Ngày nhập kho': '2025-03-07',
+      'Bộ phận': 'DỰ ÁN LTIA-4.9',
+      'Kho tiếp nhận (*)': 'Kho Long Phú 1',
+      'Đơn vị giao hàng (*)': 'Việt Xuân Mới',
+      'Hợp đồng': '',
+      'Đề xuất số': '',
+      'Nội dung': 'Phục vụ thi công hạng mục PIPING',
+      'Mã vật tư (*)': 'PI-P.AA.S.2.0.0.1AG1-1.0.G.0',
+      'Tên vật tư (*)': '20"x12m PIPE, API 5L B PSL1 SAWL, BE, SCH 40, AG',
+      'Mã lô': '183A0494',
+      'Số lượng (cây/tấm) (*)': 1,
+      'ĐVT (*)': 'Ống',
+      'Khối lượng (Kg) (*)': 2202.0,
+      'Đơn giá (VNĐ)': 0,
+      'Thành tiền (VNĐ)': 0,
+      'Ghi chú': '',
+      'Số Packing List': 'PL-LTIA-01',
+      'Shipment': 'SHP-LTIA-01',
+      'Package No.': '183A0494',
+      'Nhà sản xuất': 'API 5L Maker',
+      'Nhà cung cấp': 'Việt Xuân Mới'
     }
   ];
 
   const ws = XLSX.utils.json_to_sheet(sampleRows);
   ws['!cols'] = [
-    { wch: 22 }, { wch: 16 }, { wch: 32 }, { wch: 22 }, { wch: 22 },
-    { wch: 15 }, { wch: 32 }, { wch: 20 }, { wch: 35 }, { wch: 14 },
-    { wch: 12 }, { wch: 18 }, { wch: 26 }, { wch: 24 }, { wch: 26 },
-    { wch: 30 }, { wch: 16 }, { wch: 22 }, { wch: 32 }
+    { wch: 16 }, { wch: 14 }, { wch: 20 }, { wch: 22 }, { wch: 22 },
+    { wch: 16 }, { wch: 16 }, { wch: 32 }, { wch: 28 }, { wch: 44 },
+    { wch: 15 }, { wch: 18 }, { wch: 10 }, { wch: 18 }, { wch: 15 },
+    { wch: 16 }, { wch: 22 }, { wch: 18 }, { wch: 18 }, { wch: 15 },
+    { wch: 20 }, { wch: 22 }
   ];
 
   const guideRows = [
-    { 'HƯỚNG DẪN': 'QUY TẮC TỰ ĐỘNG TẠO PHIẾU NHẬP KHO TỪ FILE EXCEL', 'CHI TIẾT': '' },
-    { 'HƯỚNG DẪN': '1. Cột Số phiếu nhập kho (*)', 'CHI TIẾT': 'Các dòng có cùng Số phiếu nhập kho (ví dụ PN-20261014-001) sẽ được ứng dụng tự động gom lại thành 1 phiếu nhập kho duy nhất với đầy đủ các mặt hàng tương ứng.' },
-    { 'HƯỚNG DẪN': '2. Tạo nhiều phiếu cùng lúc', 'CHI TIẾT': 'Điền các mã phiếu khác nhau (ví dụ dòng 1-2 là PN-20261014-001, dòng 3 là PN-20261014-002) để ứng dụng tự động sinh nhiều phiếu nhập kho một lần import.' },
-    { 'HƯỚNG DẪN': '3. Để trống Số phiếu', 'CHI TIẾT': 'Nếu để trống cột này, hệ thống sẽ tự động tạo mã phiếu theo chuẩn PN-[SốPackingList]-[Ngày].' },
-    { 'HƯỚNG DẪN': '4. Tự cập nhật Danh mục', 'CHI TIẾT': 'Vật tư mới chưa có trong hệ thống sẽ được tự động cập nhật vào Danh mục vật tư & thiết bị.' }
+    { 'HƯỚNG DẪN': 'QUY TẮC TẠO PHIẾU NHẬP KHO (MẪU QN-OPR-PR11-FM05.01) TỪ FILE EXCEL', 'CHI TIẾT': '' },
+    { 'HƯỚNG DẪN': '1. Cột Số phiếu (*)', 'CHI TIẾT': 'Các dòng có cùng Số phiếu (ví dụ PNK25-0019) sẽ được gom lại thành 1 Phiếu Nhập Kho duy nhất.' },
+    { 'HƯỚNG DẪN': '2. Cột biểu mẫu QLVT', 'CHI TIẾT': 'Hỗ trợ đầy đủ: Bộ phận, Đơn vị giao hàng, Hợp đồng, Đề xuất số, Nội dung, Mã vật tư, Tên vật tư, Mã lô, Số lượng (cây/tấm), ĐVT, Khối lượng (Kg), Đơn giá (VNĐ), Thành tiền (VNĐ), Ghi chú.' },
+    { 'HƯỚNG DẪN': '3. Tương thích ngược', 'CHI TIẾT': 'Tương thích hoàn toàn với cả các file Excel mẫu cũ theo Packing List, Shipment, Package No.' }
   ];
   const wsGuide = XLSX.utils.json_to_sheet(guideRows);
-  wsGuide['!cols'] = [{ wch: 30 }, { wch: 75 }];
+  wsGuide['!cols'] = [{ wch: 30 }, { wch: 80 }];
 
   const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws, 'Mau_Nhap_Kho');
+  XLSX.utils.book_append_sheet(wb, ws, 'Mau_PNK_QLVT');
   XLSX.utils.book_append_sheet(wb, wsGuide, 'Huong_Dan');
-  XLSX.writeFile(wb, 'Mau_Nhap_Kho_Vat_Tu_Thiet_Bi.xlsx');
+  XLSX.writeFile(wb, 'Mau_Phieu_Nhap_Kho_QLVT.xlsx');
 }
 
-// Tải mẫu Excel Xuất kho
+// Tải mẫu Excel Xuất kho (Chuẩn QN-OPR-PR11-FM06 + Logistics)
 export function downloadOutboundTemplate(): void {
   const sampleRows = [
     {
-      'Số phiếu xuất kho (*)': 'PX-20261014-001',
-      'Ngày xuất kho': '2026-10-14',
-      'Tên dự án / Công trình (*)': 'Dự Án Nhà Máy Lọc Hóa Dầu Long Sơn',
-      'Người nhận / Đội thi công (*)': 'Ban Chỉ Huy Công Trường - Đội Lắp Đặt Số 2',
-      'Kho xuất / Xuất từ kho (*)': 'Kho Tổng Trung Tâm Cát Lái',
-      'Số Packing List (*)': 'PL-2026-OCT-001',
-      'Shipment / Lô hàng (*)': 'SHP-PACIFIC-V04',
-      'Package No. / Số kiện (*)': 'PKG-01/15',
-      'Tên kiện (*)': 'Kiện cụm van áp lực cao DN200',
-      'Mã vật tư / Thiết bị (*)': 'TB-VAL-200H',
-      'Tên vật tư thiết bị (*)': 'Van cầu áp lực cao Class 600 DN200',
-      'Đơn vị tính (*)': 'Bộ',
-      'Số lượng xuất (*)': 2,
-      'Khối lượng xuất (kg) (*)': 625,
-      'Hạng mục (*)': 'Đường ống công nghệ P&ID',
-      'Bản vẽ kỹ thuật (*)': 'DWG-PID-PIPE-04 Rev.C',
-      'Nhà sản xuất (*)': 'Kitz Corporation (Japan)',
-      'Nhà cung cấp (*)': 'Công ty CP Kỹ thuật PetroSteel',
-      'Mục đích xuất / Lắp đặt': 'Lắp đặt cụm van trạm bơm số 1'
+      'Số phiếu (*)': 'PXK25-0001',
+      'Ngày xuất kho': '2025-03-04',
+      'Bộ phận': 'DỰ ÁN LTIA-4.9',
+      'Kho xuất (*)': 'Kho Long Phú 1',
+      'Người nhận (*)': 'Nguyễn Văn Long',
+      'Đơn vị/Tổ/Nhóm (*)': 'Tổ thi công',
+      'Số PYC/PĐX': 'PYC25-0001',
+      'Lý do xuất kho': 'Phục vụ công tác thi công UG piping',
+      'Mã vật tư (*)': 'PI-P.AA.S.2.0.0.1AG2-1.0.G.0',
+      'Tên vật tư (*)': '20"x12m PIPE, API 5L B PSL1 SAWL, BE, SCH 40, UG',
+      'Mã lô': '76C-061.35',
+      'Số lượng (cây/tấm) (*)': 8,
+      'ĐVT (*)': 'Ống',
+      'Khối lượng (Kg) (*)': 17616.0,
+      'Ghi chú': '',
+      'Số Packing List': 'PL-LTIA-01',
+      'Shipment': 'SHP-LTIA-01',
+      'Package No.': '76C-061.35'
     },
     {
-      'Số phiếu xuất kho (*)': 'PX-20261014-001',
-      'Ngày xuất kho': '2026-10-14',
-      'Tên dự án / Công trình (*)': 'Dự Án Nhà Máy Lọc Hóa Dầu Long Sơn',
-      'Người nhận / Đội thi công (*)': 'Ban Chỉ Huy Công Trường - Đội Lắp Đặt Số 2',
-      'Kho xuất / Xuất từ kho (*)': 'Kho Tổng Trung Tâm Cát Lái',
-      'Số Packing List (*)': 'PL-2026-OCT-001',
-      'Shipment / Lô hàng (*)': 'SHP-PACIFIC-V04',
-      'Package No. / Số kiện (*)': 'PKG-02/15',
-      'Tên kiện (*)': 'Kiện mặt bích áp lực cao DN150',
-      'Mã vật tư / Thiết bị (*)': 'VT-FLANGE-DN150',
-      'Tên vật tư thiết bị (*)': 'Mặt bích cổ hàn WNRF Class 300 DN150 A105',
-      'Đơn vị tính (*)': 'Cái',
-      'Số lượng xuất (*)': 10,
-      'Khối lượng xuất (kg) (*)': 185,
-      'Hạng mục (*)': 'Đường ống công nghệ P&ID',
-      'Bản vẽ kỹ thuật (*)': 'DWG-PID-FLG-01',
-      'Nhà sản xuất (*)': 'Ulma Forja (Spain)',
-      'Nhà cung cấp (*)': 'Công ty TNHH Thép Việt Nhật',
-      'Mục đích xuất / Lắp đặt': 'Lắp đặt cụm đường ống dẫn áp lực'
-    },
-    {
-      'Số phiếu xuất kho (*)': 'PX-20261014-002',
-      'Ngày xuất kho': '2026-10-14',
-      'Tên dự án / Công trình (*)': 'Dự Án Nhà Máy Nhiệt Điện Ô Môn',
-      'Người nhận / Đội thi công (*)': 'Tổ Cơ Điện Máy 1 - Kỹ thuật công trường',
-      'Kho xuất / Xuất từ kho (*)': 'Bãi Cảng Phú Mỹ (Hàng Siêu Trường Siêu Trọng)',
-      'Số Packing List (*)': 'PL-2026-SEP-088',
-      'Shipment / Lô hàng (*)': 'SHP-EVERGREEN-E12',
-      'Package No. / Số kiện (*)': 'CASE-01/04',
-      'Tên kiện (*)': 'Kiện máy bơm ly tâm trục ngang công nghiệp',
-      'Mã vật tư / Thiết bị (*)': 'TB-PUMP-75K',
-      'Tên vật tư thiết bị (*)': 'Máy bơm ly tâm trục ngang công nghiệp 75kW',
-      'Đơn vị tính (*)': 'Bộ',
-      'Số lượng xuất (*)': 1,
-      'Khối lượng xuất (kg) (*)': 1150,
-      'Hạng mục (*)': 'Thiết bị cơ khí quay',
-      'Bản vẽ kỹ thuật (*)': 'DWG-MEC-PUMP-01',
-      'Nhà sản xuất (*)': 'KSB Pumps (Germany)',
-      'Nhà cung cấp (*)': 'Vingroup EPC Logistics',
-      'Mục đích xuất / Lắp đặt': 'Lắp ráp tổ máy bơm 1 trạm xử lý nước'
+      'Số phiếu (*)': 'PXK25-0001',
+      'Ngày xuất kho': '2025-03-04',
+      'Bộ phận': 'DỰ ÁN LTIA-4.9',
+      'Kho xuất (*)': 'Kho Long Phú 1',
+      'Người nhận (*)': 'Nguyễn Văn Long',
+      'Đơn vị/Tổ/Nhóm (*)': 'Tổ thi công',
+      'Số PYC/PĐX': 'PYC25-0001',
+      'Lý do xuất kho': 'Phục vụ công tác thi công UG piping',
+      'Mã vật tư (*)': 'PI-P.AA.S.2.0.0.1AG2-1.0.G.0',
+      'Tên vật tư (*)': '20"x12m PIPE, API 5L B PSL1 SAWL, BE, SCH 40, UG',
+      'Mã lô': '76E-005.50',
+      'Số lượng (cây/tấm) (*)': 7,
+      'ĐVT (*)': 'Ống',
+      'Khối lượng (Kg) (*)': 15414.0,
+      'Ghi chú': '',
+      'Số Packing List': 'PL-LTIA-01',
+      'Shipment': 'SHP-LTIA-01',
+      'Package No.': '76E-005.50'
     }
   ];
 
   const ws = XLSX.utils.json_to_sheet(sampleRows);
   ws['!cols'] = [
-    { wch: 22 }, { wch: 16 }, { wch: 35 }, { wch: 35 }, { wch: 32 },
-    { wch: 22 }, { wch: 22 }, { wch: 15 }, { wch: 32 }, { wch: 20 },
-    { wch: 35 }, { wch: 14 }, { wch: 16 }, { wch: 22 }, { wch: 26 },
-    { wch: 24 }, { wch: 26 }, { wch: 30 }, { wch: 35 }
+    { wch: 16 }, { wch: 14 }, { wch: 20 }, { wch: 22 }, { wch: 22 },
+    { wch: 20 }, { wch: 16 }, { wch: 34 }, { wch: 28 }, { wch: 44 },
+    { wch: 16 }, { wch: 18 }, { wch: 10 }, { wch: 18 }, { wch: 22 },
+    { wch: 18 }, { wch: 18 }, { wch: 16 }
   ];
 
   const guideRows = [
-    { 'HƯỚNG DẪN': 'QUY TẮC TỰ ĐỘNG TẠO PHIẾU XUẤT KHO TỪ FILE EXCEL', 'CHI TIẾT': '' },
-    { 'HƯỚNG DẪN': '1. Cột Số phiếu xuất kho (*)', 'CHI TIẾT': 'Các dòng có cùng Số phiếu xuất kho (ví dụ PX-20261014-001) sẽ được ứng dụng tự động gom lại thành 1 phiếu xuất kho duy nhất với đầy đủ các mặt hàng.' },
-    { 'HƯỚNG DẪN': '2. Tạo nhiều phiếu cùng lúc', 'CHI TIẾT': 'Điền các mã phiếu khác nhau (ví dụ PX-20261014-001, PX-20261014-002) để ứng dụng tự động sinh nhiều phiếu xuất kho trong một lần nạp.' },
-    { 'HƯỚNG DẪN': '3. Để trống Số phiếu', 'CHI TIẾT': 'Nếu để trống cột này, hệ thống sẽ tự động tạo mã phiếu theo chuẩn PX-[SốPackingList]-[Ngày].' }
+    { 'HƯỚNG DẪN': 'QUY TẮC TẠO PHIẾU XUẤT KHO (MẪU QN-OPR-PR11-FM06) TỪ FILE EXCEL', 'CHI TIẾT': '' },
+    { 'HƯỚNG DẪN': '1. Cột Số phiếu (*)', 'CHI TIẾT': 'Các dòng có cùng Số phiếu (ví dụ PXK25-0001) sẽ được gom lại thành 1 Phiếu Xuất Kho duy nhất.' },
+    { 'HƯỚNG DẪN': '2. Cột biểu mẫu QLVT', 'CHI TIẾT': 'Hỗ trợ đầy đủ: Bộ phận, Người nhận, Đơn vị/Tổ/Nhóm, Số PYC/PĐX, Lý do xuất kho, Mã vật tư, Tên vật tư, Mã lô, Số lượng (cây/tấm), ĐVT, Khối lượng (Kg), Ghi chú.' }
   ];
   const wsGuide = XLSX.utils.json_to_sheet(guideRows);
-  wsGuide['!cols'] = [{ wch: 30 }, { wch: 75 }];
+  wsGuide['!cols'] = [{ wch: 30 }, { wch: 80 }];
 
   const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws, 'Mau_Xuat_Kho');
+  XLSX.utils.book_append_sheet(wb, ws, 'Mau_PXK_QLVT');
   XLSX.utils.book_append_sheet(wb, wsGuide, 'Huong_Dan');
-  XLSX.writeFile(wb, 'Mau_Xuat_Kho_Vat_Tu_Thiet_Bi.xlsx');
+  XLSX.writeFile(wb, 'Mau_Phieu_Xuat_Kho_QLVT.xlsx');
 }
 
 // Chuẩn hóa chuỗi tiêu đề cột (chỉ chạy 1 lần trên dòng header!)
@@ -573,7 +537,7 @@ export async function parseMaterialExcel(
   };
 }
 
-// Parse file Excel Nhập kho (Hỗ trợ 100.000+ dòng mượt mà)
+// Parse file Excel Nhập kho (Hỗ trợ 100.000+ dòng mượt mà + chuẩn QN-OPR-PR11-FM05.01)
 export async function parseInboundExcel(
   file: File,
   onProgress?: ExcelProgressCallback
@@ -588,11 +552,16 @@ export async function parseInboundExcel(
   type InboundCol =
     | 'receiptCode'
     | 'receiptDate'
+    | 'departmentName'
     | 'delivererName'
+    | 'contractNo'
+    | 'requestNo'
+    | 'receiptNotes'
     | 'driverVehicleNo'
     | 'warehouseName'
     | 'packingListNo'
     | 'shipment'
+    | 'batchCode'
     | 'packageNo'
     | 'packageName'
     | 'materialCode'
@@ -605,17 +574,24 @@ export async function parseInboundExcel(
     | 'manufacturer'
     | 'supplier'
     | 'unitPrice'
+    | 'totalPrice'
     | 'storageLocation'
-    | 'conditionNote';
+    | 'conditionNote'
+    | 'note';
 
   const classifyInboundCol = (norm: string): InboundCol | null => {
-    if (!norm) return null;
+    if (!norm || norm === 'stt') return null;
     if (norm.includes('maphieunhap') || norm.includes('sophieunhap') || norm.includes('maphieu') || norm.includes('sophieu') || norm.includes('sochungtu') || norm.includes('receiptcode')) return 'receiptCode';
     if (norm.includes('ngaynhapkho') || norm.includes('ngaynhap') || norm.includes('ngaylap') || norm.includes('ngaychungtu') || (norm.includes('ngay') && !norm.includes('denngay')) || norm.includes('receiptdate')) return 'receiptDate';
+    if (norm === 'bophan' || norm.includes('bophanduan') || norm.includes('department')) return 'departmentName';
     if (norm.includes('nguoigiao') || norm.includes('donvigiao') || norm.includes('deliverer')) return 'delivererName';
+    if (norm.includes('hopdong') || norm.includes('sohopdong') || norm.includes('contract')) return 'contractNo';
+    if (norm.includes('dexuatso') || norm.includes('sodexuat') || norm === 'dexuat' || norm.includes('requestno')) return 'requestNo';
+    if (norm === 'noidung' || norm.includes('noidungnhap')) return 'receiptNotes';
     if (norm.includes('soxe') || norm.includes('phuongtien') || norm.includes('biensoxe') || norm.includes('drivervehicle')) return 'driverVehicleNo';
     if (norm.includes('nhapvaokho') || norm.includes('khotiepnhan') || norm.includes('khonhap') || norm.includes('tenkho') || norm === 'kho' || norm.includes('warehouse')) return 'warehouseName';
     if (norm.includes('packing') || norm.includes('sopackinglist') || norm === 'pl' || norm.includes('phieupacking')) return 'packingListNo';
+    if (norm === 'malo' || norm.includes('batchcode') || norm === 'lotno') return 'batchCode';
     if (norm.includes('shipment') || norm.includes('lohang') || norm.includes('chuyentau') || norm === 'sh') return 'shipment';
     if (norm.includes('sokien') || norm.includes('kienso') || norm.includes('makien') || norm === 'pkg' || norm === 'package' || norm.includes('packageno') || norm.includes('pkgno') || norm.includes('boxno') || norm.includes('crateno')) return 'packageNo';
     if (norm.includes('tenkien') || norm.includes('packagename') || norm.includes('mota')) return 'packageName';
@@ -629,8 +605,10 @@ export async function parseInboundExcel(
     if (norm.includes('nhasanxuat') || norm.includes('nsx') || norm.includes('manufacturer') || norm.includes('maker')) return 'manufacturer';
     if (norm.includes('nhacungcap') || norm.includes('ncc') || norm.includes('supplier') || norm.includes('vendor')) return 'supplier';
     if (norm.includes('dongia') || norm.includes('unitprice') || norm === 'gia') return 'unitPrice';
+    if (norm.includes('thanhtien') || norm.includes('totalprice') || norm === 'amount') return 'totalPrice';
     if (norm.includes('vitri') || norm.includes('vitrikho') || norm.includes('location')) return 'storageLocation';
-    if (norm.includes('tinhtrang') || norm.includes('ghichu') || norm.includes('note')) return 'conditionNote';
+    if (norm === 'ghichu' || norm === 'note') return 'note';
+    if (norm.includes('tinhtrang') || norm.includes('ghichu')) return 'conditionNote';
     return null;
   };
 
@@ -657,7 +635,7 @@ export async function parseInboundExcel(
       const val = row[c];
       if (val === '' || val === null || val === undefined) continue;
 
-      if (field === 'quantity' || field === 'weightKg' || field === 'unitPrice') {
+      if (field === 'quantity' || field === 'weightKg' || field === 'unitPrice' || field === 'totalPrice') {
         item[field] = parseNum(val);
       } else if (field === 'receiptDate') {
         item.receiptDate = formatExcelDate(val);
@@ -674,15 +652,17 @@ export async function parseInboundExcel(
     if (!item.materialCode && item.materialName) {
       item.materialCode = 'VT-' + item.materialName.slice(0, 6).toUpperCase().replace(/\s+/g, '');
     }
+    if (item.batchCode && !item.packageNo) item.packageNo = item.batchCode;
+    if (item.packageNo && !item.batchCode) item.batchCode = item.packageNo;
     if (!item.packageNo) item.packageNo = `PKG-${r - headerIdx}`;
     if (!item.packageName) item.packageName = `Kiện ${item.packageNo}`;
-    if (!item.unit) item.unit = 'Cái';
+    if (!item.unit) item.unit = 'Ống';
     if (!item.packingListNo) item.packingListNo = 'PL-CHUA-RO';
     if (!item.shipment) item.shipment = 'SHP-CHUA-RO';
     if (!item.category) item.category = 'Chung';
     if (!item.drawingNo) item.drawingNo = 'N/A';
     if (!item.manufacturer) item.manufacturer = 'Đang cập nhật';
-    if (!item.supplier) item.supplier = 'Đang cập nhật';
+    if (!item.supplier) item.supplier = item.delivererName || 'Đang cập nhật';
 
     if (!item.materialName) {
       skippedErrorCount++;
@@ -712,7 +692,7 @@ export async function parseInboundExcel(
   };
 }
 
-// Parse file Excel Xuất kho (Hỗ trợ 100.000+ dòng mượt mà)
+// Parse file Excel Xuất kho (Hỗ trợ 100.000+ dòng mượt mà + chuẩn QN-OPR-PR11-FM06)
 export async function parseOutboundExcel(
   file: File,
   onProgress?: ExcelProgressCallback
@@ -727,11 +707,16 @@ export async function parseOutboundExcel(
   type OutboundCol =
     | 'issueCode'
     | 'issueDate'
+    | 'departmentName'
     | 'projectName'
+    | 'recipientName'
     | 'recipientDepartment'
+    | 'requestNo'
+    | 'issueNotes'
     | 'warehouseName'
     | 'packingListNo'
     | 'shipment'
+    | 'batchCode'
     | 'packageNo'
     | 'packageName'
     | 'materialCode'
@@ -743,16 +728,22 @@ export async function parseOutboundExcel(
     | 'drawingNo'
     | 'manufacturer'
     | 'supplier'
-    | 'purpose';
+    | 'purpose'
+    | 'note';
 
   const classifyOutboundCol = (norm: string): OutboundCol | null => {
-    if (!norm) return null;
+    if (!norm || norm === 'stt') return null;
     if (norm.includes('maphieuxuat') || norm.includes('sophieuxuat') || norm.includes('maphieu') || norm.includes('sophieu') || norm.includes('sochungtu') || norm.includes('issuecode')) return 'issueCode';
     if (norm.includes('ngayxuatkho') || norm.includes('ngayxuat') || norm.includes('ngaylap') || norm.includes('ngaychungtu') || (norm.includes('ngay') && !norm.includes('denngay')) || norm.includes('issuedate')) return 'issueDate';
+    if (norm === 'bophan' || norm.includes('bophanduan')) return 'departmentName';
     if (norm.includes('tenduan') || norm.includes('duan') || norm.includes('congtrinh') || norm.includes('project')) return 'projectName';
-    if (norm.includes('nguoinhan') || norm.includes('doithicong') || norm.includes('donvinhan') || norm.includes('bophannhan') || norm.includes('recipient')) return 'recipientDepartment';
+    if (norm === 'nguoinhan' || norm === 'hotennguoinhan' || norm === 'recipientname') return 'recipientName';
+    if (norm.includes('donvitonhom') || norm.includes('tonhom') || norm.includes('doithicong') || norm.includes('donvinhan') || norm.includes('bophannhan') || norm.includes('nguoinhandoithicong') || norm.includes('recipient')) return 'recipientDepartment';
+    if (norm.includes('sopyc') || norm.includes('pyc') || norm.includes('pdx') || norm.includes('dexuat') || norm.includes('requestno')) return 'requestNo';
+    if (norm.includes('lydoxuat') || norm === 'lydo' || norm === 'noidung') return 'issueNotes';
     if (norm.includes('xuattukho') || norm.includes('khoxuat') || norm.includes('khotiepnhan') || norm.includes('tenkho') || norm === 'kho' || norm.includes('warehouse')) return 'warehouseName';
     if (norm.includes('packing') || norm.includes('sopackinglist') || norm === 'pl') return 'packingListNo';
+    if (norm === 'malo' || norm.includes('batchcode') || norm === 'lotno') return 'batchCode';
     if (norm.includes('shipment') || norm.includes('lohang') || norm === 'sh') return 'shipment';
     if (norm.includes('sokien') || norm.includes('kienso') || norm.includes('makien') || norm === 'pkg' || norm === 'package' || norm.includes('packageno') || norm.includes('pkgno') || norm.includes('boxno') || norm.includes('crateno')) return 'packageNo';
     if (norm.includes('tenkien') || norm.includes('packagename')) return 'packageName';
@@ -765,7 +756,8 @@ export async function parseOutboundExcel(
     if (norm.includes('banve') || norm.includes('drawing') || norm === 'dwg') return 'drawingNo';
     if (norm.includes('nhasanxuat') || norm.includes('nsx') || norm.includes('manufacturer') || norm.includes('maker')) return 'manufacturer';
     if (norm.includes('nhacungcap') || norm.includes('ncc') || norm.includes('supplier') || norm.includes('vendor')) return 'supplier';
-    if (norm.includes('mucdich') || norm.includes('lapdat') || norm.includes('purpose') || norm.includes('ghichu')) return 'purpose';
+    if (norm === 'ghichu' || norm === 'note') return 'note';
+    if (norm.includes('mucdich') || norm.includes('lapdat') || norm.includes('purpose')) return 'purpose';
     return null;
   };
 
@@ -802,6 +794,9 @@ export async function parseOutboundExcel(
         item[field] = String(val).trim();
       }
     }
+
+    if (item.batchCode && !item.packageNo) item.packageNo = item.batchCode;
+    if (item.packageNo && !item.batchCode) item.batchCode = item.packageNo;
 
     if (!item.materialName && (item.materialCode || item.packageName)) {
       item.materialName = item.materialCode || item.packageName;

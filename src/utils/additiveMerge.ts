@@ -123,7 +123,7 @@ export function computeInboundReceiptDigest(rcp: InboundReceipt): string {
   }
 
   const [hh1, hh2] = hashPair(
-    `IH|${normKey(rcp.receiptCode || rcp.id)}|${rcp.receiptDate || ''}|${rcp.warehouseId || ''}|${rcp.warehouseName || ''}|${rcp.supplier || ''}|${rcp.manufacturer || ''}|${rcp.shipment || ''}|${rcp.packingListNo || ''}|${rcp.delivererName || ''}|${rcp.receiverName || ''}|${rcp.driverVehicleNo || ''}|${rcp.notes || ''}|${Number(rcp.totalQuantity) || 0}|${Number(rcp.totalWeightKg) || 0}`
+    `IH|${normKey(rcp.receiptCode || rcp.id)}|${rcp.receiptDate || ''}|${rcp.warehouseId || ''}|${rcp.warehouseName || ''}|${rcp.departmentName || ''}|${rcp.contractNo || ''}|${rcp.requestNo || ''}|${rcp.inboundType || ''}|${rcp.amountInWords || ''}|${rcp.attachedDocs || ''}|${rcp.supplier || ''}|${rcp.manufacturer || ''}|${rcp.shipment || ''}|${rcp.packingListNo || ''}|${rcp.delivererName || ''}|${rcp.receiverName || ''}|${rcp.driverVehicleNo || ''}|${rcp.notes || ''}|${Number(rcp.totalQuantity) || 0}|${Number(rcp.totalWeightKg) || 0}`
   );
 
   let sum1 = hh1;
@@ -131,7 +131,7 @@ export function computeInboundReceiptDigest(rcp: InboundReceipt): string {
   for (let i = 0; i < items.length; i++) {
     const it = items[i];
     const [h1, h2] = hashPair(
-      `${it.id || ''}|${it.materialCode || ''}|${it.packingListNo || ''}|${it.shipment || ''}|${it.packageNo || ''}|${it.drawingNo || ''}|${Number(it.quantity) || 0}|${Number(it.weightKg) || 0}`
+      `${it.id || ''}|${it.materialCode || ''}|${it.batchCode || ''}|${it.packingListNo || ''}|${it.shipment || ''}|${it.packageNo || ''}|${it.drawingNo || ''}|${Number(it.quantity) || 0}|${Number(it.weightKg) || 0}|${it.note || ''}`
     );
     sum1 = (sum1 + h1) >>> 0;
     sum2 = (sum2 + h2) >>> 0;
@@ -151,7 +151,7 @@ export function computeOutboundReceiptDigest(rcp: OutboundReceipt): string {
   }
 
   const [hh1, hh2] = hashPair(
-    `OH|${normKey(rcp.issueCode || rcp.id)}|${rcp.issueDate || ''}|${rcp.warehouseId || ''}|${rcp.warehouseName || ''}|${rcp.projectName || ''}|${rcp.recipientDepartment || ''}|${rcp.recipientName || ''}|${rcp.issuerName || ''}|${rcp.notes || ''}|${Number(rcp.totalQuantity) || 0}|${Number(rcp.totalWeightKg) || 0}`
+    `OH|${normKey(rcp.issueCode || rcp.id)}|${rcp.issueDate || ''}|${rcp.warehouseId || ''}|${rcp.warehouseName || ''}|${rcp.departmentName || ''}|${rcp.requestNo || ''}|${rcp.outboundType || ''}|${rcp.projectName || ''}|${rcp.recipientDepartment || ''}|${rcp.recipientName || ''}|${rcp.issuerName || ''}|${rcp.notes || ''}|${Number(rcp.totalQuantity) || 0}|${Number(rcp.totalWeightKg) || 0}`
   );
 
   let sum1 = hh1;
@@ -159,7 +159,7 @@ export function computeOutboundReceiptDigest(rcp: OutboundReceipt): string {
   for (let i = 0; i < items.length; i++) {
     const it = items[i];
     const [h1, h2] = hashPair(
-      `${it.id || ''}|${it.materialCode || ''}|${it.packingListNo || ''}|${it.shipment || ''}|${it.packageNo || ''}|${it.drawingNo || ''}|${Number(it.quantity) || 0}|${Number(it.weightKg) || 0}`
+      `${it.id || ''}|${it.materialCode || ''}|${it.batchCode || ''}|${it.packingListNo || ''}|${it.shipment || ''}|${it.packageNo || ''}|${it.drawingNo || ''}|${Number(it.quantity) || 0}|${Number(it.weightKg) || 0}|${it.note || ''}`
     );
     sum1 = (sum1 + h1) >>> 0;
     sum2 = (sum2 + h2) >>> 0;
@@ -621,6 +621,26 @@ export function mergeInboundReceiptsAdditive(
           receiptDate: headerNewer && inc.receiptDate ? inc.receiptDate : curr.receiptDate,
           warehouseId: headerNewer && inc.warehouseId ? inc.warehouseId : curr.warehouseId,
           warehouseName: headerNewer && inc.warehouseName ? inc.warehouseName : curr.warehouseName,
+          departmentName:
+            headerNewer && inc.departmentName !== undefined
+              ? inc.departmentName
+              : curr.departmentName || inc.departmentName,
+          contractNo:
+            headerNewer && inc.contractNo !== undefined ? inc.contractNo : curr.contractNo || inc.contractNo,
+          requestNo:
+            headerNewer && inc.requestNo !== undefined ? inc.requestNo : curr.requestNo || inc.requestNo,
+          inboundType:
+            headerNewer && inc.inboundType !== undefined
+              ? inc.inboundType
+              : curr.inboundType || inc.inboundType,
+          amountInWords:
+            headerNewer && inc.amountInWords !== undefined
+              ? inc.amountInWords
+              : curr.amountInWords || inc.amountInWords,
+          attachedDocs:
+            headerNewer && inc.attachedDocs !== undefined
+              ? inc.attachedDocs
+              : curr.attachedDocs || inc.attachedDocs,
           supplier: headerNewer && inc.supplier ? inc.supplier : curr.supplier || inc.supplier,
           manufacturer: headerNewer && inc.manufacturer ? inc.manufacturer : curr.manufacturer || inc.manufacturer,
           shipment: headerNewer && inc.shipment ? inc.shipment : curr.shipment || inc.shipment,
@@ -752,6 +772,16 @@ export function mergeOutboundReceiptsAdditive(
           issueDate: headerNewer && inc.issueDate ? inc.issueDate : curr.issueDate,
           warehouseId: headerNewer && inc.warehouseId ? inc.warehouseId : curr.warehouseId,
           warehouseName: headerNewer && inc.warehouseName ? inc.warehouseName : curr.warehouseName,
+          departmentName:
+            headerNewer && inc.departmentName !== undefined
+              ? inc.departmentName
+              : curr.departmentName || inc.departmentName,
+          requestNo:
+            headerNewer && inc.requestNo !== undefined ? inc.requestNo : curr.requestNo || inc.requestNo,
+          outboundType:
+            headerNewer && inc.outboundType !== undefined
+              ? inc.outboundType
+              : curr.outboundType || inc.outboundType,
           projectName: headerNewer && inc.projectName !== undefined ? inc.projectName : curr.projectName || inc.projectName,
           recipientDepartment:
             headerNewer && inc.recipientDepartment
