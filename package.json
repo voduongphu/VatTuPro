@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "DEV_SERVER=true tsx server.ts",
-    "build": "vite build && esbuild server.ts --bundle --platform=node --format=esm --packages=external --outfile=server.mjs",
+    "build": "vite build && esbuild server.ts --bundle --platform=node --format=esm --packages=external --outfile=server.mjs && esbuild src/server/vercelEntry.ts --bundle --platform=node --format=esm --packages=external --outfile=api/index.js",
     "start": "NODE_ENV=production node server.mjs",
     "preview": "vite preview",
     "clean": "rm -rf dist server.js server.mjs",

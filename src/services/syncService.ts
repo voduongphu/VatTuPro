@@ -58,6 +58,7 @@ const CLIENT_ID = `cli-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 const DEVICE_ID_STORAGE_KEY = 'vtp_device_id_v1';
 const UNIFIED_SESSION_STORAGE_KEY = 'vtp_auth_session_v5';
 const KICK_NOTICE_STORAGE_KEY = 'vtp_session_kick_notice_v1';
+const STATIC_SESSIONS_STORAGE_KEY = 'vtp_static_active_sessions_v1';
 const LEGACY_SESSION_KEYS = [
   'vtp_inventory_session_v3',
   'vtp_active_session_v1',
@@ -66,9 +67,9 @@ const LEGACY_SESSION_KEYS = [
 ];
 const AUTH_BROADCAST_CHANNEL = 'vtp_single_session_v2';
 
-// Mỗi gói HTTP tối đa 2.500 dòng (~1.1MB) đảm bảo không bao giờ chạm giới hạn Cloud Run / Proxy kể cả với >100.000 dòng
+// Mỗi gói HTTP tối đa 2.500 - 3.500 dòng (~1.1 - 1.4MB) đảm bảo không chạm giới hạn Vercel (4.5MB) & Cloud Run kể cả >100.000 dòng
 const PUSH_ITEM_CHUNK_SIZE = 2500;
-const PULL_MATERIAL_PAGE_SIZE = 5000;
+const PULL_MATERIAL_PAGE_SIZE = 3500;
 
 let isStarted = false;
 let isReconciling = false;
@@ -79,6 +80,8 @@ let materialsDirty = false;
 let lastKnownServerRev = 0;
 let lastPulledMaterialsRev = 0;
 let lastInteractionCheckMs = 0;
+let wsFailCount = 0;
+let nextWsAllowedAtMs = 0;
 let ws: WebSocket | null = null;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let pollTimer: ReturnType<typeof setInterval> | null = null;
@@ -260,13 +263,47 @@ function triggerLocalKickOut(info: SessionInvalidationInfo): void {
   notifySessionInvalidated(enriched);
 }
 
+class ApiRouteMissingError extends Error {
+  constructor(url: string, status: number) {
+    super(`API route missing (${status}) on ${url}`);
+    this.name = 'ApiRouteMissingError';
+  }
+}
+
+function getStaticSessionsMap(): Record<string, ActiveUserSession> {
+  try {
+    const raw = localStorage.getItem(STATIC_SESSIONS_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveStaticSessionEntry(userKey: string, session: ActiveUserSession | null): void {
+  try {
+    const map = getStaticSessionsMap();
+    if (session) {
+      map[userKey] = session;
+    } else {
+      delete map[userKey];
+    }
+    localStorage.setItem(STATIC_SESSIONS_STORAGE_KEY, JSON.stringify(map));
+  } catch {
+    // ignore
+  }
+}
+
 async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers || {});
   if (url.startsWith('/api/sync')) {
     const current = getStoredUnifiedSession();
-    if (current) {
+    if (current && !current.session.sessionToken.startsWith('static-')) {
       headers.set('x-auth-user-key', encodeURIComponent(current.session.userKey));
       headers.set('x-auth-session-token', current.session.sessionToken);
+      headers.set('x-auth-device-id', encodeURIComponent(current.session.deviceId));
+      headers.set('x-auth-device-label', encodeURIComponent(current.session.deviceLabel));
     }
   }
 
@@ -300,6 +337,11 @@ async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
     }
   }
 
+  const contentType = (res.headers.get('content-type') || '').toLowerCase();
+  if (res.status === 404 || res.status === 405 || contentType.includes('text/html')) {
+    throw new ApiRouteMissingError(url, res.status);
+  }
+
   if (!res.ok) {
     throw new Error(`HTTP ${res.status} on ${url}`);
   }
@@ -309,7 +351,7 @@ async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
 function sendWsAuthCheck(): void {
   if (!ws || ws.readyState !== WebSocket.OPEN) return;
   const current = getStoredUnifiedSession();
-  if (!current) return;
+  if (!current || current.session.sessionToken.startsWith('static-')) return;
   try {
     ws.send(
       JSON.stringify({
@@ -331,6 +373,21 @@ async function verifySessionHeartbeat(): Promise<void> {
   isVerifyingSession = true;
   try {
     const mySession = current.session;
+
+    // Nếu đang ở môi trường tĩnh chưa có /api, kiểm tra bảng phiên tĩnh đồng bộ giữa các cửa sổ trình duyệt
+    if (mySession.sessionToken.startsWith('static-')) {
+      const staticMap = getStaticSessionsMap();
+      const activeStatic = staticMap[mySession.userKey];
+      if (activeStatic && activeStatic.sessionToken !== mySession.sessionToken) {
+        triggerLocalKickOut({
+          reason: 'replaced',
+          deviceLabel: activeStatic.deviceLabel,
+          loginAt: activeStatic.loginAt
+        });
+      }
+      return;
+    }
+
     const res = await fetchJson<{
       valid: boolean;
       reason?: 'replaced' | 'disabled' | 'expired' | 'missing';
@@ -342,7 +399,10 @@ async function verifySessionHeartbeat(): Promise<void> {
         userId: mySession.userId,
         username: mySession.username,
         userKey: mySession.userKey,
-        sessionToken: mySession.sessionToken
+        sessionToken: mySession.sessionToken,
+        deviceId: mySession.deviceId,
+        deviceLabel: mySession.deviceLabel,
+        loginAt: mySession.loginAt
       })
     });
 
@@ -365,7 +425,7 @@ async function verifySessionHeartbeat(): Promise<void> {
       }
     }
   } catch {
-    // Tạm thời bỏ qua lỗi rớt mạng chập chờn, sẽ kiểm tra lại ở nhịp 2 giây kế tiếp
+    // Tạm thời bỏ qua lỗi mạng chập chờn, sẽ kiểm tra lại ở nhịp 1.5 giây kế tiếp
   } finally {
     isVerifyingSession = false;
   }
@@ -375,11 +435,16 @@ function inspectManifestActiveSessions(activeSessions?: Record<string, ActiveUse
   const current = getStoredUnifiedSession();
   if (!current || !activeSessions) return true;
 
+  // Nếu trước đó đang dùng phiên tĩnh dự phòng mà nay máy chủ /api đã hoạt động, yêu cầu xác thực lại phiên máy chủ
+  if (current.session.sessionToken.startsWith('static-')) {
+    triggerLocalKickOut({ reason: 'expired' });
+    return false;
+  }
+
   const mySession = current.session;
   const remote = activeSessions[mySession.userKey];
   if (!remote) {
-    triggerLocalKickOut({ reason: 'expired' });
-    return false;
+    return true;
   }
 
   if (remote.sessionToken !== mySession.sessionToken) {
@@ -773,9 +838,12 @@ function setupBroadcastChannel(): void {
   }
 }
 
-function connectWebSocket(): void {
+function connectWebSocket(force = false): void {
   if (typeof window === 'undefined') return;
   if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+    return;
+  }
+  if (!force && Date.now() < nextWsAllowedAtMs) {
     return;
   }
 
@@ -786,6 +854,8 @@ function connectWebSocket(): void {
     ws = socket;
 
     socket.onopen = () => {
+      wsFailCount = 0;
+      nextWsAllowedAtMs = 0;
       sendWsAuthCheck();
     };
 
@@ -847,8 +917,12 @@ function connectWebSocket(): void {
 
     socket.onclose = () => {
       ws = null;
+      wsFailCount++;
+      // Giãn cách thông minh cho môi trường Serverless (Vercel) không mở cổng WebSocket
+      const delayMs = wsFailCount <= 1 ? 3000 : wsFailCount === 2 ? 10000 : 45000;
+      nextWsAllowedAtMs = Date.now() + delayMs;
       if (reconnectTimer) clearTimeout(reconnectTimer);
-      reconnectTimer = setTimeout(connectWebSocket, 2000);
+      reconnectTimer = setTimeout(() => connectWebSocket(true), delayMs);
     };
 
     socket.onerror = () => {
@@ -859,8 +933,11 @@ function connectWebSocket(): void {
       }
     };
   } catch {
+    wsFailCount++;
+    const delayMs = wsFailCount <= 1 ? 4000 : 30000;
+    nextWsAllowedAtMs = Date.now() + delayMs;
     if (reconnectTimer) clearTimeout(reconnectTimer);
-    reconnectTimer = setTimeout(connectWebSocket, 3000);
+    reconnectTimer = setTimeout(() => connectWebSocket(true), delayMs);
   }
 }
 
@@ -908,6 +985,11 @@ export const SyncService = {
       window.addEventListener('focus', wakeCheck);
       window.addEventListener('pageshow', wakeCheck);
       window.addEventListener('online', wakeCheck);
+      window.addEventListener('storage', (ev) => {
+        if (ev.key === STATIC_SESSIONS_STORAGE_KEY) {
+          void verifySessionHeartbeat();
+        }
+      });
 
       // Kiểm tra tức thì khi người dùng chạm màn hình điện thoại hoặc di chuột/bấm phím (giãn cách 1.5s)
       const handleInteraction = () => {
@@ -1012,7 +1094,10 @@ export const SyncService = {
       let res;
       try {
         res = await attemptLogin();
-      } catch {
+      } catch (firstErr) {
+        if (firstErr instanceof ApiRouteMissingError) {
+          throw firstErr;
+        }
         // Thử lại 1 lần sau 450ms nếu mạng di động vừa chuyển vùng / thức dậy
         await new Promise((r) => setTimeout(r, 450));
         res = await attemptLogin();
@@ -1036,7 +1121,6 @@ export const SyncService = {
         session: res.session
       });
 
-      // Thông báo tức thì cho các tab khác trên cùng trình duyệt nếu đăng nhập trùng tài khoản
       try {
         authChannel?.postMessage({
           type: 'auth:session_replaced',
@@ -1059,10 +1143,81 @@ export const SyncService = {
         user: res.user,
         replacedSession: res.replacedSession
       };
-    } catch {
+    } catch (err) {
+      // Dự phòng an toàn chỉ khi bản build tĩnh thuần chưa triển khai nhánh /api (404 / HTML)
+      if (err instanceof ApiRouteMissingError) {
+        const inputKey = normUserKey(username);
+        const matched = localUsers.find(
+          (u) => normUserKey(u.username) === inputKey || normUserKey(u.fullName) === inputKey
+        );
+        if (!matched) {
+          return {
+            success: false,
+            message: `Tài khoản "${username}" không tồn tại trong hệ thống. Vui lòng kiểm tra lại!`
+          };
+        }
+        if (!matched.isActive) {
+          return {
+            success: false,
+            message: 'Tài khoản này hiện đang bị khóa hoặc ngừng kích hoạt. Vui lòng liên hệ Admin.'
+          };
+        }
+        if ((matched.password || '') !== password) {
+          return {
+            success: false,
+            message: 'Mật khẩu đăng nhập không chính xác. Vui lòng kiểm tra lại.'
+          };
+        }
+
+        const nowMs = Date.now();
+        const nowIso = new Date(nowMs).toISOString();
+        const userKey = normUserKey(matched.username);
+        const staticMap = getStaticSessionsMap();
+        const prevStatic = staticMap[userKey];
+
+        const staticSession: ActiveUserSession = {
+          userId: matched.id,
+          username: matched.username,
+          userKey,
+          sessionToken: `static-${nowMs}-${Math.random().toString(36).slice(2, 10)}`,
+          deviceId,
+          deviceLabel,
+          loginAt: nowIso,
+          lastSeenAt: nowMs
+        };
+
+        saveStaticSessionEntry(userKey, staticSession);
+        pendingInvalidation = null;
+        clearPersistedKickNotice();
+        saveStoredUnifiedSession({
+          user: matched,
+          session: staticSession
+        });
+
+        try {
+          authChannel?.postMessage({
+            type: 'auth:session_replaced',
+            userKey,
+            activeSessionToken: staticSession.sessionToken,
+            deviceLabel,
+            loginAt: nowIso
+          });
+        } catch {
+          // ignore
+        }
+
+        return {
+          success: true,
+          message: 'Đăng nhập thành công!',
+          user: matched,
+          replacedSession: prevStatic
+        };
+      }
+
       return {
         success: false,
-        message: 'Không thể kết nối máy chủ xác thực phiên thiết bị. Vui lòng kiểm tra kết nối mạng và thử lại.'
+        message:
+          'Không thể kết nối máy chủ xác thực phiên thiết bị. Vui lòng kiểm tra kết nối mạng và thử lại.'
       };
     }
   },
@@ -1071,6 +1226,14 @@ export const SyncService = {
     const current = getStoredUnifiedSession();
     clearStoredUnifiedSession();
     if (!current) return;
+
+    if (current.session.sessionToken.startsWith('static-')) {
+      const staticMap = getStaticSessionsMap();
+      if (staticMap[current.session.userKey]?.sessionToken === current.session.sessionToken) {
+        saveStaticSessionEntry(current.session.userKey, null);
+      }
+      return;
+    }
 
     try {
       await fetchJson('/api/auth/logout', {
