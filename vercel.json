@@ -1,18 +1,12 @@
 {
-  "regions": ["sin1"],
-  "functions": {
-    "api/index.js": {
-      "includeFiles": ".sync_data/**"
-    }
-  },
   "rewrites": [
     {
-      "source": "/api/:path*",
-      "destination": "/api/index?__api_path=:path*"
+      "source": "/api/auth/:action",
+      "destination": "/api/handler?__route=auth/:action"
     },
     {
-      "source": "/((?!api/).*)",
-      "destination": "/index.html"
+      "source": "/api/sync/:action",
+      "destination": "/api/handler?__route=sync/:action"
     }
   ]
 }
