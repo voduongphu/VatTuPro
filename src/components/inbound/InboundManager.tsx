@@ -56,7 +56,7 @@ export const InboundManager: React.FC = () => {
   const [receiptCode, setReceiptCode] = useState('');
   const [receiptDate, setReceiptDate] = useState(new Date().toISOString().slice(0, 10));
   const [selectedWarehouseId, setSelectedWarehouseId] = useState('');
-  const [formDepartmentName, setFormDepartmentName] = useState('DỰ ÁN LTIA-4.9');
+  const [formDepartmentName, setFormDepartmentName] = useState('');
   const [formDeliverer, setFormDeliverer] = useState('');
   const [formContractNo, setFormContractNo] = useState('');
   const [formRequestNo, setFormRequestNo] = useState('');
@@ -127,7 +127,7 @@ export const InboundManager: React.FC = () => {
     const whList = StorageService.getWarehouses();
     setSelectedWarehouseId(whList[0]?.id || '');
 
-    setFormDepartmentName('DỰ ÁN LTIA-4.9');
+    setFormDepartmentName('');
     setFormDeliverer('');
     setFormContractNo('');
     setFormRequestNo('');
@@ -426,7 +426,7 @@ export const InboundManager: React.FC = () => {
           receiptDate: customRcpDate || todayDate,
           warehouseId: targetWh.id,
           warehouseName: targetWh.name,
-          departmentName: customDept || 'DỰ ÁN LTIA-4.9',
+          departmentName: customDept || '',
           contractNo: customContract || '',
           requestNo: customReqNo || '',
           inboundType: 'new',
@@ -537,7 +537,7 @@ export const InboundManager: React.FC = () => {
       receiptDate,
       warehouseId: wh?.id || 'wh-01',
       warehouseName: wh?.name || 'Kho Dự Án',
-      departmentName: formDepartmentName.trim() || 'DỰ ÁN LTIA-4.9',
+      departmentName: formDepartmentName.trim(),
       contractNo: formContractNo.trim(),
       requestNo: formRequestNo.trim(),
       inboundType: formInboundType,
@@ -843,9 +843,11 @@ export const InboundManager: React.FC = () => {
                       </td>
 
                       <td className="px-5 py-4">
-                        <div className="text-xs font-semibold text-slate-800">
-                          {r.departmentName || 'DỰ ÁN LTIA-4.9'}
-                        </div>
+                        {r.departmentName && r.departmentName !== 'DỰ ÁN LTIA-4.9' ? (
+                          <div className="text-xs font-semibold text-slate-800">{r.departmentName}</div>
+                        ) : (
+                          <div className="text-xs font-medium text-slate-500">Bộ phận: —</div>
+                        )}
                         <div className="text-[11px] text-slate-500">Kho: {r.warehouseName}</div>
                       </td>
 
@@ -989,13 +991,13 @@ export const InboundManager: React.FC = () => {
 
                   <div>
                     <label className="block font-semibold text-slate-700 uppercase mb-1">
-                      Bộ phận / Dự án
+                      Bộ phận
                     </label>
                     <input
                       type="text"
                       value={formDepartmentName}
                       onChange={(e) => setFormDepartmentName(e.target.value)}
-                      placeholder="DỰ ÁN LTIA-4.9"
+                      placeholder="Để trống sẽ in BỘ PHẬN:"
                       className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded-lg font-semibold outline-none focus:border-blue-500"
                     />
                   </div>
@@ -1395,9 +1397,11 @@ export const InboundManager: React.FC = () => {
             <div className="p-4 sm:p-6 overflow-y-auto space-y-4 flex-1">
               <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs bg-slate-50 p-3.5 sm:p-4 rounded-xl border border-slate-200">
                 <div>
-                  <span className="text-slate-400 block">Bộ phận / Dự án:</span>
+                  <span className="text-slate-400 block">Bộ phận:</span>
                   <span className="font-bold text-slate-900">
-                    {viewingReceipt.departmentName || 'DỰ ÁN LTIA-4.9'}
+                    {viewingReceipt.departmentName && viewingReceipt.departmentName !== 'DỰ ÁN LTIA-4.9'
+                      ? viewingReceipt.departmentName
+                      : '-'}
                   </span>
                 </div>
                 <div>
@@ -1517,9 +1521,7 @@ export const InboundManager: React.FC = () => {
                       <tr>
                         <td></td>
                         <td className="p-2.5 text-center uppercase">TỔNG CỘNG</td>
-                        <td className="p-2.5 text-center">
-                          {viewingReceipt.items.length.toLocaleString('vi-VN')} mục hàng
-                        </td>
+                        <td></td>
                         <td></td>
                         <td className="p-2.5 text-right text-blue-700 font-mono">
                           {viewingReceipt.totalQuantity.toLocaleString('vi-VN')}

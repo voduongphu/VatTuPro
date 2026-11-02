@@ -161,9 +161,9 @@ export function downloadMaterialTemplate(): void {
 export function downloadInboundTemplate(): void {
   const sampleRows = [
     {
-      'Số phiếu (*)': 'PNK25-0019',
+      'Số phiếu (*)': 'PNK25-0001',
       'Ngày nhập kho': '2025-03-07',
-      'Bộ phận': 'DỰ ÁN LTIA-4.9',
+      'Bộ phận': '',
       'Kho tiếp nhận (*)': 'Kho Long Phú 1',
       'Đơn vị giao hàng (*)': 'Việt Xuân Mới',
       'Hợp đồng': '',
@@ -178,16 +178,16 @@ export function downloadInboundTemplate(): void {
       'Đơn giá (VNĐ)': 0,
       'Thành tiền (VNĐ)': 0,
       'Ghi chú': '',
-      'Số Packing List': 'PL-LTIA-01',
-      'Shipment': 'SHP-LTIA-01',
+      'Số Packing List': 'PL-01',
+      'Shipment': 'SHP-01',
       'Package No.': '183A0108',
       'Nhà sản xuất': 'API 5L Maker',
       'Nhà cung cấp': 'Việt Xuân Mới'
     },
     {
-      'Số phiếu (*)': 'PNK25-0019',
+      'Số phiếu (*)': 'PNK25-0001',
       'Ngày nhập kho': '2025-03-07',
-      'Bộ phận': 'DỰ ÁN LTIA-4.9',
+      'Bộ phận': '',
       'Kho tiếp nhận (*)': 'Kho Long Phú 1',
       'Đơn vị giao hàng (*)': 'Việt Xuân Mới',
       'Hợp đồng': '',
@@ -202,16 +202,16 @@ export function downloadInboundTemplate(): void {
       'Đơn giá (VNĐ)': 0,
       'Thành tiền (VNĐ)': 0,
       'Ghi chú': '',
-      'Số Packing List': 'PL-LTIA-01',
-      'Shipment': 'SHP-LTIA-01',
+      'Số Packing List': 'PL-01',
+      'Shipment': 'SHP-01',
       'Package No.': '183A0248',
       'Nhà sản xuất': 'API 5L Maker',
       'Nhà cung cấp': 'Việt Xuân Mới'
     },
     {
-      'Số phiếu (*)': 'PNK25-0019',
+      'Số phiếu (*)': 'PNK25-0001',
       'Ngày nhập kho': '2025-03-07',
-      'Bộ phận': 'DỰ ÁN LTIA-4.9',
+      'Bộ phận': '',
       'Kho tiếp nhận (*)': 'Kho Long Phú 1',
       'Đơn vị giao hàng (*)': 'Việt Xuân Mới',
       'Hợp đồng': '',
@@ -226,8 +226,8 @@ export function downloadInboundTemplate(): void {
       'Đơn giá (VNĐ)': 0,
       'Thành tiền (VNĐ)': 0,
       'Ghi chú': '',
-      'Số Packing List': 'PL-LTIA-01',
-      'Shipment': 'SHP-LTIA-01',
+      'Số Packing List': 'PL-01',
+      'Shipment': 'SHP-01',
       'Package No.': '183A0494',
       'Nhà sản xuất': 'API 5L Maker',
       'Nhà cung cấp': 'Việt Xuân Mới'
@@ -264,7 +264,7 @@ export function downloadOutboundTemplate(): void {
     {
       'Số phiếu (*)': 'PXK25-0001',
       'Ngày xuất kho': '2025-03-04',
-      'Bộ phận': 'DỰ ÁN LTIA-4.9',
+      'Bộ phận': '',
       'Kho xuất (*)': 'Kho Long Phú 1',
       'Người nhận (*)': 'Nguyễn Văn Long',
       'Đơn vị/Tổ/Nhóm (*)': 'Tổ thi công',
@@ -277,14 +277,14 @@ export function downloadOutboundTemplate(): void {
       'ĐVT (*)': 'Ống',
       'Khối lượng (Kg) (*)': 17616.0,
       'Ghi chú': '',
-      'Số Packing List': 'PL-LTIA-01',
-      'Shipment': 'SHP-LTIA-01',
+      'Số Packing List': 'PL-01',
+      'Shipment': 'SHP-01',
       'Package No.': '76C-061.35'
     },
     {
       'Số phiếu (*)': 'PXK25-0001',
       'Ngày xuất kho': '2025-03-04',
-      'Bộ phận': 'DỰ ÁN LTIA-4.9',
+      'Bộ phận': '',
       'Kho xuất (*)': 'Kho Long Phú 1',
       'Người nhận (*)': 'Nguyễn Văn Long',
       'Đơn vị/Tổ/Nhóm (*)': 'Tổ thi công',
@@ -297,8 +297,8 @@ export function downloadOutboundTemplate(): void {
       'ĐVT (*)': 'Ống',
       'Khối lượng (Kg) (*)': 15414.0,
       'Ghi chú': '',
-      'Số Packing List': 'PL-LTIA-01',
-      'Shipment': 'SHP-LTIA-01',
+      'Số Packing List': 'PL-01',
+      'Shipment': 'SHP-01',
       'Package No.': '76E-005.50'
     }
   ];

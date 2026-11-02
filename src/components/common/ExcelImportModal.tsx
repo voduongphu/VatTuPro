@@ -441,7 +441,7 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
                     </div>
                     <div className="bg-white p-2 rounded-lg border border-slate-200/70">
                       <span className="font-semibold text-blue-800 block">• Bộ phận & {type === 'inbound' ? 'Đơn vị giao hàng' : 'Người nhận'}</span>
-                      <span className="text-[11px] text-slate-400">DỰ ÁN LTIA-4.9, Nhà thầu...</span>
+                      <span className="text-[11px] text-slate-400">Bộ phận, Đơn vị/Nhà thầu...</span>
                     </div>
                     <div className="bg-white p-2 rounded-lg border border-slate-200/70">
                       <span className="font-semibold text-slate-900 block">• {type === 'inbound' ? 'Hợp đồng & Đề xuất số' : 'Đơn vị/Tổ/Nhóm & Số PYC/PĐX'}</span>
@@ -642,7 +642,7 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
                                 </span>
                               </td>
                               <td className="p-2.5">
-                                <div className="font-semibold text-slate-800">{rowAny.departmentName || 'DỰ ÁN LTIA-4.9'}</div>
+                                <div className="font-semibold text-slate-800">{rowAny.departmentName || 'Bộ phận: —'}</div>
                                 <div className="text-[11px] font-mono text-slate-500">
                                   {type === 'inbound'
                                     ? [rowAny.contractNo && `HĐ: ${rowAny.contractNo}`, rowAny.requestNo && `ĐX: ${rowAny.requestNo}`].filter(Boolean).join(' • ') || (r.packingListNo ? `PL: ${r.packingListNo}` : '-')
