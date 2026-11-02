@@ -56,7 +56,7 @@ export function computeMetaDigest(
   for (let i = 0; i < users.length; i++) {
     const u = users[i];
     const [h1, h2] = hashPair(
-      `U|${normUserKey(u.username)}|${u.id}|${u.fullName}|${u.role}|${u.password || ''}|${u.isActive ? 1 : 0}|${u.phone || ''}|${u.email || ''}|${u.department || ''}|${Number(u.updatedAt) || 0}`
+      `U|${normUserKey(u.username)}|${u.id}|${u.fullName}|${u.role}|${u.password || ''}|${u.isActive ? 1 : 0}|${u.phone || ''}|${u.email || ''}|${u.department || ''}|${Number(u.updatedAt) || 0}|${Number(u.sessionRevokedAt) || 0}`
     );
     sum1 = (sum1 + h1) >>> 0;
     sum2 = (sum2 + h2) >>> 0;
@@ -274,11 +274,15 @@ export function mergeUsersAdditive(
       const curr = result[existIdx];
       const incTs = Number(inc.updatedAt) || 0;
       const currTs = Number(curr.updatedAt) || 0;
+      const maxRevokedAt =
+        Math.max(Number(curr.sessionRevokedAt) || 0, Number(inc.sessionRevokedAt) || 0) ||
+        undefined;
       if (incTs > currTs) {
         const nextUser: User = {
           ...curr,
           ...inc,
           password: inc.password || curr.password,
+          sessionRevokedAt: maxRevokedAt,
           updatedAt: incTs
         };
         if (
@@ -289,13 +293,14 @@ export function mergeUsersAdditive(
           nextUser.phone !== curr.phone ||
           nextUser.email !== curr.email ||
           nextUser.department !== curr.department ||
+          nextUser.sessionRevokedAt !== curr.sessionRevokedAt ||
           nextUser.updatedAt !== curr.updatedAt
         ) {
           result[existIdx] = nextUser;
           changed = true;
         }
       } else {
-        // Chỉ bổ sung thông tin còn thiếu, không ghi đè
+        // Chỉ bổ sung thông tin còn thiếu và mốc thu hồi phiên lớn hơn, không ghi đè lùi
         const mergedFullName = curr.fullName || inc.fullName;
         const mergedEmail = curr.email || inc.email;
         const mergedPhone = curr.phone || inc.phone;
@@ -306,7 +311,8 @@ export function mergeUsersAdditive(
           mergedEmail !== curr.email ||
           mergedPhone !== curr.phone ||
           mergedDept !== curr.department ||
-          mergedPass !== curr.password
+          mergedPass !== curr.password ||
+          maxRevokedAt !== curr.sessionRevokedAt
         ) {
           result[existIdx] = {
             ...curr,
@@ -314,7 +320,8 @@ export function mergeUsersAdditive(
             email: mergedEmail,
             phone: mergedPhone,
             department: mergedDept,
-            password: mergedPass
+            password: mergedPass,
+            sessionRevokedAt: maxRevokedAt
           };
           changed = true;
         }

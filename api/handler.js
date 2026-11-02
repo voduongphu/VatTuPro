@@ -6,6 +6,8 @@ import crypto from 'node:crypto';
 const SESSION_HMAC_SECRET =
   process.env.SESSION_SECRET || 'vtp-inventory-single-device-hmac-secret-2026-v2';
 
+const ACTIVE_SESSION_TTL_MS = 90_000;
+
 const INITIAL_SEED_USERS = [
   {
     id: 'user-admin-01',
@@ -97,7 +99,7 @@ function computeMetaDigest(users, warehouses, tombstones) {
   for (let i = 0; i < users.length; i++) {
     const u = users[i];
     const [h1, h2] = hashPair(
-      `U|${normUserKey(u.username)}|${u.id}|${u.fullName}|${u.role}|${u.password || ''}|${u.isActive ? 1 : 0}|${u.phone || ''}|${u.email || ''}|${u.department || ''}|${Number(u.updatedAt) || 0}`
+      `U|${normUserKey(u.username)}|${u.id}|${u.fullName}|${u.role}|${u.password || ''}|${u.isActive ? 1 : 0}|${u.phone || ''}|${u.email || ''}|${u.department || ''}|${Number(u.updatedAt) || 0}|${Number(u.sessionRevokedAt) || 0}`
     );
     sum1 = (sum1 + h1) >>> 0;
     sum2 = (sum2 + h2) >>> 0;
@@ -284,11 +286,15 @@ function mergeUsersAdditive(existing, incoming, tombstones) {
       const curr = result[existIdx];
       const incTs = Number(inc.updatedAt) || 0;
       const currTs = Number(curr.updatedAt) || 0;
+      const maxRevokedAt =
+        Math.max(Number(curr.sessionRevokedAt) || 0, Number(inc.sessionRevokedAt) || 0) ||
+        undefined;
       if (incTs > currTs) {
         const nextUser = {
           ...curr,
           ...inc,
           password: inc.password || curr.password,
+          sessionRevokedAt: maxRevokedAt,
           updatedAt: incTs
         };
         if (
@@ -299,6 +305,7 @@ function mergeUsersAdditive(existing, incoming, tombstones) {
           nextUser.phone !== curr.phone ||
           nextUser.email !== curr.email ||
           nextUser.department !== curr.department ||
+          nextUser.sessionRevokedAt !== curr.sessionRevokedAt ||
           nextUser.updatedAt !== curr.updatedAt
         ) {
           result[existIdx] = nextUser;
@@ -315,7 +322,8 @@ function mergeUsersAdditive(existing, incoming, tombstones) {
           mergedEmail !== curr.email ||
           mergedPhone !== curr.phone ||
           mergedDept !== curr.department ||
-          mergedPass !== curr.password
+          mergedPass !== curr.password ||
+          maxRevokedAt !== curr.sessionRevokedAt
         ) {
           result[existIdx] = {
             ...curr,
@@ -323,7 +331,8 @@ function mergeUsersAdditive(existing, incoming, tombstones) {
             email: mergedEmail,
             phone: mergedPhone,
             department: mergedDept,
-            password: mergedPass
+            password: mergedPass,
+            sessionRevokedAt: maxRevokedAt
           };
           changed = true;
         }
@@ -813,36 +822,85 @@ function mergeOutboundReceiptsAdditive(existing, incoming, tombstones) {
   return { list: finalList, changed, touchedCodes: Array.from(touchedSet) };
 }
 
+function getSessionIssuedAtMs(sess) {
+  if (!sess) return 0;
+  if (Number(sess.issuedAtMs) > 0) return Number(sess.issuedAtMs);
+  const parts = String(sess.sessionToken || '').split('.');
+  if (parts.length >= 3) {
+    const parsedTs = Number(parts[1]);
+    if (Number.isFinite(parsedTs) && parsedTs > 0) return parsedTs;
+  }
+  const parsedLogin = sess.loginAt ? Date.parse(sess.loginAt) : 0;
+  return Number.isFinite(parsedLogin) && parsedLogin > 0 ? parsedLogin : 0;
+}
+
 function createSignedSessionToken(userKey, deviceId, issuedAtMs) {
   const nonce = crypto.randomUUID();
+  const devB64 = Buffer.from(String(deviceId || ''), 'utf8').toString('base64url');
   const sig = crypto
     .createHmac('sha256', SESSION_HMAC_SECRET)
     .update(`${userKey}|${deviceId}|${nonce}|${issuedAtMs}`)
     .digest('hex')
     .slice(0, 24);
-  return `${nonce}.${issuedAtMs}.${sig}`;
+  return `${nonce}.${issuedAtMs}.${devB64}.${sig}`;
 }
 
-function verifySignedSessionToken(token, userKey, deviceId) {
+function verifySignedSessionToken(token, userKey, expectedDeviceId) {
   const parts = String(token || '').split('.');
-  if (parts.length !== 3) {
-    return { validSignature: false, issuedAtMs: 0 };
+  if (parts.length === 4) {
+    const [nonce, rawTs, devB64, sig] = parts;
+    const issuedAtMs = Number(rawTs);
+    if (!nonce || !Number.isFinite(issuedAtMs) || issuedAtMs <= 0 || !devB64 || !sig) {
+      return { validSignature: false, issuedAtMs: 0, deviceId: '' };
+    }
+    let decodedDeviceId = '';
+    try {
+      decodedDeviceId = Buffer.from(devB64, 'base64url').toString('utf8');
+    } catch {
+      return { validSignature: false, issuedAtMs: 0, deviceId: '' };
+    }
+    if (!decodedDeviceId || (expectedDeviceId && expectedDeviceId !== decodedDeviceId)) {
+      return { validSignature: false, issuedAtMs: 0, deviceId: '' };
+    }
+    const expected = crypto
+      .createHmac('sha256', SESSION_HMAC_SECRET)
+      .update(`${userKey}|${decodedDeviceId}|${nonce}|${issuedAtMs}`)
+      .digest('hex')
+      .slice(0, 24);
+    if (sig.length !== expected.length) {
+      return { validSignature: false, issuedAtMs: 0, deviceId: '' };
+    }
+    const match = crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected));
+    return {
+      validSignature: match,
+      issuedAtMs: match ? issuedAtMs : 0,
+      deviceId: match ? decodedDeviceId : ''
+    };
   }
-  const [nonce, rawTs, sig] = parts;
-  const issuedAtMs = Number(rawTs);
-  if (!nonce || !Number.isFinite(issuedAtMs) || issuedAtMs <= 0 || !sig) {
-    return { validSignature: false, issuedAtMs: 0 };
+
+  if (parts.length === 3 && expectedDeviceId) {
+    const [nonce, rawTs, sig] = parts;
+    const issuedAtMs = Number(rawTs);
+    if (!nonce || !Number.isFinite(issuedAtMs) || issuedAtMs <= 0 || !sig) {
+      return { validSignature: false, issuedAtMs: 0, deviceId: '' };
+    }
+    const expected = crypto
+      .createHmac('sha256', SESSION_HMAC_SECRET)
+      .update(`${userKey}|${expectedDeviceId}|${nonce}|${issuedAtMs}`)
+      .digest('hex')
+      .slice(0, 24);
+    if (sig.length !== expected.length) {
+      return { validSignature: false, issuedAtMs: 0, deviceId: '' };
+    }
+    const match = crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected));
+    return {
+      validSignature: match,
+      issuedAtMs: match ? issuedAtMs : 0,
+      deviceId: match ? expectedDeviceId : ''
+    };
   }
-  const expected = crypto
-    .createHmac('sha256', SESSION_HMAC_SECRET)
-    .update(`${userKey}|${deviceId}|${nonce}|${issuedAtMs}`)
-    .digest('hex')
-    .slice(0, 24);
-  if (sig.length !== expected.length) {
-    return { validSignature: false, issuedAtMs: 0 };
-  }
-  const match = crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected));
-  return { validSignature: match, issuedAtMs: match ? issuedAtMs : 0 };
+
+  return { validSignature: false, issuedAtMs: 0, deviceId: '' };
 }
 
 function codeToFileName(code) {
@@ -869,8 +927,33 @@ const store = {
   outbound: [],
   tombstones: createEmptyTombstones(),
   activeSessions: {},
-  revokedTokens: {}
+  revokedTokens: {},
+  sessionRevokedBefore: {},
+  forceLogoutMeta: {}
 };
+
+function getRevokedBeforeMs(key, user) {
+  return Math.max(
+    Number(store.sessionRevokedBefore[key]) || 0,
+    Number(user?.sessionRevokedAt) || 0
+  );
+}
+
+function getLiveActiveSession(key, user, nowMs = Date.now()) {
+  const sess = store.activeSessions[key];
+  if (!sess || !sess.sessionToken) return undefined;
+  const issued = getSessionIssuedAtMs(sess);
+  const revokedBefore = getRevokedBeforeMs(key, user);
+  if (
+    store.revokedTokens[sess.sessionToken] ||
+    (revokedBefore > 0 && issued > 0 && issued <= revokedBefore) ||
+    nowMs - (sess.lastSeenAt || 0) > ACTIVE_SESSION_TTL_MS
+  ) {
+    delete store.activeSessions[key];
+    return undefined;
+  }
+  return sess;
+}
 
 let cachedMaterialsDigestRev = -1;
 let cachedMaterialsDigestVal = '0:0:0:0';
@@ -886,7 +969,7 @@ function getMaterialsDigestCached() {
 
 let initPromise = null;
 
-async function loadDirIntoStore(dirPath) {
+async function loadDirIntoStore(dirPath, isSeedSource = false) {
   const dirMeta = path.join(dirPath, 'meta.json');
   const dirMaterials = path.join(dirPath, 'materials.json');
   const dirInbound = path.join(dirPath, 'inbound');
@@ -905,7 +988,19 @@ async function loadDirIntoStore(dirPath) {
         mergeTombstones(store.tombstones, parsed.tombstones);
       }
       if (Array.isArray(parsed.users)) {
-        store.users = mergeUsersAdditive(store.users, parsed.users, store.tombstones.users).list;
+        const sanitizedUsers = isSeedSource
+          ? parsed.users.map((u) => ({ ...u, sessionRevokedAt: undefined }))
+          : parsed.users;
+        store.users = mergeUsersAdditive(store.users, sanitizedUsers, store.tombstones.users).list;
+        if (!isSeedSource) {
+          for (const u of store.users) {
+            const uKey = normUserKey(u.username);
+            const uRev = Number(u.sessionRevokedAt) || 0;
+            if (uKey && uRev > (store.sessionRevokedBefore[uKey] || 0)) {
+              store.sessionRevokedBefore[uKey] = uRev;
+            }
+          }
+        }
       }
       if (Array.isArray(parsed.warehouses)) {
         store.warehouses = mergeWarehousesAdditive(
@@ -914,19 +1009,46 @@ async function loadDirIntoStore(dirPath) {
           store.tombstones.warehouses
         ).list;
       }
-      if (parsed.activeSessions && typeof parsed.activeSessions === 'object') {
-        for (const [rawKey, sess] of Object.entries(parsed.activeSessions)) {
-          if (sess && sess.sessionToken) {
-            const cleanKey = normUserKey(sess.username || sess.userKey || rawKey);
-            const existing = store.activeSessions[cleanKey];
-            if (!existing || (sess.lastSeenAt || 0) >= (existing.lastSeenAt || 0)) {
-              store.activeSessions[cleanKey] = { ...sess, userKey: cleanKey };
+      if (!isSeedSource) {
+        if (parsed.sessionRevokedBefore && typeof parsed.sessionRevokedBefore === 'object') {
+          for (const [k, v] of Object.entries(parsed.sessionRevokedBefore)) {
+            const num = Number(v) || 0;
+            if (num > (store.sessionRevokedBefore[k] || 0)) {
+              store.sessionRevokedBefore[k] = num;
             }
           }
         }
-      }
-      if (parsed.revokedTokens && typeof parsed.revokedTokens === 'object') {
-        Object.assign(store.revokedTokens, parsed.revokedTokens);
+        if (parsed.forceLogoutMeta && typeof parsed.forceLogoutMeta === 'object') {
+          Object.assign(store.forceLogoutMeta, parsed.forceLogoutMeta);
+        }
+        if (parsed.revokedTokens && typeof parsed.revokedTokens === 'object') {
+          Object.assign(store.revokedTokens, parsed.revokedTokens);
+        }
+        if (parsed.activeSessions && typeof parsed.activeSessions === 'object') {
+          const nowMs = Date.now();
+          for (const [rawKey, sess] of Object.entries(parsed.activeSessions)) {
+            if (sess && sess.sessionToken && !store.revokedTokens[sess.sessionToken]) {
+              const cleanKey = normUserKey(sess.username || sess.userKey || rawKey);
+              const u = store.users.find((item) => normUserKey(item.username) === cleanKey);
+              const revokedBefore = getRevokedBeforeMs(cleanKey, u);
+              const sessIssued = getSessionIssuedAtMs(sess);
+              if (
+                (revokedBefore > 0 && sessIssued > 0 && sessIssued <= revokedBefore) ||
+                nowMs - (sess.lastSeenAt || 0) > ACTIVE_SESSION_TTL_MS
+              ) {
+                continue;
+              }
+              const existing = store.activeSessions[cleanKey];
+              if (!existing || sessIssued >= getSessionIssuedAtMs(existing)) {
+                store.activeSessions[cleanKey] = {
+                  ...sess,
+                  userKey: cleanKey,
+                  issuedAtMs: sessIssued || undefined
+                };
+              }
+            }
+          }
+        }
       }
     }
   } catch {
@@ -1007,9 +1129,9 @@ async function ensureInitialized() {
 
     const repoSeedDir = path.join(process.cwd(), '.sync_data');
     if (fs.existsSync(repoSeedDir)) {
-      await loadDirIntoStore(repoSeedDir);
+      await loadDirIntoStore(repoSeedDir, true);
     }
-    await loadDirIntoStore(DATA_DIR);
+    await loadDirIntoStore(DATA_DIR, false);
 
     if (store.users.length === 0) {
       store.users = mergeUsersAdditive([], INITIAL_SEED_USERS, store.tombstones.users).list;
@@ -1036,7 +1158,9 @@ async function writeMetaNow() {
         warehouses: store.warehouses,
         tombstones: store.tombstones,
         activeSessions: store.activeSessions,
-        revokedTokens: store.revokedTokens
+        revokedTokens: store.revokedTokens,
+        sessionRevokedBefore: store.sessionRevokedBefore,
+        forceLogoutMeta: store.forceLogoutMeta
       }),
       'utf8'
     );
@@ -1077,29 +1201,109 @@ async function writeReceiptsNow(type, codes) {
   }
 }
 
-function tryRecoverServerlessSession(key, user, sessionToken, deviceId, deviceLabel, loginAt) {
-  if (!deviceId || store.revokedTokens[sessionToken]) return null;
-  const { validSignature, issuedAtMs } = verifySignedSessionToken(sessionToken, key, deviceId);
-  if (!validSignature) return null;
-
-  const userLastLoginMs = user.lastLogin ? Date.parse(user.lastLogin) : 0;
-  if (userLastLoginMs > 0 && issuedAtMs + 1500 < userLastLoginMs) {
-    return null;
+function validateSession(params) {
+  const key = normUserKey(String(params.userKey || params.username || ''));
+  const token = String(params.sessionToken || '').trim();
+  if (!key || !token) {
+    return { valid: false, reason: 'missing' };
   }
 
-  const recovered = {
-    userId: user.id,
-    username: user.username,
-    userKey: key,
-    sessionToken,
-    deviceId,
-    deviceLabel: deviceLabel || 'Thiết bị hiện tại',
-    loginAt: loginAt || new Date(issuedAtMs).toISOString(),
-    lastSeenAt: Date.now()
+  const user = store.users.find(
+    (u) => normUserKey(u.username) === key || (params.userId && u.id === params.userId)
+  );
+  if (!user || !user.isActive) {
+    if (store.activeSessions[key]) {
+      delete store.activeSessions[key];
+      void writeMetaNow();
+    }
+    return { valid: false, reason: 'disabled' };
+  }
+
+  const nowMs = Date.now();
+  const revokedBefore = getRevokedBeforeMs(key, user);
+  let active = store.activeSessions[key];
+
+  if (active) {
+    const activeIssued = getSessionIssuedAtMs(active);
+    if (
+      store.revokedTokens[active.sessionToken] ||
+      (revokedBefore > 0 && activeIssued > 0 && activeIssued <= revokedBefore)
+    ) {
+      delete store.activeSessions[key];
+      active = undefined;
+    }
+  }
+
+  if (active && active.sessionToken === token) {
+    active.lastSeenAt = nowMs;
+    return { valid: true, session: active };
+  }
+
+  const sigCheck = verifySignedSessionToken(token, key, params.deviceId);
+
+  if (store.revokedTokens[token]) {
+    if (active && active.sessionToken !== token) {
+      return { valid: false, reason: 'replaced', replacedBy: active };
+    }
+    if (store.forceLogoutMeta[key]) {
+      return {
+        valid: false,
+        reason: 'force_logout',
+        forceLogoutBy: store.forceLogoutMeta[key]
+      };
+    }
+    return { valid: false, reason: 'expired' };
+  }
+
+  if (!sigCheck.validSignature) {
+    if (active) {
+      return { valid: false, reason: 'replaced', replacedBy: active };
+    }
+    return { valid: false, reason: 'expired' };
+  }
+
+  const tokenIssuedAtMs = sigCheck.issuedAtMs;
+
+  if (revokedBefore > 0 && tokenIssuedAtMs <= revokedBefore) {
+    if (active && getSessionIssuedAtMs(active) > tokenIssuedAtMs) {
+      return { valid: false, reason: 'replaced', replacedBy: active };
+    }
+    if (store.forceLogoutMeta[key]) {
+      return {
+        valid: false,
+        reason: 'force_logout',
+        forceLogoutBy: store.forceLogoutMeta[key]
+      };
+    }
+    return { valid: false, reason: 'expired' };
+  }
+
+  const activeIssuedAtMs = getSessionIssuedAtMs(active);
+  if (!active || tokenIssuedAtMs > activeIssuedAtMs) {
+    if (active && active.sessionToken && active.sessionToken !== token) {
+      store.revokedTokens[active.sessionToken] = tokenIssuedAtMs;
+    }
+    const upgraded = {
+      userId: user.id,
+      username: user.username,
+      userKey: key,
+      sessionToken: token,
+      issuedAtMs: tokenIssuedAtMs,
+      deviceId: params.deviceId || sigCheck.deviceId || 'dev-recovered',
+      deviceLabel: params.deviceLabel || 'Thiết bị hiện tại',
+      loginAt: params.loginAt || new Date(tokenIssuedAtMs).toISOString(),
+      lastSeenAt: nowMs
+    };
+    store.activeSessions[key] = upgraded;
+    void writeMetaNow();
+    return { valid: true, session: upgraded };
+  }
+
+  return {
+    valid: false,
+    reason: 'replaced',
+    replacedBy: active
   };
-  store.activeSessions[key] = recovered;
-  void writeMetaNow();
-  return recovered;
 }
 
 async function readJsonBody(req) {
@@ -1130,7 +1334,10 @@ function sendJson(res, statusCode, payload, extraHeaders = {}) {
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
   res.setHeader('Pragma', 'no-cache');
   res.setHeader('Expires', '0');
-  res.setHeader('Access-Control-Expose-Headers', 'X-Auth-Invalidated, X-Auth-Replaced-By');
+  res.setHeader(
+    'Access-Control-Expose-Headers',
+    'X-Auth-Invalidated, X-Auth-Replaced-By, X-Auth-Token-Checked'
+  );
   for (const [k, v] of Object.entries(extraHeaders)) {
     if (v !== undefined) res.setHeader(k, v);
   }
@@ -1150,7 +1357,7 @@ export default async function handler(req, res) {
 
     const syncHeaders = {};
 
-    // Kiểm tra hiệu lực phiên trên mọi API /api/sync/*
+    // Kiểm tra hiệu lực phiên đơn điệu trên mọi API /api/sync/*
     if (route.startsWith('/api/sync/')) {
       const rawUserKey = req.headers['x-auth-user-key'];
       const rawToken = req.headers['x-auth-session-token'];
@@ -1165,39 +1372,35 @@ export default async function handler(req, res) {
 
       if (key && token) {
         const isReadSync = method === 'GET' || route === '/api/sync/receipts-batch-pull';
-        const user = store.users.find((u) => normUserKey(u.username) === key);
+        const check = validateSession({
+          userKey: key,
+          sessionToken: token,
+          deviceId,
+          deviceLabel
+        });
 
-        if (!user || !user.isActive) {
-          syncHeaders['X-Auth-Invalidated'] = 'disabled';
+        if (!check.valid) {
+          const reason = check.reason || 'expired';
+          syncHeaders['X-Auth-Invalidated'] = reason;
+          syncHeaders['X-Auth-Token-Checked'] = token;
+          if (check.replacedBy) {
+            syncHeaders['X-Auth-Replaced-By'] = encodeURIComponent(JSON.stringify(check.replacedBy));
+          } else if (check.forceLogoutBy) {
+            syncHeaders['X-Auth-Replaced-By'] = encodeURIComponent(
+              JSON.stringify({
+                deviceLabel: check.forceLogoutBy.deviceLabel,
+                loginAt: check.forceLogoutBy.at
+              })
+            );
+          }
           if (!isReadSync) {
-            sendJson(res, 401, { error: 'Account disabled', reason: 'disabled' }, syncHeaders);
+            sendJson(
+              res,
+              401,
+              { error: 'Session invalid', reason, replacedBy: check.replacedBy },
+              syncHeaders
+            );
             return;
-          }
-        } else {
-          let active = store.activeSessions[key];
-          if (!active) {
-            active = tryRecoverServerlessSession(key, user, token, deviceId, deviceLabel);
-          }
-          if (!active) {
-            syncHeaders['X-Auth-Invalidated'] = 'expired';
-            if (!isReadSync) {
-              sendJson(res, 401, { error: 'Session expired', reason: 'expired' }, syncHeaders);
-              return;
-            }
-          } else if (active.sessionToken !== token) {
-            syncHeaders['X-Auth-Invalidated'] = 'replaced';
-            syncHeaders['X-Auth-Replaced-By'] = encodeURIComponent(JSON.stringify(active));
-            if (!isReadSync) {
-              sendJson(
-                res,
-                401,
-                { error: 'Session replaced', reason: 'replaced', replacedBy: active },
-                syncHeaders
-              );
-              return;
-            }
-          } else {
-            active.lastSeenAt = Date.now();
           }
         }
       }
@@ -1206,7 +1409,14 @@ export default async function handler(req, res) {
     // 1. POST /api/auth/login
     if (route === '/api/auth/login' && method === 'POST') {
       const body = await readJsonBody(req);
-      const { username, password, deviceId, deviceLabel, localUsers } = body || {};
+      const {
+        username,
+        password,
+        deviceId,
+        deviceLabel,
+        localUsers,
+        forceLogoutOtherDevice
+      } = body || {};
       const trimmedUser = String(username || '').trim();
       const passStr = String(password ?? '');
 
@@ -1257,29 +1467,51 @@ export default async function handler(req, res) {
       }
 
       const nowMs = Date.now();
-      const nowIso = new Date(nowMs).toISOString();
       const userKey = normUserKey(user.username);
       const cleanDeviceId = String(deviceId || `dev-${nowMs}`);
       const cleanDeviceLabel = String(deviceLabel || 'Thiết bị khác');
-      const sessionToken = createSignedSessionToken(userKey, cleanDeviceId, nowMs);
 
-      const previousSession = store.activeSessions[userKey];
-      if (previousSession && previousSession.sessionToken) {
-        store.revokedTokens[previousSession.sessionToken] = nowMs;
+      const liveOtherSession = getLiveActiveSession(userKey, user, nowMs);
+      if (
+        liveOtherSession &&
+        liveOtherSession.deviceId !== cleanDeviceId &&
+        !forceLogoutOtherDevice
+      ) {
+        const otherLabel = liveOtherSession.deviceLabel || 'Thiết bị khác';
+        sendJson(res, 200, {
+          success: false,
+          conflict: true,
+          code: 'ACTIVE_ON_OTHER_DEVICE',
+          activeSession: liveOtherSession,
+          message: `Tài khoản "${user.username}" hiện đang đăng nhập trên ${otherLabel}. Hệ thống không cho phép một tài khoản đăng nhập cùng lúc trên 2 thiết bị. Vui lòng nhấn "Yêu cầu đăng xuất trên thiết bị kia" để tiếp tục.`
+        });
+        return;
       }
 
+      const prevSession = store.activeSessions[userKey];
+      const prevIssuedAt = getSessionIssuedAtMs(prevSession);
+      const prevRevoked = getRevokedBeforeMs(userKey, user);
+      const issuedAtMs = Math.max(nowMs, prevIssuedAt + 2, prevRevoked + 2);
+      const revokedAt = issuedAtMs - 1;
+      const nowIso = new Date(issuedAtMs).toISOString();
+      const sessionToken = createSignedSessionToken(userKey, cleanDeviceId, issuedAtMs);
+
+      if (prevSession && prevSession.sessionToken) {
+        store.revokedTokens[prevSession.sessionToken] = issuedAtMs;
+      }
+      store.sessionRevokedBefore[userKey] = revokedAt;
+      delete store.forceLogoutMeta[userKey];
+
       const replacedPrevious =
-        previousSession &&
-        previousSession.sessionToken !== sessionToken &&
-        (previousSession.deviceId !== cleanDeviceId ||
-          nowMs - (previousSession.lastSeenAt || 0) <= 15000)
-          ? { ...previousSession }
+        liveOtherSession && liveOtherSession.deviceId !== cleanDeviceId
+          ? { ...liveOtherSession }
           : undefined;
 
       const updatedUser = {
         ...user,
         lastLogin: nowIso,
-        updatedAt: Math.max(nowMs, Number(user.updatedAt || 0) + 1)
+        sessionRevokedAt: revokedAt,
+        updatedAt: Math.max(issuedAtMs, Number(user.updatedAt || 0) + 1)
       };
       store.users[matchedIdx] = updatedUser;
 
@@ -1288,6 +1520,7 @@ export default async function handler(req, res) {
         username: updatedUser.username,
         userKey,
         sessionToken,
+        issuedAtMs,
         deviceId: cleanDeviceId,
         deviceLabel: cleanDeviceLabel,
         loginAt: nowIso,
@@ -1301,7 +1534,7 @@ export default async function handler(req, res) {
       sendJson(res, 200, {
         success: true,
         message: replacedPrevious
-          ? `Đăng nhập thành công! Hệ thống đã tự động đăng xuất phiên đang mở trên ${replacedPrevious.deviceLabel || 'thiết bị khác'}.`
+          ? `Đã đăng xuất phiên trên "${replacedPrevious.deviceLabel || 'thiết bị kia'}" và đăng nhập thành công trên thiết bị hiện tại!`
           : 'Đăng nhập thành công!',
         user: updatedUser,
         session,
@@ -1314,19 +1547,227 @@ export default async function handler(req, res) {
     // 2. POST /api/auth/logout
     if (route === '/api/auth/logout' && method === 'POST') {
       const body = await readJsonBody(req);
-      const { userKey, sessionToken } = body || {};
-      const key = normUserKey(String(userKey || ''));
-      if (sessionToken) {
-        store.revokedTokens[String(sessionToken)] = Date.now();
+      const { userKey, username, sessionToken, deviceId } = body || {};
+      const key = normUserKey(String(userKey || username || ''));
+      const token = String(sessionToken || '').trim();
+      const nowMs = Date.now();
+
+      if (token) {
+        store.revokedTokens[token] = nowMs;
       }
-      if (key && store.activeSessions[key]) {
-        if (sessionToken && store.activeSessions[key].sessionToken === sessionToken) {
+
+      if (key) {
+        const userIdx = store.users.findIndex((u) => normUserKey(u.username) === key);
+        const user = userIdx >= 0 ? store.users[userIdx] : undefined;
+        const sigCheck = token ? verifySignedSessionToken(token, key, deviceId) : null;
+        const tokenIssuedAtMs = sigCheck?.validSignature ? sigCheck.issuedAtMs : 0;
+
+        const currentActive = store.activeSessions[key];
+        const activeMatchesToken = Boolean(
+          token && currentActive && currentActive.sessionToken === token
+        );
+        const activeIsOlderOrEqual =
+          tokenIssuedAtMs > 0 &&
+          currentActive &&
+          getSessionIssuedAtMs(currentActive) <= tokenIssuedAtMs;
+
+        if (activeMatchesToken || activeIsOlderOrEqual) {
           delete store.activeSessions[key];
-          store.serverRevision++;
-          await writeMetaNow();
         }
+
+        if (tokenIssuedAtMs > 0) {
+          const nextRevoked = Math.max(getRevokedBeforeMs(key, user), tokenIssuedAtMs);
+          store.sessionRevokedBefore[key] = nextRevoked;
+          if (userIdx >= 0 && user && (Number(user.sessionRevokedAt) || 0) < nextRevoked) {
+            store.users[userIdx] = {
+              ...user,
+              sessionRevokedAt: nextRevoked,
+              updatedAt: Math.max(nowMs, Number(user.updatedAt || 0) + 1)
+            };
+          }
+        }
+
+        store.serverRevision++;
+        await writeMetaNow();
       }
       sendJson(res, 200, { ok: true });
+      return;
+    }
+
+    // 2b. POST /api/auth/force-logout
+    if (route === '/api/auth/force-logout' && method === 'POST') {
+      const body = await readJsonBody(req);
+      const {
+        keepCurrentSession,
+        username,
+        password,
+        userKey: rawUserKey,
+        userId,
+        sessionToken,
+        deviceId,
+        deviceLabel,
+        localUsers
+      } = body || {};
+
+      const nowMs = Date.now();
+      const cleanDeviceId = String(deviceId || `dev-${nowMs}`);
+      const cleanDeviceLabel = String(deviceLabel || 'Thiết bị khác');
+
+      if (keepCurrentSession) {
+        const check = validateSession({
+          userKey: rawUserKey,
+          username,
+          userId,
+          sessionToken,
+          deviceId: cleanDeviceId,
+          deviceLabel: cleanDeviceLabel
+        });
+
+        if (!check.valid || !check.session) {
+          sendJson(res, 200, {
+            success: false,
+            message: 'Phiên đăng nhập hiện tại không còn hiệu lực. Vui lòng đăng nhập lại.'
+          });
+          return;
+        }
+
+        const key = check.session.userKey;
+        const userIdx = store.users.findIndex((u) => normUserKey(u.username) === key);
+        if (userIdx === -1) {
+          sendJson(res, 200, {
+            success: false,
+            message: 'Không tìm thấy tài khoản người dùng.'
+          });
+          return;
+        }
+
+        const user = store.users[userIdx];
+        const currIssuedAt = getSessionIssuedAtMs(check.session);
+        const prevRevoked = getRevokedBeforeMs(key, user);
+        const issuedAtMs = Math.max(nowMs, currIssuedAt + 2, prevRevoked + 2);
+        const revokedAt = issuedAtMs - 1;
+        const nowIso = new Date(issuedAtMs).toISOString();
+        const newSessionToken = createSignedSessionToken(key, cleanDeviceId, issuedAtMs);
+
+        store.revokedTokens[check.session.sessionToken] = issuedAtMs;
+        store.sessionRevokedBefore[key] = revokedAt;
+        store.forceLogoutMeta[key] = { at: nowIso, deviceLabel: cleanDeviceLabel };
+
+        const updatedUser = {
+          ...user,
+          sessionRevokedAt: revokedAt,
+          updatedAt: Math.max(issuedAtMs, Number(user.updatedAt || 0) + 1)
+        };
+        store.users[userIdx] = updatedUser;
+
+        const newSession = {
+          userId: updatedUser.id,
+          username: updatedUser.username,
+          userKey: key,
+          sessionToken: newSessionToken,
+          issuedAtMs,
+          deviceId: cleanDeviceId,
+          deviceLabel: cleanDeviceLabel,
+          loginAt: check.session.loginAt || nowIso,
+          lastSeenAt: nowMs
+        };
+        store.activeSessions[key] = newSession;
+        store.serverRevision++;
+        await writeMetaNow();
+
+        sendJson(res, 200, {
+          success: true,
+          message: 'Đã gửi yêu cầu đăng xuất thành công tới mọi thiết bị khác!',
+          user: updatedUser,
+          session: newSession,
+          users: store.users
+        });
+        return;
+      }
+
+      const trimmedUser = String(username || '').trim();
+      const passStr = String(password ?? '');
+
+      if (!trimmedUser || !passStr) {
+        sendJson(res, 200, {
+          success: false,
+          message:
+            'Vui lòng nhập tên người sử dụng và mật khẩu để xác thực yêu cầu đăng xuất thiết bị kia.'
+        });
+        return;
+      }
+
+      if (Array.isArray(localUsers) && localUsers.length > 0) {
+        const mergedU = mergeUsersAdditive(store.users, localUsers, store.tombstones.users);
+        if (mergedU.changed) {
+          store.users = mergedU.list;
+          store.serverRevision++;
+        }
+      }
+
+      const inputKey = normUserKey(trimmedUser);
+      const matchedIdx = store.users.findIndex(
+        (u) => normUserKey(u.username) === inputKey || normUserKey(u.fullName) === inputKey
+      );
+
+      if (matchedIdx === -1) {
+        sendJson(res, 200, {
+          success: false,
+          message: `Tài khoản "${trimmedUser}" không tồn tại trong hệ thống.`
+        });
+        return;
+      }
+
+      const user = store.users[matchedIdx];
+      if (!user.isActive) {
+        sendJson(res, 200, {
+          success: false,
+          message: 'Tài khoản này hiện đang bị khóa hoặc ngừng kích hoạt.'
+        });
+        return;
+      }
+
+      if ((user.password || '') !== passStr) {
+        sendJson(res, 200, {
+          success: false,
+          message: 'Mật khẩu xác thực không chính xác. Không thể gửi yêu cầu đăng xuất thiết bị kia.'
+        });
+        return;
+      }
+
+      const userKey = normUserKey(user.username);
+      const prevActive = getLiveActiveSession(userKey, user, nowMs) || store.activeSessions[userKey];
+      const prevIssuedAt = getSessionIssuedAtMs(prevActive);
+      const prevRevoked = getRevokedBeforeMs(userKey, user);
+      const revokedAt = Math.max(nowMs, prevIssuedAt, prevRevoked + 1);
+      const nowIso = new Date(revokedAt).toISOString();
+
+      if (prevActive && prevActive.sessionToken) {
+        store.revokedTokens[prevActive.sessionToken] = revokedAt;
+      }
+      delete store.activeSessions[userKey];
+      store.sessionRevokedBefore[userKey] = revokedAt;
+      store.forceLogoutMeta[userKey] = { at: nowIso, deviceLabel: cleanDeviceLabel };
+
+      const updatedUser = {
+        ...user,
+        sessionRevokedAt: revokedAt,
+        updatedAt: Math.max(revokedAt, Number(user.updatedAt || 0) + 1)
+      };
+      store.users[matchedIdx] = updatedUser;
+      store.serverRevision++;
+      await writeMetaNow();
+
+      const targetLabel = prevActive?.deviceLabel;
+      sendJson(res, 200, {
+        success: true,
+        hadActiveSession: Boolean(prevActive),
+        loggedOutDeviceLabel: targetLabel,
+        users: store.users,
+        message: targetLabel
+          ? `Đã yêu cầu đăng xuất thành công phiên trên "${targetLabel}". Bạn có thể nhấn Đăng nhập ngay bây giờ!`
+          : 'Đã thu hồi toàn bộ phiên đăng nhập trên các thiết bị khác. Bạn có thể nhấn Đăng nhập ngay bây giờ!'
+      });
       return;
     }
 
@@ -1335,55 +1776,38 @@ export default async function handler(req, res) {
       const body = await readJsonBody(req);
       const { userId, username, userKey, sessionToken, deviceId, deviceLabel, loginAt } =
         body || {};
-      const key = normUserKey(String(userKey || username || ''));
-      if (!key || !sessionToken) {
-        sendJson(res, 200, { valid: false, reason: 'missing' });
-        return;
-      }
+      const check = validateSession({
+        userId: userId ? String(userId) : undefined,
+        username: username ? String(username) : undefined,
+        userKey: userKey ? String(userKey) : undefined,
+        sessionToken: sessionToken ? String(sessionToken) : undefined,
+        deviceId: deviceId ? String(deviceId) : undefined,
+        deviceLabel: deviceLabel ? String(deviceLabel) : undefined,
+        loginAt: loginAt ? String(loginAt) : undefined
+      });
 
-      const user = store.users.find((u) => normUserKey(u.username) === key || u.id === userId);
-      if (!user || !user.isActive) {
-        if (store.activeSessions[key]) {
-          delete store.activeSessions[key];
-          await writeMetaNow();
-        }
-        sendJson(res, 200, { valid: false, reason: 'disabled' });
-        return;
-      }
-
-      let active = store.activeSessions[key];
-      if (!active) {
-        active = tryRecoverServerlessSession(
-          key,
-          user,
-          String(sessionToken),
-          deviceId ? String(deviceId) : undefined,
-          deviceLabel ? String(deviceLabel) : undefined,
-          loginAt ? String(loginAt) : undefined
-        );
-      }
-
-      if (!active) {
-        sendJson(res, 200, { valid: false, reason: 'expired' });
-        return;
-      }
-
-      if (active.sessionToken !== sessionToken) {
+      if (!check.valid) {
         sendJson(res, 200, {
           valid: false,
-          reason: 'replaced',
-          replacedBy: active
+          reason: check.reason || 'expired',
+          replacedBy: check.replacedBy,
+          forceLogoutBy: check.forceLogoutBy
         });
         return;
       }
 
-      active.lastSeenAt = Date.now();
-      sendJson(res, 200, { valid: true, session: active });
+      sendJson(res, 200, { valid: true, session: check.session });
       return;
     }
 
     // 4. GET /api/sync/manifest
     if (route === '/api/sync/manifest' && method === 'GET') {
+      const nowMs = Date.now();
+      for (const sKey of Object.keys(store.activeSessions)) {
+        const u = store.users.find((item) => normUserKey(item.username) === sKey);
+        getLiveActiveSession(sKey, u, nowMs);
+      }
+
       const inboundManifest = store.inbound.map((r) => ({
         code: normKey(r.receiptCode || r.id),
         receiptCode: r.receiptCode,
@@ -1467,8 +1891,17 @@ export default async function handler(req, res) {
       for (let i = 0; i < store.users.length; i++) {
         const u = store.users[i];
         const uKey = normUserKey(u.username);
+        const uRev = Number(u.sessionRevokedAt) || 0;
+        if (uKey && uRev > (store.sessionRevokedBefore[uKey] || 0)) {
+          store.sessionRevokedBefore[uKey] = uRev;
+        }
         if (u.isActive) {
           validActiveUserKeys.add(uKey);
+          const sess = store.activeSessions[uKey];
+          if (sess && uRev > 0 && getSessionIssuedAtMs(sess) <= uRev) {
+            delete store.activeSessions[uKey];
+            anyChanged = true;
+          }
         } else if (store.activeSessions[uKey]) {
           delete store.activeSessions[uKey];
           anyChanged = true;

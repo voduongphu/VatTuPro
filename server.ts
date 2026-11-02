@@ -46,37 +46,55 @@ async function startServer() {
         const msg = JSON.parse(String(raw));
         if (msg && msg.type === 'auth:check') {
           const key = normUserKey(String(msg.userKey || ''));
-          const token = String(msg.sessionToken || '');
+          const token = String(msg.sessionToken || '').trim();
           if (!key || !token) return;
 
-          const user = store.users.find((u) => normUserKey(u.username) === key);
-          if (!user || !user.isActive) {
-            socket.send(JSON.stringify({ type: 'auth:user_disabled', userKey: key }));
-            return;
-          }
+          const check = backend.validateSession({
+            userKey: key,
+            sessionToken: token,
+            deviceId: msg.deviceId ? String(msg.deviceId) : undefined,
+            deviceLabel: msg.deviceLabel ? String(msg.deviceLabel) : undefined,
+            loginAt: msg.loginAt ? String(msg.loginAt) : undefined
+          });
 
-          const active = store.activeSessions[key];
-          if (!active) {
-            socket.send(JSON.stringify({ type: 'auth:session_expired', userKey: key }));
-            return;
-          }
-
-          if (active.sessionToken !== token) {
-            socket.send(
-              JSON.stringify({
-                type: 'auth:session_replaced',
-                userKey: key,
-                userId: active.userId,
-                username: user.username,
-                fullName: user.fullName,
-                activeSessionToken: active.sessionToken,
-                deviceId: active.deviceId,
-                deviceLabel: active.deviceLabel,
-                loginAt: active.loginAt
-              })
-            );
-          } else {
-            active.lastSeenAt = Date.now();
+          if (!check.valid) {
+            if (check.reason === 'disabled') {
+              socket.send(JSON.stringify({ type: 'auth:user_disabled', userKey: key }));
+            } else if (check.reason === 'replaced' && check.replacedBy) {
+              const user = store.users.find((u) => normUserKey(u.username) === key);
+              socket.send(
+                JSON.stringify({
+                  type: 'auth:session_replaced',
+                  userKey: key,
+                  userId: check.replacedBy.userId,
+                  username: user?.username || check.replacedBy.username,
+                  fullName: user?.fullName,
+                  activeSessionToken: check.replacedBy.sessionToken,
+                  issuedAtMs: check.replacedBy.issuedAtMs,
+                  deviceId: check.replacedBy.deviceId,
+                  deviceLabel: check.replacedBy.deviceLabel,
+                  loginAt: check.replacedBy.loginAt
+                })
+              );
+            } else if (check.reason === 'force_logout') {
+              socket.send(
+                JSON.stringify({
+                  type: 'auth:session_force_logout',
+                  userKey: key,
+                  expiredSessionToken: token,
+                  deviceLabel: check.forceLogoutBy?.deviceLabel,
+                  at: check.forceLogoutBy?.at
+                })
+              );
+            } else {
+              socket.send(
+                JSON.stringify({
+                  type: 'auth:session_expired',
+                  userKey: key,
+                  expiredSessionToken: token
+                })
+              );
+            }
           }
         }
       } catch {

@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
-import { User } from '../types/inventory';
+import { User, ActiveUserSession } from '../types/inventory';
 import { StorageService } from '../services/storage';
 import { SyncService, SessionInvalidationInfo } from '../services/syncService';
 import { normUserKey } from '../utils/additiveMerge';
@@ -15,6 +15,13 @@ export interface ReplacedOtherDeviceAlert {
   message: string;
 }
 
+export interface LoginActionResult {
+  success: boolean;
+  message: string;
+  conflict?: boolean;
+  activeSession?: ActiveUserSession;
+}
+
 function buildKickAlert(info: SessionInvalidationInfo): SessionKickAlert {
   if (info.reason === 'disabled') {
     return {
@@ -22,6 +29,14 @@ function buildKickAlert(info: SessionInvalidationInfo): SessionKickAlert {
       title: 'Tài Khoản Đã Bị Khóa Hoặc Ngừng Kích Hoạt',
       message:
         'Tài khoản của bạn đã bị khóa hoặc ngừng kích hoạt bởi Quản trị viên. Hệ thống đã tự động đăng xuất khỏi thiết bị này.'
+    };
+  }
+  if (info.reason === 'force_logout') {
+    const reqDevice = info.deviceLabel ? ` từ thiết bị "${info.deviceLabel}"` : '';
+    return {
+      ...info,
+      title: 'Đã Nhận Yêu Cầu Đăng Xuất Từ Thiết Bị Khác',
+      message: `Hệ thống vừa nhận được yêu cầu đăng xuất từ xa${reqDevice}. Phiên làm việc trên thiết bị này đã được tự động kết thúc để đảm bảo chỉ 1 thiết bị được hoạt động.`
     };
   }
   if (info.reason === 'expired') {
@@ -36,7 +51,7 @@ function buildKickAlert(info: SessionInvalidationInfo): SessionKickAlert {
   return {
     ...info,
     title: 'Cảnh Báo: Đã Tự Động Đăng Xuất Khỏi Thiết Bị Này',
-    message: `Phát hiện tài khoản đang được đăng nhập trên một thiết bị mới${deviceDesc}. Hệ thống đã tự động đăng xuất phiên làm việc trên thiết bị hiện tại để đảm bảo an toàn dữ liệu.`
+    message: `Phát hiện tài khoản đang được chuyển phiên đăng nhập sang thiết bị mới${deviceDesc}. Hệ thống đã tự động đăng xuất khỏi thiết bị hiện tại để đảm bảo an toàn dữ liệu.`
   };
 }
 
@@ -50,7 +65,16 @@ interface AuthContextType {
   clearSessionKickNotice: () => void;
   replacedOtherDeviceAlert: ReplacedOtherDeviceAlert | null;
   clearReplacedOtherDeviceAlert: () => void;
-  login: (username: string, pass: string) => Promise<{ success: boolean; message: string }>;
+  login: (
+    username: string,
+    pass: string,
+    forceLogoutOtherDevice?: boolean
+  ) => Promise<LoginActionResult>;
+  requestLogoutOtherDevice: (
+    username: string,
+    pass: string
+  ) => Promise<{ success: boolean; message: string }>;
+  forceLogoutOtherDevicesFromCurrent: () => Promise<{ success: boolean; message: string }>;
   logout: () => void;
   isAdmin: boolean;
   isManager: boolean;
@@ -147,16 +171,24 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     });
   }, []);
 
-  const login = async (username: string, pass: string): Promise<{ success: boolean; message: string }> => {
+  const login = async (
+    username: string,
+    pass: string,
+    forceLogoutOtherDevice = false
+  ): Promise<LoginActionResult> => {
     clearSessionKickNotice();
     setReplacedOtherDeviceAlert(null);
-    const res = await SyncService.loginWithServer(username.trim(), pass);
+    const res = await SyncService.loginWithServer(username.trim(), pass, {
+      forceLogoutOtherDevice
+    });
     const latestUsers = StorageService.getUsers();
     setUsers(latestUsers);
 
     if (!res.success || !res.user) {
       return {
         success: false,
+        conflict: res.conflict,
+        activeSession: res.activeSession,
         message: res.message
       };
     }
@@ -166,7 +198,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setReplacedOtherDeviceAlert({
         deviceLabel: prevDevice,
         loginAt: res.replacedSession.loginAt,
-        message: `Tài khoản này trước đó đang đăng nhập trên "${prevDevice}". Hệ thống đã tự động đăng xuất thiết bị đó và chuyển phiên làm việc sang thiết bị hiện tại.`
+        message: `Đã yêu cầu đăng xuất thành công phiên đang mở trên "${prevDevice}" và chuyển sang thiết bị hiện tại.`
       });
     }
 
@@ -175,6 +207,25 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       success: true,
       message: res.message || 'Đăng nhập thành công!'
     };
+  };
+
+  const requestLogoutOtherDevice = async (
+    username: string,
+    pass: string
+  ): Promise<{ success: boolean; message: string }> => {
+    clearSessionKickNotice();
+    const res = await SyncService.requestLogoutOtherDevice(username.trim(), pass);
+    refreshUsers();
+    return res;
+  };
+
+  const forceLogoutOtherDevicesFromCurrent = async (): Promise<{
+    success: boolean;
+    message: string;
+  }> => {
+    const res = await SyncService.forceLogoutOtherDevicesKeepCurrent();
+    refreshUsers();
+    return res;
   };
 
   const logout = () => {
@@ -249,6 +300,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         replacedOtherDeviceAlert,
         clearReplacedOtherDeviceAlert,
         login,
+        requestLogoutOtherDevice,
+        forceLogoutOtherDevicesFromCurrent,
         logout,
         isAdmin,
         isManager,

@@ -12,6 +12,7 @@ export interface User {
   isActive: boolean;
   createdAt: string;
   lastLogin?: string;
+  sessionRevokedAt?: number;
   updatedAt?: number;
 }
 
@@ -231,6 +232,7 @@ export interface ActiveUserSession {
   deviceId: string;
   deviceLabel: string;
   loginAt: string;
+  issuedAtMs?: number;
   lastSeenAt: number;
 }
 

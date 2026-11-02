@@ -1,6 +1,15 @@
 import React, { useState } from 'react';
 import { useAuth } from '../../context/AuthContext';
-import { Lock, UserCheck, ShieldCheck, AlertCircle, CheckCircle2 } from 'lucide-react';
+import type { ActiveUserSession } from '../../types/inventory';
+import {
+  Lock,
+  UserCheck,
+  ShieldCheck,
+  ShieldAlert,
+  AlertCircle,
+  CheckCircle2,
+  LogOut
+} from 'lucide-react';
 
 interface LoginModalProps {
   isOpen: boolean;
@@ -8,12 +17,15 @@ interface LoginModalProps {
 }
 
 export const LoginModal: React.FC<LoginModalProps> = ({ isOpen, onClose }) => {
-  const { login } = useAuth();
+  const { login, requestLogoutOtherDevice } = useAuth();
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [errorMessage, setErrorMessage] = useState('');
   const [successMessage, setSuccessMessage] = useState('');
+  const [conflictSession, setConflictSession] = useState<ActiveUserSession | null>(null);
+  const [conflictMessage, setConflictMessage] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isForcingLogout, setIsForcingLogout] = useState(false);
 
   if (!isOpen) return null;
 
@@ -21,6 +33,8 @@ export const LoginModal: React.FC<LoginModalProps> = ({ isOpen, onClose }) => {
     e.preventDefault();
     setErrorMessage('');
     setSuccessMessage('');
+    setConflictSession(null);
+    setConflictMessage('');
 
     if (!username.trim() || !password) {
       setErrorMessage('Vui lòng nhập đầy đủ tên đăng nhập và mật khẩu.');
@@ -29,8 +43,37 @@ export const LoginModal: React.FC<LoginModalProps> = ({ isOpen, onClose }) => {
 
     setIsSubmitting(true);
     try {
-      const res = await login(username.trim(), password);
+      const res = await login(username.trim(), password, false);
       if (res.success) {
+        setSuccessMessage(res.message);
+        setTimeout(() => {
+          onClose();
+          setSuccessMessage('');
+        }, 600);
+      } else if (res.conflict) {
+        setConflictSession(res.activeSession || null);
+        setConflictMessage(res.message);
+      } else {
+        setErrorMessage(res.message);
+      }
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleForceLogoutAndLogin = async () => {
+    setErrorMessage('');
+    setSuccessMessage('');
+    if (!username.trim() || !password) {
+      setErrorMessage('Vui lòng nhập đầy đủ tên đăng nhập và mật khẩu.');
+      return;
+    }
+    setIsForcingLogout(true);
+    try {
+      const res = await login(username.trim(), password, true);
+      if (res.success) {
+        setConflictSession(null);
+        setConflictMessage('');
         setSuccessMessage(res.message);
         setTimeout(() => {
           onClose();
@@ -40,7 +83,29 @@ export const LoginModal: React.FC<LoginModalProps> = ({ isOpen, onClose }) => {
         setErrorMessage(res.message);
       }
     } finally {
-      setIsSubmitting(false);
+      setIsForcingLogout(false);
+    }
+  };
+
+  const handleRequestLogoutOtherOnly = async () => {
+    setErrorMessage('');
+    setSuccessMessage('');
+    if (!username.trim() || !password) {
+      setErrorMessage('Vui lòng nhập đầy đủ tên đăng nhập và mật khẩu.');
+      return;
+    }
+    setIsForcingLogout(true);
+    try {
+      const res = await requestLogoutOtherDevice(username.trim(), password);
+      if (res.success) {
+        setConflictSession(null);
+        setConflictMessage('');
+        setSuccessMessage(res.message);
+      } else {
+        setErrorMessage(res.message);
+      }
+    } finally {
+      setIsForcingLogout(false);
     }
   };
 
@@ -56,6 +121,35 @@ export const LoginModal: React.FC<LoginModalProps> = ({ isOpen, onClose }) => {
         </div>
 
         <div className="p-5 sm:p-6">
+          {conflictMessage && (
+            <div className="mb-4 p-3.5 bg-amber-50 border border-amber-300 rounded-xl text-amber-900 text-xs space-y-2.5">
+              <div className="flex items-start gap-2">
+                <ShieldAlert className="w-4 h-4 shrink-0 text-amber-600 mt-0.5" />
+                <div className="space-y-1">
+                  <div className="font-bold">
+                    Đang đăng nhập trên {conflictSession?.deviceLabel || 'thiết bị khác'}
+                  </div>
+                  <p className="leading-relaxed">{conflictMessage}</p>
+                </div>
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <button
+                  type="button"
+                  onClick={handleForceLogoutAndLogin}
+                  disabled={isForcingLogout || isSubmitting}
+                  className="w-full min-h-[38px] px-3 py-2 bg-amber-600 hover:bg-amber-700 text-white font-bold rounded-lg transition flex items-center justify-center gap-1.5 disabled:opacity-70"
+                >
+                  <LogOut className="w-3.5 h-3.5" />
+                  <span>
+                    {isForcingLogout
+                      ? 'Đang xử lý...'
+                      : 'Yêu cầu đăng xuất thiết bị kia & Đăng nhập'}
+                  </span>
+                </button>
+              </div>
+            </div>
+          )}
+
           {errorMessage && (
             <div className="mb-4 p-3 bg-rose-50 border border-rose-200 rounded-xl text-rose-700 text-xs flex items-center gap-2">
               <AlertCircle className="w-4 h-4 shrink-0" />
@@ -107,20 +201,36 @@ export const LoginModal: React.FC<LoginModalProps> = ({ isOpen, onClose }) => {
               </div>
             </div>
 
-            <div className="pt-2 flex items-center gap-2">
-              <button
-                type="submit"
-                disabled={isSubmitting}
-                className="flex-1 min-h-[44px] py-2.5 px-4 bg-blue-600 hover:bg-blue-700 text-white font-semibold text-sm rounded-xl shadow-md shadow-blue-500/20 transition active:scale-[0.99] disabled:opacity-70"
-              >
-                {isSubmitting ? 'Đang xác thực...' : 'Đăng Nhập Ngay'}
-              </button>
+            <div className="pt-2 space-y-2">
+              <div className="flex items-center gap-2">
+                <button
+                  type="submit"
+                  disabled={isSubmitting || isForcingLogout}
+                  className="flex-1 min-h-[44px] py-2.5 px-4 bg-blue-600 hover:bg-blue-700 text-white font-semibold text-sm rounded-xl shadow-md shadow-blue-500/20 transition active:scale-[0.99] disabled:opacity-70"
+                >
+                  {isSubmitting ? 'Đang xác thực...' : 'Đăng Nhập Ngay'}
+                </button>
+                <button
+                  type="button"
+                  onClick={onClose}
+                  className="min-h-[44px] py-2.5 px-4 bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold text-sm rounded-xl transition"
+                >
+                  Đóng
+                </button>
+              </div>
+
               <button
                 type="button"
-                onClick={onClose}
-                className="min-h-[44px] py-2.5 px-4 bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold text-sm rounded-xl transition"
+                onClick={handleRequestLogoutOtherOnly}
+                disabled={isSubmitting || isForcingLogout}
+                className="w-full min-h-[40px] py-2 px-3 bg-amber-50 hover:bg-amber-100 border border-amber-300 text-amber-800 font-semibold text-xs rounded-xl transition flex items-center justify-center gap-1.5 disabled:opacity-70"
               >
-                Đóng
+                <LogOut className="w-3.5 h-3.5 shrink-0" />
+                <span>
+                  {isForcingLogout
+                    ? 'Đang gửi yêu cầu...'
+                    : 'Yêu cầu đăng xuất trên thiết bị kia'}
+                </span>
               </button>
             </div>
           </form>

@@ -42,7 +42,7 @@ interface ServerManifest {
 }
 
 export interface SessionInvalidationInfo {
-  reason: 'replaced' | 'disabled' | 'expired';
+  reason: 'replaced' | 'disabled' | 'expired' | 'force_logout';
   username?: string;
   fullName?: string;
   deviceLabel?: string;
@@ -54,11 +54,21 @@ export interface UnifiedAuthSession {
   session: ActiveUserSession;
 }
 
+export interface LoginServerResult {
+  success: boolean;
+  message: string;
+  conflict?: boolean;
+  activeSession?: ActiveUserSession;
+  user?: User;
+  replacedSession?: ActiveUserSession;
+}
+
 const CLIENT_ID = `cli-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 const DEVICE_ID_STORAGE_KEY = 'vtp_device_id_v1';
 const UNIFIED_SESSION_STORAGE_KEY = 'vtp_auth_session_v5';
 const KICK_NOTICE_STORAGE_KEY = 'vtp_session_kick_notice_v1';
 const STATIC_SESSIONS_STORAGE_KEY = 'vtp_static_active_sessions_v1';
+const STATIC_TTL_MS = 90_000;
 const LEGACY_SESSION_KEYS = [
   'vtp_inventory_session_v3',
   'vtp_active_session_v1',
@@ -75,6 +85,7 @@ let isStarted = false;
 let isReconciling = false;
 let pendingReconcile = false;
 let isVerifyingSession = false;
+let authTransitionCount = 0;
 let metaDirty = false;
 let materialsDirty = false;
 let lastKnownServerRev = 0;
@@ -94,6 +105,25 @@ let pendingInvalidation: SessionInvalidationInfo | null = null;
 
 const syncStateListeners = new Set<(syncing: boolean) => void>();
 const sessionInvalidatedListeners = new Set<(info: SessionInvalidationInfo) => void>();
+
+function getClientSessionIssuedAtMs(sess?: ActiveUserSession | null): number {
+  if (!sess) return 0;
+  if (Number(sess.issuedAtMs) > 0) return Number(sess.issuedAtMs);
+  const token = String(sess.sessionToken || '');
+  if (token.startsWith('static-')) {
+    const parts = token.split('-');
+    const ts = Number(parts[1]);
+    if (Number.isFinite(ts) && ts > 0) return ts;
+  } else {
+    const parts = token.split('.');
+    if (parts.length >= 3) {
+      const ts = Number(parts[1]);
+      if (Number.isFinite(ts) && ts > 0) return ts;
+    }
+  }
+  const parsedLogin = sess.loginAt ? Date.parse(sess.loginAt) : 0;
+  return Number.isFinite(parsedLogin) && parsedLogin > 0 ? parsedLogin : 0;
+}
 
 function purgeLegacySessionKeys(): void {
   if (typeof window === 'undefined') return;
@@ -297,11 +327,13 @@ function saveStaticSessionEntry(userKey: string, session: ActiveUserSession | nu
 
 async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers || {});
+  let sentSessionToken = '';
   if (url.startsWith('/api/sync')) {
     const current = getStoredUnifiedSession();
     if (current && !current.session.sessionToken.startsWith('static-')) {
+      sentSessionToken = current.session.sessionToken;
       headers.set('x-auth-user-key', encodeURIComponent(current.session.userKey));
-      headers.set('x-auth-session-token', current.session.sessionToken);
+      headers.set('x-auth-session-token', sentSessionToken);
       headers.set('x-auth-device-id', encodeURIComponent(current.session.deviceId));
       headers.set('x-auth-device-label', encodeURIComponent(current.session.deviceLabel));
     }
@@ -314,7 +346,17 @@ async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
   });
 
   const invalidatedReason = res.headers.get('X-Auth-Invalidated');
-  if (invalidatedReason && getStoredUnifiedSession()) {
+  const checkedToken = res.headers.get('X-Auth-Token-Checked') || sentSessionToken;
+  const latestStored = getStoredUnifiedSession();
+
+  // Chỉ đăng xuất nếu header lỗi phiên thuộc đúng phiên hiện đang lưu (chống triệt để request cũ về trễ đá nhầm phiên mới!)
+  if (
+    invalidatedReason &&
+    authTransitionCount === 0 &&
+    sentSessionToken &&
+    latestStored &&
+    latestStored.session.sessionToken === checkedToken
+  ) {
     let replacedBy: ActiveUserSession | undefined;
     const rawReplaced = res.headers.get('X-Auth-Replaced-By');
     if (rawReplaced) {
@@ -326,6 +368,12 @@ async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
     }
     if (invalidatedReason === 'disabled') {
       triggerLocalKickOut({ reason: 'disabled' });
+    } else if (invalidatedReason === 'force_logout') {
+      triggerLocalKickOut({
+        reason: 'force_logout',
+        deviceLabel: replacedBy?.deviceLabel,
+        loginAt: replacedBy?.loginAt
+      });
     } else if (invalidatedReason === 'replaced') {
       triggerLocalKickOut({
         reason: 'replaced',
@@ -357,7 +405,10 @@ function sendWsAuthCheck(): void {
       JSON.stringify({
         type: 'auth:check',
         userKey: current.session.userKey,
-        sessionToken: current.session.sessionToken
+        sessionToken: current.session.sessionToken,
+        deviceId: current.session.deviceId,
+        deviceLabel: current.session.deviceLabel,
+        loginAt: current.session.loginAt
       })
     );
   } catch {
@@ -366,7 +417,7 @@ function sendWsAuthCheck(): void {
 }
 
 async function verifySessionHeartbeat(): Promise<void> {
-  if (isVerifyingSession) return;
+  if (isVerifyingSession || authTransitionCount > 0) return;
   const current = getStoredUnifiedSession();
   if (!current) return;
 
@@ -374,24 +425,36 @@ async function verifySessionHeartbeat(): Promise<void> {
   try {
     const mySession = current.session;
 
-    // Nếu đang ở môi trường tĩnh chưa có /api, kiểm tra bảng phiên tĩnh đồng bộ giữa các cửa sổ trình duyệt
     if (mySession.sessionToken.startsWith('static-')) {
       const staticMap = getStaticSessionsMap();
       const activeStatic = staticMap[mySession.userKey];
-      if (activeStatic && activeStatic.sessionToken !== mySession.sessionToken) {
-        triggerLocalKickOut({
-          reason: 'replaced',
-          deviceLabel: activeStatic.deviceLabel,
-          loginAt: activeStatic.loginAt
-        });
+      if (!activeStatic) {
+        triggerLocalKickOut({ reason: 'force_logout' });
+        return;
       }
+      if (activeStatic.sessionToken !== mySession.sessionToken) {
+        if (getClientSessionIssuedAtMs(activeStatic) >= getClientSessionIssuedAtMs(mySession)) {
+          triggerLocalKickOut({
+            reason: 'replaced',
+            deviceLabel: activeStatic.deviceLabel,
+            loginAt: activeStatic.loginAt
+          });
+        }
+        return;
+      }
+      saveStaticSessionEntry(mySession.userKey, {
+        ...activeStatic,
+        lastSeenAt: Date.now()
+      });
       return;
     }
 
     const res = await fetchJson<{
       valid: boolean;
-      reason?: 'replaced' | 'disabled' | 'expired' | 'missing';
+      reason?: 'replaced' | 'disabled' | 'expired' | 'force_logout' | 'missing';
+      session?: ActiveUserSession;
       replacedBy?: ActiveUserSession;
+      forceLogoutBy?: { deviceLabel?: string; at?: string };
     }>('/api/auth/verify-session', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -407,13 +470,23 @@ async function verifySessionHeartbeat(): Promise<void> {
     });
 
     const latestLocal = getStoredUnifiedSession();
-    if (!latestLocal || latestLocal.session.sessionToken !== mySession.sessionToken) {
+    if (
+      authTransitionCount > 0 ||
+      !latestLocal ||
+      latestLocal.session.sessionToken !== mySession.sessionToken
+    ) {
       return;
     }
 
     if (!res.valid) {
       if (res.reason === 'disabled') {
         triggerLocalKickOut({ reason: 'disabled' });
+      } else if (res.reason === 'force_logout') {
+        triggerLocalKickOut({
+          reason: 'force_logout',
+          deviceLabel: res.forceLogoutBy?.deviceLabel,
+          loginAt: res.forceLogoutBy?.at
+        });
       } else if (res.reason === 'replaced') {
         triggerLocalKickOut({
           reason: 'replaced',
@@ -423,40 +496,88 @@ async function verifySessionHeartbeat(): Promise<void> {
       } else {
         triggerLocalKickOut({ reason: 'expired' });
       }
+      return;
+    }
+
+    if (res.session && res.session.issuedAtMs && !latestLocal.session.issuedAtMs) {
+      saveStoredUnifiedSession({
+        user: latestLocal.user,
+        session: {
+          ...latestLocal.session,
+          issuedAtMs: res.session.issuedAtMs
+        }
+      });
     }
   } catch {
-    // Tạm thời bỏ qua lỗi mạng chập chờn, sẽ kiểm tra lại ở nhịp 1.5 giây kế tiếp
+    // Tạm thời bỏ qua lỗi mạng chập chờn, sẽ kiểm tra lại ở nhịp kế tiếp
   } finally {
     isVerifyingSession = false;
   }
 }
 
-function inspectManifestActiveSessions(activeSessions?: Record<string, ActiveUserSession>): boolean {
+function inspectManifestActiveSessions(
+  activeSessions?: Record<string, ActiveUserSession>,
+  manifestUsers?: User[]
+): boolean {
+  if (authTransitionCount > 0) return true;
   const current = getStoredUnifiedSession();
-  if (!current || !activeSessions) return true;
+  if (!current) return true;
 
-  // Nếu trước đó đang dùng phiên tĩnh dự phòng mà nay máy chủ /api đã hoạt động, yêu cầu xác thực lại phiên máy chủ
   if (current.session.sessionToken.startsWith('static-')) {
     triggerLocalKickOut({ reason: 'expired' });
     return false;
   }
 
   const mySession = current.session;
+  const myIssuedAt = getClientSessionIssuedAtMs(mySession);
+
+  if (Array.isArray(manifestUsers)) {
+    const matchedUser = manifestUsers.find(
+      (u) => normUserKey(u.username) === normUserKey(mySession.userKey) || u.id === mySession.userId
+    );
+    if (matchedUser && !matchedUser.isActive) {
+      triggerLocalKickOut({ reason: 'disabled' });
+      return false;
+    }
+    const revokedAt = Number(matchedUser?.sessionRevokedAt) || 0;
+    if (revokedAt > 0 && myIssuedAt > 0 && myIssuedAt <= revokedAt) {
+      const remote = activeSessions?.[mySession.userKey];
+      if (
+        remote &&
+        remote.sessionToken !== mySession.sessionToken &&
+        getClientSessionIssuedAtMs(remote) > myIssuedAt
+      ) {
+        triggerLocalKickOut({
+          reason: 'replaced',
+          deviceLabel: remote.deviceLabel,
+          loginAt: remote.loginAt
+        });
+      } else {
+        triggerLocalKickOut({ reason: 'force_logout' });
+      }
+      return false;
+    }
+  }
+
+  if (!activeSessions) return true;
   const remote = activeSessions[mySession.userKey];
-  if (!remote) {
+  if (!remote || remote.sessionToken === mySession.sessionToken) {
     return true;
   }
 
-  if (remote.sessionToken !== mySession.sessionToken) {
-    triggerLocalKickOut({
-      reason: 'replaced',
-      deviceLabel: remote.deviceLabel,
-      loginAt: remote.loginAt
-    });
-    return false;
+  const remoteIssuedAt = getClientSessionIssuedAtMs(remote);
+  // Chỉ đăng xuất nếu phiên trên Server thực sự MỚI HƠN phiên hiện tại; nếu cũ hơn (do Lambda ấm khác trả về), gọi verify để nâng cấp Lambda đó!
+  if (myIssuedAt > 0 && remoteIssuedAt > 0 && remoteIssuedAt <= myIssuedAt) {
+    void verifySessionHeartbeat();
+    return true;
   }
 
-  return true;
+  triggerLocalKickOut({
+    reason: 'replaced',
+    deviceLabel: remote.deviceLabel,
+    loginAt: remote.loginAt
+  });
+  return false;
 }
 
 async function pullMissingReceipts(type: 'inbound' | 'outbound', codesToPull: string[]): Promise<void> {
@@ -650,10 +771,16 @@ async function reconcileInternal(): Promise<void> {
   notifySyncState(true);
 
   try {
+    const tokenBeforeManifest = getStoredUnifiedSession()?.session.sessionToken || '';
     const manifest = await fetchJson<ServerManifest>(`/api/sync/manifest?t=${Date.now()}`);
 
-    // Bước 0: Kiểm tra nghiêm ngặt hiệu lực phiên đăng nhập 1 thiết bị / 1 tài khoản
-    inspectManifestActiveSessions(manifest.activeSessions);
+    // Bước 0: Chỉ kiểm tra phiên từ manifest nếu phiên đăng nhập không bị thay đổi trong lúc chờ mạng
+    if (
+      authTransitionCount === 0 &&
+      (getStoredUnifiedSession()?.session.sessionToken || '') === tokenBeforeManifest
+    ) {
+      inspectManifestActiveSessions(manifest.activeSessions, manifest.users);
+    }
 
     // Bước 1: Đồng bộ cộng gộp Users + Warehouses + Tombstones từ Server trước
     StorageService.applyRemoteMeta({
@@ -821,13 +948,36 @@ function setupBroadcastChannel(): void {
           normUserKey(current.session.userKey) === normUserKey(data.userKey) &&
           current.session.sessionToken !== data.activeSessionToken
         ) {
-          triggerLocalKickOut({
-            reason: 'replaced',
-            username: current.user.username,
-            fullName: current.user.fullName,
-            deviceLabel: data.deviceLabel,
-            loginAt: data.loginAt
-          });
+          const myIssued = getClientSessionIssuedAtMs(current.session);
+          const remoteIssued = Number(data.issuedAtMs) || 0;
+          if (!myIssued || !remoteIssued || remoteIssued >= myIssued) {
+            triggerLocalKickOut({
+              reason: 'replaced',
+              username: current.user.username,
+              fullName: current.user.fullName,
+              deviceLabel: data.deviceLabel,
+              loginAt: data.loginAt
+            });
+          }
+        }
+      } else if (data.type === 'auth:session_force_logout') {
+        const current = getStoredUnifiedSession();
+        if (
+          current &&
+          normUserKey(current.session.userKey) === normUserKey(data.userKey) &&
+          (!data.exceptSessionToken || current.session.sessionToken !== data.exceptSessionToken)
+        ) {
+          const myIssued = getClientSessionIssuedAtMs(current.session);
+          const revokedBefore = Number(data.revokedBeforeMs) || 0;
+          if (!revokedBefore || !myIssued || myIssued <= revokedBefore) {
+            triggerLocalKickOut({
+              reason: 'force_logout',
+              username: current.user.username,
+              fullName: current.user.fullName,
+              deviceLabel: data.deviceLabel,
+              loginAt: data.at
+            });
+          }
         }
       } else if (data.type === 'sync:local_changed') {
         void reconcileInternal();
@@ -869,13 +1019,18 @@ function connectWebSocket(force = false): void {
             normUserKey(current.session.userKey) === normUserKey(msg.userKey) &&
             current.session.sessionToken !== msg.activeSessionToken
           ) {
-            triggerLocalKickOut({
-              reason: 'replaced',
-              username: current.user.username,
-              fullName: current.user.fullName,
-              deviceLabel: msg.deviceLabel,
-              loginAt: msg.loginAt
-            });
+            const myIssued = getClientSessionIssuedAtMs(current.session);
+            const remoteIssued =
+              Number(msg.issuedAtMs) || (msg.loginAt ? Date.parse(msg.loginAt) : 0);
+            if (!myIssued || !remoteIssued || remoteIssued >= myIssued) {
+              triggerLocalKickOut({
+                reason: 'replaced',
+                username: current.user.username,
+                fullName: current.user.fullName,
+                deviceLabel: msg.deviceLabel,
+                loginAt: msg.loginAt
+              });
+            }
           }
           return;
         }
@@ -888,16 +1043,46 @@ function connectWebSocket(force = false): void {
           return;
         }
 
-        if (msg.type === 'auth:session_expired') {
+        if (msg.type === 'auth:session_force_logout') {
           const current = getStoredUnifiedSession();
-          if (current && normUserKey(current.session.userKey) === normUserKey(msg.userKey)) {
-            triggerLocalKickOut({ reason: 'expired' });
+          if (!current || normUserKey(current.session.userKey) !== normUserKey(msg.userKey)) {
+            return;
+          }
+          if (msg.exceptSessionToken && current.session.sessionToken === msg.exceptSessionToken) {
+            return;
+          }
+          if (msg.expiredSessionToken && current.session.sessionToken !== msg.expiredSessionToken) {
+            return;
+          }
+          const myIssued = getClientSessionIssuedAtMs(current.session);
+          const revokedBefore = Number(msg.revokedBeforeMs) || 0;
+          if (!revokedBefore || !myIssued || myIssued <= revokedBefore) {
+            triggerLocalKickOut({
+              reason: 'force_logout',
+              username: current.user.username,
+              fullName: current.user.fullName,
+              deviceLabel: msg.deviceLabel,
+              loginAt: msg.at
+            });
           }
           return;
         }
 
+        if (msg.type === 'auth:session_expired') {
+          const current = getStoredUnifiedSession();
+          if (!current || normUserKey(current.session.userKey) !== normUserKey(msg.userKey)) {
+            return;
+          }
+          // Chỉ thoát nếu đúng mã phiên bị hết hạn, tuyệt đối không đá nhầm phiên mới!
+          if (msg.expiredSessionToken && current.session.sessionToken !== msg.expiredSessionToken) {
+            return;
+          }
+          triggerLocalKickOut({ reason: 'expired' });
+          return;
+        }
+
         if (msg.type === 'sync:hello') {
-          if (msg.activeSessions) {
+          if (msg.activeSessions && authTransitionCount === 0) {
             inspectManifestActiveSessions(msg.activeSessions);
           }
           void reconcileInternal();
@@ -1004,13 +1189,13 @@ export const SyncService = {
       window.addEventListener('pointerdown', handleInteraction, { passive: true });
       window.addEventListener('keydown', handleInteraction, { passive: true });
 
-      // Nhịp tim chuyên biệt kiểm tra phiên 1 thiết bị mỗi 1.5 giây (chạy độc lập kể cả khi cửa sổ không active hoặc đang đồng bộ file lớn)
+      // Nhịp tim chuyên biệt kiểm tra phiên 1 thiết bị mỗi 2 giây
       sessionHeartbeatTimer = setInterval(() => {
-        if (getStoredUnifiedSession()) {
+        if (getStoredUnifiedSession() && authTransitionCount === 0) {
           connectWebSocket();
           void verifySessionHeartbeat();
         }
-      }, 1500);
+      }, 2000);
 
       // Đồng bộ dữ liệu nền định kỳ mỗi 4 giây
       pollTimer = setInterval(() => {
@@ -1064,15 +1249,21 @@ export const SyncService = {
 
   async loginWithServer(
     username: string,
-    password: string
-  ): Promise<{ success: boolean; message: string; user?: User; replacedSession?: ActiveUserSession }> {
+    password: string,
+    options?: { forceLogoutOtherDevice?: boolean }
+  ): Promise<LoginServerResult> {
+    authTransitionCount++;
     const deviceId = getDeviceId();
     const deviceLabel = getDeviceLabel();
     const localUsers = StorageService.getUsers();
+    const forceLogoutOtherDevice = Boolean(options?.forceLogoutOtherDevice);
 
     const attemptLogin = () =>
       fetchJson<{
         success: boolean;
+        conflict?: boolean;
+        code?: string;
+        activeSession?: ActiveUserSession;
         message: string;
         user?: User;
         session?: ActiveUserSession;
@@ -1086,7 +1277,8 @@ export const SyncService = {
           password,
           deviceId,
           deviceLabel,
-          localUsers
+          localUsers,
+          forceLogoutOtherDevice
         })
       });
 
@@ -1098,7 +1290,6 @@ export const SyncService = {
         if (firstErr instanceof ApiRouteMissingError) {
           throw firstErr;
         }
-        // Thử lại 1 lần sau 450ms nếu mạng di động vừa chuyển vùng / thức dậy
         await new Promise((r) => setTimeout(r, 450));
         res = await attemptLogin();
       }
@@ -1106,12 +1297,10 @@ export const SyncService = {
       if (!res.success || !res.user || !res.session) {
         return {
           success: false,
+          conflict: Boolean(res.conflict),
+          activeSession: res.activeSession,
           message: res.message || 'Đăng nhập không thành công.'
         };
-      }
-
-      if (Array.isArray(res.users) && res.users.length > 0) {
-        StorageService.applyRemoteMeta({ users: res.users });
       }
 
       pendingInvalidation = null;
@@ -1121,11 +1310,16 @@ export const SyncService = {
         session: res.session
       });
 
+      if (Array.isArray(res.users) && res.users.length > 0) {
+        StorageService.applyRemoteMeta({ users: res.users });
+      }
+
       try {
         authChannel?.postMessage({
           type: 'auth:session_replaced',
           userKey: res.session.userKey,
           activeSessionToken: res.session.sessionToken,
+          issuedAtMs: res.session.issuedAtMs,
           deviceLabel: res.session.deviceLabel,
           loginAt: res.session.loginAt
         });
@@ -1135,7 +1329,9 @@ export const SyncService = {
 
       connectWebSocket();
       sendWsAuthCheck();
-      void reconcileInternal();
+      queueMicrotask(() => {
+        void reconcileInternal();
+      });
 
       return {
         success: true,
@@ -1144,7 +1340,6 @@ export const SyncService = {
         replacedSession: res.replacedSession
       };
     } catch (err) {
-      // Dự phòng an toàn chỉ khi bản build tĩnh thuần chưa triển khai nhánh /api (404 / HTML)
       if (err instanceof ApiRouteMissingError) {
         const inputKey = normUserKey(username);
         const matched = localUsers.find(
@@ -1175,11 +1370,26 @@ export const SyncService = {
         const staticMap = getStaticSessionsMap();
         const prevStatic = staticMap[userKey];
 
+        if (
+          prevStatic &&
+          prevStatic.deviceId !== deviceId &&
+          nowMs - (prevStatic.lastSeenAt || 0) <= STATIC_TTL_MS &&
+          !forceLogoutOtherDevice
+        ) {
+          return {
+            success: false,
+            conflict: true,
+            activeSession: prevStatic,
+            message: `Tài khoản "${matched.username}" hiện đang đăng nhập trên ${prevStatic.deviceLabel || 'thiết bị khác'}. Vui lòng nhấn "Yêu cầu đăng xuất trên thiết bị kia" để tiếp tục.`
+          };
+        }
+
         const staticSession: ActiveUserSession = {
           userId: matched.id,
           username: matched.username,
           userKey,
           sessionToken: `static-${nowMs}-${Math.random().toString(36).slice(2, 10)}`,
+          issuedAtMs: nowMs,
           deviceId,
           deviceLabel,
           loginAt: nowIso,
@@ -1199,6 +1409,7 @@ export const SyncService = {
             type: 'auth:session_replaced',
             userKey,
             activeSessionToken: staticSession.sessionToken,
+            issuedAtMs: nowMs,
             deviceLabel,
             loginAt: nowIso
           });
@@ -1219,6 +1430,221 @@ export const SyncService = {
         message:
           'Không thể kết nối máy chủ xác thực phiên thiết bị. Vui lòng kiểm tra kết nối mạng và thử lại.'
       };
+    } finally {
+      authTransitionCount = Math.max(0, authTransitionCount - 1);
+    }
+  },
+
+  async requestLogoutOtherDevice(
+    username: string,
+    password: string
+  ): Promise<{ success: boolean; message: string }> {
+    authTransitionCount++;
+    const deviceId = getDeviceId();
+    const deviceLabel = getDeviceLabel();
+    const localUsers = StorageService.getUsers();
+
+    try {
+      const res = await fetchJson<{
+        success: boolean;
+        message: string;
+        users?: User[];
+      }>('/api/auth/force-logout', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          username,
+          password,
+          deviceId,
+          deviceLabel,
+          localUsers
+        })
+      });
+
+      if (!res.success) {
+        return {
+          success: false,
+          message: res.message || 'Không thể gửi yêu cầu đăng xuất thiết bị kia.'
+        };
+      }
+
+      if (Array.isArray(res.users) && res.users.length > 0) {
+        StorageService.applyRemoteMeta({ users: res.users });
+      }
+
+      const targetKey = normUserKey(username);
+      const current = getStoredUnifiedSession();
+      if (current && normUserKey(current.session.userKey) === targetKey) {
+        clearStoredUnifiedSession();
+      }
+
+      try {
+        authChannel?.postMessage({
+          type: 'auth:session_force_logout',
+          userKey: targetKey,
+          deviceLabel,
+          at: new Date().toISOString()
+        });
+      } catch {
+        // ignore
+      }
+
+      queueMicrotask(() => {
+        void reconcileInternal();
+      });
+
+      return {
+        success: true,
+        message:
+          res.message ||
+          'Đã yêu cầu đăng xuất trên thiết bị kia thành công! Bạn có thể đăng nhập ngay bây giờ.'
+      };
+    } catch (err) {
+      if (err instanceof ApiRouteMissingError) {
+        const inputKey = normUserKey(username);
+        const matched = localUsers.find(
+          (u) => normUserKey(u.username) === inputKey || normUserKey(u.fullName) === inputKey
+        );
+        if (!matched) {
+          return {
+            success: false,
+            message: `Tài khoản "${username}" không tồn tại trong hệ thống.`
+          };
+        }
+        if ((matched.password || '') !== password) {
+          return {
+            success: false,
+            message: 'Mật khẩu xác thực không chính xác.'
+          };
+        }
+        const userKey = normUserKey(matched.username);
+        saveStaticSessionEntry(userKey, null);
+        try {
+          authChannel?.postMessage({
+            type: 'auth:session_force_logout',
+            userKey,
+            deviceLabel,
+            at: new Date().toISOString()
+          });
+        } catch {
+          // ignore
+        }
+        return {
+          success: true,
+          message: 'Đã đăng xuất phiên trên thiết bị kia thành công! Bạn có thể đăng nhập ngay.'
+        };
+      }
+      return {
+        success: false,
+        message: 'Không thể kết nối máy chủ để gửi yêu cầu đăng xuất thiết bị kia. Vui lòng thử lại.'
+      };
+    } finally {
+      authTransitionCount = Math.max(0, authTransitionCount - 1);
+    }
+  },
+
+  async forceLogoutOtherDevicesKeepCurrent(): Promise<{ success: boolean; message: string }> {
+    const current = getStoredUnifiedSession();
+    if (!current) {
+      return { success: false, message: 'Chưa đăng nhập tài khoản.' };
+    }
+
+    authTransitionCount++;
+    try {
+      if (current.session.sessionToken.startsWith('static-')) {
+        const nowMs = Date.now();
+        const refreshed: ActiveUserSession = {
+          ...current.session,
+          sessionToken: `static-${nowMs}-${Math.random().toString(36).slice(2, 10)}`,
+          issuedAtMs: nowMs,
+          lastSeenAt: nowMs
+        };
+        saveStaticSessionEntry(current.session.userKey, refreshed);
+        saveStoredUnifiedSession({
+          user: current.user,
+          session: refreshed
+        });
+        try {
+          authChannel?.postMessage({
+            type: 'auth:session_force_logout',
+            userKey: current.session.userKey,
+            exceptSessionToken: refreshed.sessionToken,
+            deviceLabel: current.session.deviceLabel,
+            at: new Date(nowMs).toISOString()
+          });
+        } catch {
+          // ignore
+        }
+        return {
+          success: true,
+          message: 'Đã yêu cầu đăng xuất trên mọi thiết bị khác thành công!'
+        };
+      }
+
+      const res = await fetchJson<{
+        success: boolean;
+        message: string;
+        user?: User;
+        session?: ActiveUserSession;
+        users?: User[];
+      }>('/api/auth/force-logout', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          keepCurrentSession: true,
+          userKey: current.session.userKey,
+          username: current.user.username,
+          userId: current.user.id,
+          sessionToken: current.session.sessionToken,
+          deviceId: current.session.deviceId,
+          deviceLabel: current.session.deviceLabel
+        })
+      });
+
+      if (!res.success || !res.session) {
+        return {
+          success: false,
+          message: res.message || 'Không thể yêu cầu đăng xuất thiết bị kia.'
+        };
+      }
+
+      saveStoredUnifiedSession({
+        user: res.user || current.user,
+        session: res.session
+      });
+
+      if (Array.isArray(res.users) && res.users.length > 0) {
+        StorageService.applyRemoteMeta({ users: res.users });
+      }
+
+      try {
+        authChannel?.postMessage({
+          type: 'auth:session_force_logout',
+          userKey: res.session.userKey,
+          exceptSessionToken: res.session.sessionToken,
+          deviceLabel: res.session.deviceLabel,
+          at: new Date().toISOString()
+        });
+      } catch {
+        // ignore
+      }
+
+      sendWsAuthCheck();
+      queueMicrotask(() => {
+        void reconcileInternal();
+      });
+
+      return {
+        success: true,
+        message: res.message || 'Đã gửi yêu cầu đăng xuất thành công tới mọi thiết bị khác!'
+      };
+    } catch {
+      return {
+        success: false,
+        message: 'Không thể kết nối máy chủ để gửi yêu cầu đăng xuất thiết bị kia.'
+      };
+    } finally {
+      authTransitionCount = Math.max(0, authTransitionCount - 1);
     }
   },
 
@@ -1227,25 +1653,31 @@ export const SyncService = {
     clearStoredUnifiedSession();
     if (!current) return;
 
-    if (current.session.sessionToken.startsWith('static-')) {
-      const staticMap = getStaticSessionsMap();
-      if (staticMap[current.session.userKey]?.sessionToken === current.session.sessionToken) {
-        saveStaticSessionEntry(current.session.userKey, null);
-      }
-      return;
-    }
-
+    authTransitionCount++;
     try {
-      await fetchJson('/api/auth/logout', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          userKey: current.session.userKey,
-          sessionToken: current.session.sessionToken
-        })
-      });
-    } catch {
-      // ignore network error on logout
+      if (current.session.sessionToken.startsWith('static-')) {
+        const staticMap = getStaticSessionsMap();
+        if (staticMap[current.session.userKey]?.sessionToken === current.session.sessionToken) {
+          saveStaticSessionEntry(current.session.userKey, null);
+        }
+        return;
+      }
+
+      try {
+        await fetchJson('/api/auth/logout', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            userKey: current.session.userKey,
+            sessionToken: current.session.sessionToken,
+            deviceId: current.session.deviceId
+          })
+        });
+      } catch {
+        // ignore network error on logout
+      }
+    } finally {
+      authTransitionCount = Math.max(0, authTransitionCount - 1);
     }
   },
 

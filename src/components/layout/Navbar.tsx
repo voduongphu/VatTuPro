@@ -7,9 +7,13 @@ import {
   LogOut,
   RefreshCw,
   ShieldCheck,
+  MonitorSmartphone,
+  CheckCircle2,
+  AlertCircle,
   LogIn,
   ChevronDown,
-  Menu
+  Menu,
+  X
 } from 'lucide-react';
 import { LoginModal } from '../auth/LoginModal';
 import { ChangePasswordModal } from '../auth/ChangePasswordModal';
@@ -19,18 +23,42 @@ interface NavbarProps {
 }
 
 export const Navbar: React.FC<NavbarProps> = ({ onOpenMobileMenu }) => {
-  const { currentUser, logout, isAdmin } = useAuth();
+  const { currentUser, logout, forceLogoutOtherDevicesFromCurrent, isAdmin } = useAuth();
   const [isLoginModalOpen, setIsLoginModalOpen] = useState(false);
   const [isChangePassModalOpen, setIsChangePassModalOpen] = useState(false);
   const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
+  const [isForcingRemoteLogout, setIsForcingRemoteLogout] = useState(false);
+  const [remoteLogoutNotice, setRemoteLogoutNotice] = useState<{
+    success: boolean;
+    message: string;
+  } | null>(null);
 
   useEffect(() => {
     return SyncService.subscribeSyncState(setIsSyncing);
   }, []);
 
+  useEffect(() => {
+    if (!remoteLogoutNotice) return;
+    const timer = setTimeout(() => {
+      setRemoteLogoutNotice(null);
+    }, 5000);
+    return () => clearTimeout(timer);
+  }, [remoteLogoutNotice]);
+
   const handleManualSync = () => {
     void SyncService.syncNow();
+  };
+
+  const handleForceLogoutOtherDevices = async () => {
+    setIsUserMenuOpen(false);
+    setIsForcingRemoteLogout(true);
+    try {
+      const res = await forceLogoutOtherDevicesFromCurrent();
+      setRemoteLogoutNotice(res);
+    } finally {
+      setIsForcingRemoteLogout(false);
+    }
   };
 
   return (
@@ -129,6 +157,20 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenMobileMenu }) => {
 
                       <button
                         type="button"
+                        onClick={handleForceLogoutOtherDevices}
+                        disabled={isForcingRemoteLogout}
+                        className="w-full min-h-[44px] px-4 py-2.5 text-left hover:bg-amber-50 text-amber-800 flex items-center gap-2.5 font-medium disabled:opacity-60"
+                      >
+                        <MonitorSmartphone className="w-4 h-4 text-amber-600 shrink-0" />
+                        <span>
+                          {isForcingRemoteLogout
+                            ? 'Đang gửi yêu cầu...'
+                            : 'Yêu cầu đăng xuất trên thiết bị kia'}
+                        </span>
+                      </button>
+
+                      <button
+                        type="button"
                         onClick={() => {
                           setIsUserMenuOpen(false);
                           logout();
@@ -168,6 +210,33 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenMobileMenu }) => {
             )}
           </div>
         </div>
+
+        {remoteLogoutNotice && (
+          <div
+            className={`px-3 sm:px-6 py-2 text-xs flex items-center justify-between gap-2 border-t ${
+              remoteLogoutNotice.success
+                ? 'bg-emerald-950/95 border-emerald-800 text-emerald-200'
+                : 'bg-rose-950/95 border-rose-800 text-rose-200'
+            }`}
+          >
+            <div className="flex items-center gap-2 min-w-0">
+              {remoteLogoutNotice.success ? (
+                <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+              ) : (
+                <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
+              )}
+              <span className="truncate">{remoteLogoutNotice.message}</span>
+            </div>
+            <button
+              type="button"
+              onClick={() => setRemoteLogoutNotice(null)}
+              className="p-1 rounded-lg hover:bg-white/10 transition shrink-0"
+              title="Đóng thông báo"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        )}
       </header>
 
       <LoginModal

@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { useAuth } from '../../context/AuthContext';
+import type { ActiveUserSession } from '../../types/inventory';
 import {
   Boxes,
   Lock,
@@ -15,6 +16,7 @@ import {
   Warehouse,
   Layers,
   MonitorSmartphone,
+  LogOut,
   Clock,
   X
 } from 'lucide-react';
@@ -39,6 +41,7 @@ function formatKickTime(iso?: string): string {
 export const LoginScreen: React.FC = () => {
   const {
     login,
+    requestLogoutOtherDevice,
     sessionKickNotice,
     sessionKickAlert,
     isKickModalOpen,
@@ -50,7 +53,10 @@ export const LoginScreen: React.FC = () => {
   const [showPassword, setShowPassword] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
   const [successMessage, setSuccessMessage] = useState('');
+  const [conflictSession, setConflictSession] = useState<ActiveUserSession | null>(null);
+  const [conflictMessage, setConflictMessage] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [isRequestingRemoteLogout, setIsRequestingRemoteLogout] = useState(false);
 
   const handleAcknowledgeModal = () => {
     if (!username.trim() && sessionKickAlert?.username) {
@@ -59,32 +65,85 @@ export const LoginScreen: React.FC = () => {
     acknowledgeKickModal();
   };
 
+  const validateInputs = (): boolean => {
+    if (!username.trim()) {
+      setErrorMessage('Vui lòng nhập tên người sử dụng.');
+      return false;
+    }
+    if (!password) {
+      setErrorMessage('Vui lòng nhập mật khẩu đăng nhập.');
+      return false;
+    }
+    return true;
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMessage('');
     setSuccessMessage('');
+    setConflictSession(null);
+    setConflictMessage('');
     clearSessionKickNotice();
 
-    if (!username.trim()) {
-      setErrorMessage('Vui lòng nhập tên người sử dụng.');
-      return;
-    }
-
-    if (!password) {
-      setErrorMessage('Vui lòng nhập mật khẩu đăng nhập.');
-      return;
-    }
+    if (!validateInputs()) return;
 
     setIsLoading(true);
     try {
-      const res = await login(username.trim(), password);
+      const res = await login(username.trim(), password, false);
       if (res.success) {
         setSuccessMessage('Đăng nhập thành công! Đang chuyển vào hệ thống...');
+      } else if (res.conflict) {
+        setConflictSession(res.activeSession || null);
+        setConflictMessage(res.message);
       } else {
         setErrorMessage(res.message);
       }
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  const handleForceLogoutAndLogin = async () => {
+    setErrorMessage('');
+    setSuccessMessage('');
+    clearSessionKickNotice();
+
+    if (!validateInputs()) return;
+
+    setIsRequestingRemoteLogout(true);
+    try {
+      const res = await login(username.trim(), password, true);
+      if (res.success) {
+        setConflictSession(null);
+        setConflictMessage('');
+        setSuccessMessage(res.message || 'Đã đăng xuất thiết bị kia và đăng nhập thành công!');
+      } else {
+        setErrorMessage(res.message);
+      }
+    } finally {
+      setIsRequestingRemoteLogout(false);
+    }
+  };
+
+  const handleRequestLogoutOtherOnly = async () => {
+    setErrorMessage('');
+    setSuccessMessage('');
+    clearSessionKickNotice();
+
+    if (!validateInputs()) return;
+
+    setIsRequestingRemoteLogout(true);
+    try {
+      const res = await requestLogoutOtherDevice(username.trim(), password);
+      if (res.success) {
+        setConflictSession(null);
+        setConflictMessage('');
+        setSuccessMessage(res.message);
+      } else {
+        setErrorMessage(res.message);
+      }
+    } finally {
+      setIsRequestingRemoteLogout(false);
     }
   };
 
@@ -145,6 +204,70 @@ export const LoginScreen: React.FC = () => {
                 </div>
               )}
 
+              {/* Cảnh báo chặn đăng nhập đồng thời trên 2 thiết bị + Thao tác Yêu cầu đăng xuất trên thiết bị kia */}
+              {conflictMessage && (
+                <div className="p-4 bg-amber-950/85 border border-amber-600/80 rounded-2xl text-amber-100 text-xs space-y-3 shadow-lg">
+                  <div className="flex items-start gap-2.5">
+                    <ShieldAlert className="w-5 h-5 shrink-0 text-amber-400 mt-0.5" />
+                    <div className="flex-1 leading-relaxed">
+                      <div className="font-bold text-amber-300 text-sm mb-0.5">
+                        Tài khoản đang hoạt động trên thiết bị khác
+                      </div>
+                      <p className="text-amber-100/90">{conflictMessage}</p>
+                    </div>
+                  </div>
+
+                  {conflictSession && (
+                    <div className="rounded-xl bg-slate-950/80 border border-amber-800/60 p-3 space-y-1.5 text-[11px]">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-slate-400 flex items-center gap-1.5">
+                          <MonitorSmartphone className="w-3.5 h-3.5 text-amber-400" />
+                          <span>Thiết bị đang mở:</span>
+                        </span>
+                        <span className="font-bold text-amber-300 text-right">
+                          {conflictSession.deviceLabel || 'Thiết bị khác'}
+                        </span>
+                      </div>
+                      {formatKickTime(conflictSession.loginAt) && (
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-slate-400 flex items-center gap-1.5">
+                            <Clock className="w-3.5 h-3.5 text-slate-400" />
+                            <span>Đăng nhập lúc:</span>
+                          </span>
+                          <span className="font-mono text-slate-300">
+                            {formatKickTime(conflictSession.loginAt)}
+                          </span>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  <div className="flex flex-col sm:flex-row gap-2 pt-0.5">
+                    <button
+                      type="button"
+                      onClick={handleForceLogoutAndLogin}
+                      disabled={isRequestingRemoteLogout || isLoading}
+                      className="flex-1 min-h-[42px] px-3.5 py-2.5 bg-amber-500 hover:bg-amber-400 text-slate-950 font-extrabold text-xs rounded-xl shadow-md transition flex items-center justify-center gap-1.5 disabled:opacity-70"
+                    >
+                      <LogOut className="w-4 h-4 shrink-0" />
+                      <span>
+                        {isRequestingRemoteLogout
+                          ? 'Đang xử lý...'
+                          : 'Yêu cầu đăng xuất thiết bị kia & Đăng nhập'}
+                      </span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleRequestLogoutOtherOnly}
+                      disabled={isRequestingRemoteLogout || isLoading}
+                      className="min-h-[42px] px-3.5 py-2.5 bg-slate-900 hover:bg-slate-800 border border-amber-600/60 text-amber-200 font-semibold text-xs rounded-xl transition flex items-center justify-center gap-1.5 disabled:opacity-70"
+                    >
+                      <span>Chỉ đăng xuất thiết bị kia</span>
+                    </button>
+                  </div>
+                </div>
+              )}
+
               {/* Alert messages */}
               {errorMessage && (
                 <div className="p-3.5 bg-rose-950/75 border border-rose-800 rounded-2xl text-rose-200 text-xs flex items-center gap-2.5">
@@ -156,7 +279,7 @@ export const LoginScreen: React.FC = () => {
               {successMessage && (
                 <div className="p-3.5 bg-emerald-950/75 border border-emerald-800 rounded-2xl text-emerald-200 text-xs flex items-center gap-2.5">
                   <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-400" />
-                  <span className="font-medium">{successMessage}</span>
+                  <span className="font-medium leading-relaxed">{successMessage}</span>
                 </div>
               )}
 
@@ -206,23 +329,40 @@ export const LoginScreen: React.FC = () => {
                   </div>
                 </div>
 
-                <button
-                  type="submit"
-                  disabled={isLoading}
-                  className="w-full min-h-[48px] py-3.5 px-4 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white font-bold text-sm rounded-xl shadow-lg shadow-blue-600/30 transition active:scale-[0.99] flex items-center justify-center gap-2 disabled:opacity-70 mt-2"
-                >
-                  {isLoading ? (
-                    <span className="flex items-center gap-2">
-                      <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                      <span>Đang xác thực phiên thiết bị...</span>
+                <div className="space-y-2.5 pt-1">
+                  <button
+                    type="submit"
+                    disabled={isLoading || isRequestingRemoteLogout}
+                    className="w-full min-h-[48px] py-3.5 px-4 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white font-bold text-sm rounded-xl shadow-lg shadow-blue-600/30 transition active:scale-[0.99] flex items-center justify-center gap-2 disabled:opacity-70"
+                  >
+                    {isLoading ? (
+                      <span className="flex items-center gap-2">
+                        <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                        <span>Đang xác thực phiên thiết bị...</span>
+                      </span>
+                    ) : (
+                      <>
+                        <span>Đăng Nhập Vào Hệ Thống</span>
+                        <ArrowRight className="w-4 h-4" />
+                      </>
+                    )}
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={handleRequestLogoutOtherOnly}
+                    disabled={isLoading || isRequestingRemoteLogout}
+                    title="Nhập tên người sử dụng và mật khẩu rồi bấm nút này để đăng xuất phiên đang mở trên thiết bị khác"
+                    className="w-full min-h-[44px] py-2.5 px-4 bg-slate-950/90 hover:bg-slate-800 border border-slate-700 hover:border-amber-500/60 text-amber-300 font-semibold text-xs sm:text-sm rounded-xl transition flex items-center justify-center gap-2 disabled:opacity-60"
+                  >
+                    <LogOut className="w-4 h-4 shrink-0 text-amber-400" />
+                    <span>
+                      {isRequestingRemoteLogout
+                        ? 'Đang gửi yêu cầu đăng xuất thiết bị kia...'
+                        : 'Yêu cầu đăng xuất trên thiết bị kia'}
                     </span>
-                  ) : (
-                    <>
-                      <span>Đăng Nhập Vào Hệ Thống</span>
-                      <ArrowRight className="w-4 h-4" />
-                    </>
-                  )}
-                </button>
+                  </button>
+                </div>
               </form>
 
               <div className="pt-1 text-center text-xs text-slate-500">
@@ -341,7 +481,11 @@ export const LoginScreen: React.FC = () => {
                     <div className="flex items-center justify-between gap-3">
                       <span className="text-slate-400 flex items-center gap-1.5 shrink-0">
                         <MonitorSmartphone className="w-3.5 h-3.5 text-amber-400" />
-                        <span>Thiết bị mới:</span>
+                        <span>
+                          {sessionKickAlert.reason === 'force_logout'
+                            ? 'Thiết bị yêu cầu:'
+                            : 'Thiết bị mới:'}
+                        </span>
                       </span>
                       <span className="font-bold text-amber-300 text-right truncate">
                         {sessionKickAlert.deviceLabel}
