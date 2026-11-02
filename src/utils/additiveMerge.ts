@@ -194,10 +194,11 @@ export function mergeTombstones(target: TombstoneMap, incoming?: Partial<Tombsto
 }
 
 export function isRecordDeleted(
-  bucket: Record<string, number>,
+  bucket: Record<string, number> | undefined,
   keysToCheck: string[],
   recordUpdatedAt?: number
 ): boolean {
+  if (!bucket) return false;
   const recTs = Number(recordUpdatedAt) || 0;
   for (let i = 0; i < keysToCheck.length; i++) {
     const k = keysToCheck[i];
@@ -498,14 +499,76 @@ export function mergeMaterialsAdditive(
   return { list: result, changed };
 }
 
+export function roundQty(val: unknown): number {
+  const n = Number(val);
+  if (!Number.isFinite(n)) return 0;
+  return Math.round(n * 10000) / 10000;
+}
+
+export function buildDeterministicItemId(
+  prefix: 'in' | 'out',
+  receiptCode: string,
+  signatureSeed: string,
+  occurrence: number
+): string {
+  const [h1, h2] = hashPair(`${normKey(receiptCode)}|${signatureSeed}`);
+  return `${prefix}-det-${h1.toString(36)}${h2.toString(36)}-${occurrence}`;
+}
+
+export function sumInboundItems(items: InboundItemDetail[]): {
+  totalQuantity: number;
+  totalWeightKg: number;
+  totalAmount: number;
+  packageCount: number;
+} {
+  let totalQty = 0;
+  let totalWeight = 0;
+  let totalAmt = 0;
+  let pkgCount = 0;
+  for (let i = 0; i < items.length; i++) {
+    const it = items[i];
+    const q = roundQty(it.quantity);
+    const w = Number(it.weightKg) || 0;
+    const uPrice = Number(it.unitPrice) || 0;
+    const lineAmt = Number(it.totalPrice) > 0 ? Number(it.totalPrice) : q * uPrice;
+    totalQty += q;
+    totalWeight += w;
+    totalAmt += lineAmt;
+    if (it.batchCode || it.packageNo) pkgCount++;
+  }
+  return {
+    totalQuantity: roundQty(totalQty),
+    totalWeightKg: Math.round(totalWeight * 100) / 100,
+    totalAmount: Math.round(totalAmt * 100) / 100,
+    packageCount: pkgCount
+  };
+}
+
+export function sumOutboundItems(items: OutboundItemDetail[]): {
+  totalQuantity: number;
+  totalWeightKg: number;
+} {
+  let totalQty = 0;
+  let totalWeight = 0;
+  for (let i = 0; i < items.length; i++) {
+    const it = items[i];
+    totalQty += roundQty(it.quantity);
+    totalWeight += Number(it.weightKg) || 0;
+  }
+  return {
+    totalQuantity: roundQty(totalQty),
+    totalWeightKg: Math.round(totalWeight * 100) / 100
+  };
+}
+
 function makeInboundItemSig(it: InboundItemDetail): string {
   if (it.id) return it.id;
-  return `${it.materialCode}__${it.packingListNo}__${it.packageNo}__${it.drawingNo}__${it.quantity}__${it.weightKg}`;
+  return `${it.materialCode}__${it.batchCode || ''}__${it.packingListNo}__${it.packageNo}__${it.drawingNo}__${roundQty(it.quantity)}__${Number(it.weightKg) || 0}`;
 }
 
 function makeOutboundItemSig(it: OutboundItemDetail): string {
   if (it.id) return it.id;
-  return `${it.materialCode}__${it.packingListNo}__${it.packageNo}__${it.drawingNo}__${it.quantity}__${it.weightKg}`;
+  return `${it.materialCode}__${it.batchCode || ''}__${it.packingListNo}__${it.packageNo}__${it.drawingNo}__${roundQty(it.quantity)}__${Number(it.weightKg) || 0}`;
 }
 
 // 4. INBOUND RECEIPTS: Đồng bộ cộng gộp O(N) theo receiptCode + cộng gộp dòng vật tư con (không bao giờ ghi đè mất phiếu/dòng)
@@ -525,7 +588,25 @@ export function mergeInboundReceiptsAdditive(
       changed = true;
       continue;
     }
-    existingFiltered.push(r);
+    const items = Array.isArray(r.items) ? r.items : [];
+    const sums = sumInboundItems(items);
+    if (
+      r.totalQuantity !== sums.totalQuantity ||
+      r.totalWeightKg !== sums.totalWeightKg ||
+      (r.totalAmount ?? 0) !== sums.totalAmount
+    ) {
+      existingFiltered.push({
+        ...r,
+        items,
+        packageCount: sums.packageCount,
+        totalQuantity: sums.totalQuantity,
+        totalWeightKg: sums.totalWeightKg,
+        totalAmount: sums.totalAmount
+      });
+      changed = true;
+    } else {
+      existingFiltered.push(r);
+    }
   }
 
   const indexByCode = new Map<string, number>();
@@ -553,27 +634,15 @@ export function mergeInboundReceiptsAdditive(
     if (existIdx === undefined && prepIdx === undefined) {
       // Phiếu mới hoàn toàn -> thêm vào danh sách
       const items = Array.isArray(inc.items) ? inc.items : [];
-      let totalQty = 0;
-      let totalWeight = 0;
-      let totalAmt = 0;
-      let pkgCount = 0;
-      for (let j = 0; j < items.length; j++) {
-        const it = items[j];
-        const q = Number(it.quantity) || 0;
-        const w = Number(it.weightKg) || 0;
-        totalQty += q;
-        totalWeight += w;
-        totalAmt += Number(it.totalPrice) || q * (Number(it.unitPrice) || 0);
-        if (it.packageNo) pkgCount++;
-      }
+      const sums = sumInboundItems(items);
 
       const cleanReceipt: InboundReceipt = {
         ...inc,
         items,
-        packageCount: pkgCount,
-        totalQuantity: totalQty,
-        totalWeightKg: Math.round(totalWeight * 100) / 100,
-        totalAmount: totalAmt,
+        packageCount: sums.packageCount,
+        totalQuantity: sums.totalQuantity,
+        totalWeightKg: sums.totalWeightKg,
+        totalAmount: sums.totalAmount,
         updatedAt: Number(inc.updatedAt) || 1
       };
 
@@ -609,19 +678,7 @@ export function mergeInboundReceiptsAdditive(
 
       if (addedItems.length > 0 || headerNewer) {
         const mergedItems = addedItems.length > 0 ? curr.items.concat(addedItems) : curr.items;
-        let totalQty = 0;
-        let totalWeight = 0;
-        let totalAmt = 0;
-        let pkgCount = 0;
-        for (let j = 0; j < mergedItems.length; j++) {
-          const it = mergedItems[j];
-          const q = Number(it.quantity) || 0;
-          const w = Number(it.weightKg) || 0;
-          totalQty += q;
-          totalWeight += w;
-          totalAmt += Number(it.totalPrice) || q * (Number(it.unitPrice) || 0);
-          if (it.packageNo) pkgCount++;
-        }
+        const sums = sumInboundItems(mergedItems);
 
         targetArr[targetIdx] = {
           ...curr,
@@ -660,10 +717,10 @@ export function mergeInboundReceiptsAdditive(
               : curr.driverVehicleNo || inc.driverVehicleNo,
           notes: headerNewer && inc.notes !== undefined ? inc.notes : curr.notes || inc.notes,
           items: mergedItems,
-          packageCount: pkgCount,
-          totalQuantity: totalQty,
-          totalWeightKg: Math.round(totalWeight * 100) / 100,
-          totalAmount: totalAmt,
+          packageCount: sums.packageCount,
+          totalQuantity: sums.totalQuantity,
+          totalWeightKg: sums.totalWeightKg,
+          totalAmount: sums.totalAmount,
           updatedAt: Math.max(currTs, incTs) || 1
         };
         touchedSet.add(rKey);
@@ -693,7 +750,19 @@ export function mergeOutboundReceiptsAdditive(
       changed = true;
       continue;
     }
-    existingFiltered.push(r);
+    const items = Array.isArray(r.items) ? r.items : [];
+    const sums = sumOutboundItems(items);
+    if (r.totalQuantity !== sums.totalQuantity || r.totalWeightKg !== sums.totalWeightKg) {
+      existingFiltered.push({
+        ...r,
+        items,
+        totalQuantity: sums.totalQuantity,
+        totalWeightKg: sums.totalWeightKg
+      });
+      changed = true;
+    } else {
+      existingFiltered.push(r);
+    }
   }
 
   const indexByCode = new Map<string, number>();
@@ -720,19 +789,14 @@ export function mergeOutboundReceiptsAdditive(
 
     if (existIdx === undefined && prepIdx === undefined) {
       const items = Array.isArray(inc.items) ? inc.items : [];
-      let totalQty = 0;
-      let totalWeight = 0;
-      for (let j = 0; j < items.length; j++) {
-        totalQty += Number(items[j].quantity) || 0;
-        totalWeight += Number(items[j].weightKg) || 0;
-      }
+      const sums = sumOutboundItems(items);
 
       const cleanReceipt: OutboundReceipt = {
         ...inc,
         items,
         packingListSummary: inc.packingListSummary || computePackingListSummary(items),
-        totalQuantity: totalQty,
-        totalWeightKg: Math.round(totalWeight * 100) / 100,
+        totalQuantity: sums.totalQuantity,
+        totalWeightKg: sums.totalWeightKg,
         updatedAt: Number(inc.updatedAt) || 1
       };
 
@@ -767,12 +831,7 @@ export function mergeOutboundReceiptsAdditive(
 
       if (addedItems.length > 0 || headerNewer) {
         const mergedItems = addedItems.length > 0 ? curr.items.concat(addedItems) : curr.items;
-        let totalQty = 0;
-        let totalWeight = 0;
-        for (let j = 0; j < mergedItems.length; j++) {
-          totalQty += Number(mergedItems[j].quantity) || 0;
-          totalWeight += Number(mergedItems[j].weightKg) || 0;
-        }
+        const sums = sumOutboundItems(mergedItems);
 
         targetArr[targetIdx] = {
           ...curr,
@@ -800,8 +859,8 @@ export function mergeOutboundReceiptsAdditive(
           notes: headerNewer && inc.notes !== undefined ? inc.notes : curr.notes || inc.notes,
           items: mergedItems,
           packingListSummary: computePackingListSummary(mergedItems),
-          totalQuantity: totalQty,
-          totalWeightKg: Math.round(totalWeight * 100) / 100,
+          totalQuantity: sums.totalQuantity,
+          totalWeightKg: sums.totalWeightKg,
           updatedAt: Math.max(currTs, incTs) || 1
         };
         touchedSet.add(rKey);

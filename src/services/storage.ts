@@ -12,6 +12,9 @@ import {
   createEmptyTombstones,
   normKey,
   normUserKey,
+  roundQty,
+  sumInboundItems,
+  sumOutboundItems,
   mergeTombstones,
   isRecordDeleted,
   mergeUsersAdditive,
@@ -397,7 +400,9 @@ function buildAggregatedRecords(
   const records: InventoryStockRecord[] = new Array(groupMap.size);
   let idx = 0;
   groupMap.forEach((e, key) => {
-    const currentQty = e.inboundQuantity - e.outboundQuantity;
+    const inQty = roundQty(e.inboundQuantity);
+    const outQty = roundQty(e.outboundQuantity);
+    const currentQty = roundQty(inQty - outQty);
     const currentWeight = e.inboundWeightKg - e.outboundWeightKg;
     records[idx++] = {
       id: key,
@@ -414,9 +419,9 @@ function buildAggregatedRecords(
       packageName: e.packageName,
       category: e.category,
       drawingNo: e.drawingNo,
-      inboundQuantity: e.inboundQuantity,
+      inboundQuantity: inQty,
       inboundWeightKg: Math.round(e.inboundWeightKg * 100) / 100,
-      outboundQuantity: e.outboundQuantity,
+      outboundQuantity: outQty,
       outboundWeightKg: Math.round(e.outboundWeightKg * 100) / 100,
       currentQuantity: currentQty,
       currentWeightKg: Math.round(currentWeight * 100) / 100,
@@ -869,9 +874,33 @@ export const StorageService = {
   getInboundReceipts(): InboundReceipt[] {
     this.ensureInitialized();
     const inbounds = getItem<InboundReceipt[]>(STORAGE_KEYS.INBOUND, []);
+    let repaired = false;
+    const normalized = inbounds.map((r) => {
+      const items = Array.isArray(r.items) ? r.items : [];
+      const sums = sumInboundItems(items);
+      if (
+        r.totalQuantity !== sums.totalQuantity ||
+        r.totalWeightKg !== sums.totalWeightKg ||
+        (r.totalAmount ?? 0) !== sums.totalAmount
+      ) {
+        repaired = true;
+        return {
+          ...r,
+          items,
+          packageCount: sums.packageCount,
+          totalQuantity: sums.totalQuantity,
+          totalWeightKg: sums.totalWeightKg,
+          totalAmount: sums.totalAmount
+        };
+      }
+      return r;
+    });
+    if (repaired) {
+      this.saveInboundReceipts(normalized);
+    }
     const tombstones = this.getTombstones();
-    if (Object.keys(tombstones.inbound).length === 0) return inbounds;
-    return inbounds.filter(
+    if (Object.keys(tombstones.inbound).length === 0) return normalized;
+    return normalized.filter(
       (r) => !isRecordDeleted(tombstones.inbound, [r.id, normKey(r.receiptCode), r.receiptCode], r.updatedAt)
     );
   },
@@ -917,7 +946,7 @@ export const StorageService = {
         const code = (rawCode || `VT-${rawName.slice(0, 6).toUpperCase().replace(/\s+/g, '')}`).toUpperCase();
         if (!existingMatCodes.has(code)) {
           existingMatCodes.add(code);
-          const qty = Number(item.quantity) || 1;
+          const qty = roundQty(item.quantity);
           const weight = Number(item.weightKg) || 0;
           currentMaterials.push({
             id: `mat-auto-${now}-${salt}-${newMaterialsCount}`,
@@ -929,7 +958,7 @@ export const StorageService = {
             drawingNo: (item.drawingNo || '').trim() || '',
             manufacturer: (item.manufacturer || '').trim() || '',
             supplier: (item.supplier || '').trim() || '',
-            unitWeightKg: weight && qty ? Math.round((weight / qty) * 100) / 100 : 0,
+            unitWeightKg: weight > 0 && qty > 0 ? Math.round((weight / qty) * 100) / 100 : 0,
             specification: item.conditionNote || '',
             minStockAlert: 2,
             notes: `Tự động tạo từ phiếu nhập kho ${rcp.receiptCode} (${item.packingListNo || 'PL'})`,
@@ -974,9 +1003,27 @@ export const StorageService = {
   getOutboundReceipts(): OutboundReceipt[] {
     this.ensureInitialized();
     const outbounds = getItem<OutboundReceipt[]>(STORAGE_KEYS.OUTBOUND, []);
+    let repaired = false;
+    const normalized = outbounds.map((o) => {
+      const items = Array.isArray(o.items) ? o.items : [];
+      const sums = sumOutboundItems(items);
+      if (o.totalQuantity !== sums.totalQuantity || o.totalWeightKg !== sums.totalWeightKg) {
+        repaired = true;
+        return {
+          ...o,
+          items,
+          totalQuantity: sums.totalQuantity,
+          totalWeightKg: sums.totalWeightKg
+        };
+      }
+      return o;
+    });
+    if (repaired) {
+      this.saveOutboundReceipts(normalized);
+    }
     const tombstones = this.getTombstones();
-    if (Object.keys(tombstones.outbound).length === 0) return outbounds;
-    return outbounds.filter(
+    if (Object.keys(tombstones.outbound).length === 0) return normalized;
+    return normalized.filter(
       (o) => !isRecordDeleted(tombstones.outbound, [o.id, normKey(o.issueCode), o.issueCode], o.updatedAt)
     );
   },

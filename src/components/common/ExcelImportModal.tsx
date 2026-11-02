@@ -94,7 +94,7 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
 
     return {
       totalWeight: Math.round(totalWeight * 100) / 100,
-      totalQty,
+      totalQty: Math.round(totalQty * 10000) / 10000,
       detectedSlipCount: slipSet.size,
       sampleSlips
     };
@@ -621,7 +621,10 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
                           const rowAny = r as any;
                           const customCode = rowAny.receiptCode || rowAny.issueCode;
                           const batchOrPkg = rowAny.batchCode || r.packageNo || '-';
-                          const lineAmount = Number(rowAny.totalAmount) || (Number(r.quantity || 0) * Number(rowAny.unitPrice || 0));
+                          const lineAmount =
+                            Number(rowAny.totalPrice) ||
+                            Number(rowAny.totalAmount) ||
+                            (Number(r.quantity || 0) * Number(rowAny.unitPrice || 0));
                           return (
                             <tr key={r.id || globalIdx} className="hover:bg-slate-50">
                               <td className="p-2.5 font-mono text-slate-400">{(globalIdx + 1).toLocaleString('vi-VN')}</td>
@@ -651,11 +654,11 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
                               </td>
                               <td className="p-2.5">
                                 {type === 'inbound' ? (
-                                  <div className="text-[11px] font-medium text-slate-800">{r.supplier || '-'}</div>
+                                  <div className="text-[11px] font-medium text-slate-800">{rowAny.delivererName || r.supplier || '-'}</div>
                                 ) : (
                                   <>
-                                    <div className="text-[11px] font-semibold text-slate-800">{rowAny.receiverName || '-'}</div>
-                                    <div className="text-[10px] text-slate-500">{rowAny.contractorName || ''}</div>
+                                    <div className="text-[11px] font-semibold text-slate-800">{rowAny.recipientName || rowAny.receiverName || '-'}</div>
+                                    <div className="text-[10px] text-slate-500">{rowAny.recipientDepartment || rowAny.contractorName || ''}</div>
                                   </>
                                 )}
                               </td>

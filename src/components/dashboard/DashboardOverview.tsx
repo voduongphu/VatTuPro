@@ -1,6 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../../context/AuthContext';
 import { StorageService } from '../../services/storage';
+import { roundQty, sumInboundItems, sumOutboundItems } from '../../utils/additiveMerge';
+import { formatVoucherDateVi } from '../../services/excelService';
 import { 
   ArrowDownLeft, 
   ArrowUpRight, 
@@ -8,13 +10,9 @@ import {
   Scale, 
   Warehouse as WarehouseIcon, 
   Layers, 
-  FileSpreadsheet, 
-  Calendar, 
-  CheckCircle2, 
   Truck, 
   ShieldCheck,
-  TrendingUp,
-  FileText
+  TrendingUp
 } from 'lucide-react';
 
 interface DashboardOverviewProps {
@@ -65,7 +63,7 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({ onNavigate
       const sortedCats = Array.from(catMap.entries())
         .map(([name, data]) => ({
           name,
-          count: data.count,
+          count: roundQty(data.count),
           weight: Math.round(data.weight)
         }))
         .sort((a, b) => b.weight - a.weight);
@@ -84,7 +82,7 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({ onNavigate
           ...topCats,
           {
             name: `Các hạng mục khác (${sortedCats.length - MAX_DISPLAY_CATS})`,
-            count: restCount,
+            count: roundQty(restCount),
             weight: restWeight
           }
         ];
@@ -92,7 +90,7 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({ onNavigate
 
       setStats({
         totalStockWeightKg: Math.round(totalWeight * 100) / 100,
-        totalStockQty: totalQty,
+        totalStockQty: roundQty(totalQty),
         totalPLCount: filterOpts.totalPLCount,
         totalShipmentCount: filterOpts.totalShipmentCount,
         totalWarehouseCount: warehouses.length,
@@ -267,12 +265,11 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({ onNavigate
                     <span className="font-semibold text-slate-800 line-clamp-1">{cat.name}</span>
                     <span className="font-mono font-bold text-slate-700">{cat.weight.toLocaleString('vi-VN')} kg</span>
                   </div>
-                  <div className="w-full bg-slate-200 h-1.5 rounded-full overflow-hidden">
-                    <div 
-                      className="bg-blue-600 h-full rounded-full transition-all"
-                      style={{ width: `${Math.min(100, Math.max(8, pct))}%` }}
-                    />
-                  </div>
+                  <progress
+                    value={Math.min(100, Math.max(8, Math.round(pct)))}
+                    max={100}
+                    className="w-full h-1.5 rounded-full overflow-hidden block [&::-webkit-progress-bar]:bg-slate-200 [&::-webkit-progress-bar]:rounded-full [&::-webkit-progress-value]:bg-blue-600 [&::-webkit-progress-value]:rounded-full [&::-moz-progress-bar]:bg-blue-600"
+                  />
                   <div className="flex justify-between text-[11px] text-slate-500">
                     <span>Số lượng: {cat.count.toLocaleString('vi-VN')}</span>
                     <span>Tỷ trọng: {pct.toFixed(1)}%</span>
@@ -299,25 +296,28 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({ onNavigate
           </div>
 
           <div className="space-y-2.5">
-            {stats.recentInbounds.map((inb) => (
-              <div key={inb.id} className="p-3 rounded-xl bg-slate-50 hover:bg-slate-100/80 transition border border-slate-100 text-xs">
-                <div className="flex justify-between items-start">
-                  <div>
-                    <span className="font-mono font-bold text-blue-700">{inb.receiptCode}</span>
-                    <div className="text-[11px] text-slate-500 font-mono">
-                      PL: {inb.packingListNo} | {inb.shipment}
+            {stats.recentInbounds.map((inb) => {
+              const inSums = sumInboundItems(Array.isArray(inb.items) ? inb.items : []);
+              return (
+                <div key={inb.id} className="p-3 rounded-xl bg-slate-50 hover:bg-slate-100/80 transition border border-slate-100 text-xs">
+                  <div className="flex justify-between items-start">
+                    <div>
+                      <span className="font-mono font-bold text-blue-700">{inb.receiptCode}</span>
+                      <div className="text-[11px] text-slate-500 font-mono">
+                        PL: {inb.packingListNo} | {inb.shipment}
+                      </div>
                     </div>
+                    <span className="font-mono font-bold text-emerald-700">
+                      +{inSums.totalQuantity.toLocaleString('vi-VN')} SL
+                    </span>
                   </div>
-                  <span className="font-mono font-bold text-emerald-700">
-                    +{inb.totalQuantity.toLocaleString('vi-VN')} SL
-                  </span>
+                  <div className="mt-1.5 flex justify-between text-[11px] text-slate-500 border-t border-slate-200/60 pt-1.5">
+                    <span className="line-clamp-1">{inb.warehouseName}</span>
+                    <span>{formatVoucherDateVi(inb.receiptDate)}</span>
+                  </div>
                 </div>
-                <div className="mt-1.5 flex justify-between text-[11px] text-slate-500 border-t border-slate-200/60 pt-1.5">
-                  <span className="line-clamp-1">{inb.warehouseName}</span>
-                  <span>{new Date(inb.receiptDate).toLocaleDateString('vi-VN')}</span>
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
 
@@ -337,25 +337,28 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({ onNavigate
           </div>
 
           <div className="space-y-2.5">
-            {stats.recentOutbounds.map((outb) => (
-              <div key={outb.id} className="p-3 rounded-xl bg-slate-50 hover:bg-slate-100/80 transition border border-slate-100 text-xs">
-                <div className="flex justify-between items-start">
-                  <div>
-                    <span className="font-mono font-bold text-rose-700">{outb.issueCode}</span>
-                    <div className="text-[11px] text-slate-600 line-clamp-1 font-medium">
-                      {outb.recipientDepartment}
+            {stats.recentOutbounds.map((outb) => {
+              const outSums = sumOutboundItems(Array.isArray(outb.items) ? outb.items : []);
+              return (
+                <div key={outb.id} className="p-3 rounded-xl bg-slate-50 hover:bg-slate-100/80 transition border border-slate-100 text-xs">
+                  <div className="flex justify-between items-start">
+                    <div>
+                      <span className="font-mono font-bold text-rose-700">{outb.issueCode}</span>
+                      <div className="text-[11px] text-slate-600 line-clamp-1 font-medium">
+                        {outb.recipientDepartment}
+                      </div>
                     </div>
+                    <span className="font-mono font-bold text-rose-700">
+                      -{outSums.totalQuantity.toLocaleString('vi-VN')} SL
+                    </span>
                   </div>
-                  <span className="font-mono font-bold text-rose-700">
-                    -{outb.totalQuantity.toLocaleString('vi-VN')} SL
-                  </span>
+                  <div className="mt-1.5 flex justify-between text-[11px] text-slate-500 border-t border-slate-200/60 pt-1.5">
+                    <span className="line-clamp-1">{outb.warehouseName}</span>
+                    <span>{formatVoucherDateVi(outb.issueDate)}</span>
+                  </div>
                 </div>
-                <div className="mt-1.5 flex justify-between text-[11px] text-slate-500 border-t border-slate-200/60 pt-1.5">
-                  <span className="line-clamp-1">{outb.warehouseName}</span>
-                  <span>{new Date(outb.issueDate).toLocaleDateString('vi-VN')}</span>
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       </div>

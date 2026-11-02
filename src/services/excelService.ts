@@ -335,9 +335,9 @@ function normalizeHeaderKey(str: string): string {
     .replace(/[^a-z0-9]/g, '');
 }
 
-// Chuyển đổi ngày Excel (Date object, số serial, DD/MM/YYYY, YYYY-MM-DD) sang YYYY-MM-DD
-function formatExcelDate(val: any): string {
-  if (!val && val !== 0) return '';
+// Chuyển đổi ngày Excel (Date object, số serial, chuỗi serial "46311", "Ngày ... tháng ... năm ...", DD/MM/YYYY, YYYY-MM-DD) sang YYYY-MM-DD
+export function formatExcelDate(val: unknown): string {
+  if (val === null || val === undefined || val === '') return '';
   if (val instanceof Date && !isNaN(val.getTime())) {
     const y = val.getFullYear();
     const m = String(val.getMonth() + 1).padStart(2, '0');
@@ -345,7 +345,6 @@ function formatExcelDate(val: any): string {
     return `${y}-${m}-${d}`;
   }
   if (typeof val === 'number' && val > 25000 && val < 90000) {
-    // Excel serial date
     const utcDays = Math.floor(val - 25569);
     const dt = new Date(utcDays * 86400 * 1000);
     if (!isNaN(dt.getTime())) {
@@ -354,25 +353,135 @@ function formatExcelDate(val: any): string {
   }
   const str = String(val).trim();
   if (!str) return '';
+
+  // Chuỗi số serial Excel (ví dụ "46311")
+  if (/^\d{5}(\.\d+)?$/.test(str)) {
+    const serial = Number(str);
+    if (serial > 25000 && serial < 90000) {
+      const utcDays = Math.floor(serial - 25569);
+      const dt = new Date(utcDays * 86400 * 1000);
+      if (!isNaN(dt.getTime())) {
+        return dt.toISOString().slice(0, 10);
+      }
+    }
+  }
+
+  // "Ngày 07 tháng 03 năm 2025"
+  const vnMatch = str.match(/ng[àa]y\s*(\d{1,2})\s*th[áa]ng\s*(\d{1,2})\s*n[ăa]m\s*(\d{4})/i);
+  if (vnMatch) {
+    return `${vnMatch[3]}-${vnMatch[2].padStart(2, '0')}-${vnMatch[1].padStart(2, '0')}`;
+  }
+
   // DD/MM/YYYY hoặc DD-MM-YYYY
   const dmyMatch = str.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
   if (dmyMatch) {
     return `${dmyMatch[3]}-${dmyMatch[2].padStart(2, '0')}-${dmyMatch[1].padStart(2, '0')}`;
   }
+
   // YYYY/MM/DD hoặc YYYY-MM-DD
   const ymdMatch = str.match(/^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})/);
   if (ymdMatch) {
     return `${ymdMatch[1]}-${ymdMatch[2].padStart(2, '0')}-${ymdMatch[3].padStart(2, '0')}`;
   }
+
   return str;
 }
 
-function parseNum(val: any): number {
-  if (typeof val === 'number') return isNaN(val) ? 0 : val;
-  if (!val) return 0;
-  const cleaned = String(val).trim().replace(/,/g, '');
-  const n = Number(cleaned);
-  return isNaN(n) ? 0 : n;
+// Định dạng ngày hiển thị DD/MM/YYYY an toàn không lệch múi giờ và tự xử lý serial Excel
+export function formatVoucherDateVi(val: unknown): string {
+  const normalized = formatExcelDate(val);
+  if (!normalized) return '—';
+  const ymd = normalized.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (ymd) {
+    return `${ymd[3]}/${ymd[2]}/${ymd[1]}`;
+  }
+  const dt = new Date(normalized);
+  if (!isNaN(dt.getTime())) {
+    const d = String(dt.getDate()).padStart(2, '0');
+    const m = String(dt.getMonth() + 1).padStart(2, '0');
+    const y = dt.getFullYear();
+    return `${d}/${m}/${y}`;
+  }
+  return normalized;
+}
+
+// Phân tích số lượng / khối lượng / đơn giá chính xác cho cả định dạng Việt Nam ("1,5", "1.234,56") và Quốc tế ("1,234.56", "15,414")
+export function parseNum(val: unknown): number {
+  if (typeof val === 'number') {
+    return Number.isFinite(val) ? Math.round(val * 10000) / 10000 : 0;
+  }
+  if (val === null || val === undefined) return 0;
+
+  let str = String(val).trim();
+  if (!str || str === '-' || str === '–' || str === '—') return 0;
+
+  // Hỗ trợ số âm dạng kế toán "(123)"
+  let isNegative = false;
+  if (str.startsWith('(') && str.endsWith(')')) {
+    isNegative = true;
+    str = str.slice(1, -1).trim();
+  }
+
+  // Loại bỏ ký tự khoảng trắng và hậu tố tiền tệ/đơn vị nếu gõ kèm
+  str = str
+    .replace(/\s+/g, '')
+    .replace(/(vnđ|vnd|đ|kg|pcs)$/i, '');
+
+  if (!str || str === '-' || str === '–' || str === '—') return 0;
+
+  const hasComma = str.includes(',');
+  const hasDot = str.includes('.');
+
+  if (hasComma && hasDot) {
+    const lastComma = str.lastIndexOf(',');
+    const lastDot = str.lastIndexOf('.');
+    if (lastComma > lastDot) {
+      // Định dạng Việt Nam / Châu Âu: "1.234,56" -> "1234.56"
+      str = str.replace(/\./g, '').replace(',', '.');
+    } else {
+      // Định dạng Quốc tế: "1,234.56" -> "1234.56"
+      str = str.replace(/,/g, '');
+    }
+  } else if (hasComma) {
+    const parts = str.split(',');
+    if (parts.length > 2) {
+      // Nhiều dấu phẩy phân cách hàng nghìn: "1,234,567" -> "1234567"
+      str = parts.join('');
+    } else {
+      const [intPart, fracPart] = parts;
+      const cleanInt = intPart.replace(/^[+-]/, '');
+      if (
+        fracPart.length === 3 &&
+        cleanInt.length >= 1 &&
+        cleanInt.length <= 3 &&
+        cleanInt !== '0'
+      ) {
+        // Phân cách hàng nghìn kiểu Anh: "15,414", "1,250" -> "15414", "1250"
+        str = `${intPart}${fracPart}`;
+      } else {
+        // Dấu phẩy thập phân kiểu Việt Nam: "1,5", "2,25", "0,500" -> "1.5", "2.25", "0.500"
+        str = `${intPart}.${fracPart}`;
+      }
+    }
+  } else if (hasDot) {
+    const parts = str.split('.');
+    if (parts.length > 2) {
+      // Nhiều dấu chấm phân cách hàng nghìn kiểu Việt Nam: "1.250.000" -> "1250000"
+      str = parts.join('');
+    }
+  }
+
+  const n = Number(str);
+  if (!Number.isFinite(n)) return 0;
+  const signed = isNegative ? -Math.abs(n) : n;
+  return Math.round(signed * 10000) / 10000;
+}
+
+function cleanCellText(val: unknown): string {
+  if (val === null || val === undefined) return '';
+  const s = String(val).trim();
+  if (s === '-' || s === '–' || s === '—') return '';
+  return s;
 }
 
 function isRowBlank(row: any[]): boolean {
@@ -384,6 +493,134 @@ function isRowBlank(row: any[]): boolean {
     }
   }
   return true;
+}
+
+// Kiểm tra dòng TỔNG CỘNG / CỘNG / TOTAL hoặc dòng chân trang chữ ký / ghi chú mẫu biểu QLVT
+const SUMMARY_ROW_NORMS = new Set<string>([
+  'tongcong',
+  'cong',
+  'tong',
+  'total',
+  'grandtotal',
+  'subtotal',
+  'tongsoluong',
+  'tongkhoiluong',
+  'congtienhang',
+  'tongtien'
+]);
+
+function isSummaryOrFooterRow(row: any[]): boolean {
+  if (!Array.isArray(row) || row.length === 0) return true;
+
+  let nonEmptyCount = 0;
+  let firstTextNorm = '';
+
+  for (let c = 0; c < Math.min(row.length, 12); c++) {
+    const raw = row[c];
+    if (raw === '' || raw === null || raw === undefined) continue;
+    const text = String(raw).trim();
+    if (!text) continue;
+    nonEmptyCount++;
+
+    const norm = normalizeHeaderKey(text);
+    if (!norm) continue;
+    if (!firstTextNorm) firstTextNorm = norm;
+
+    // Dòng TỔNG CỘNG nằm ở các cột đầu (STT / Mã vật tư / Tên vật tư / Mã lô)
+    if (c <= 4 && SUMMARY_ROW_NORMS.has(norm)) {
+      return true;
+    }
+
+    // Dòng ghi chú / chứng từ / chữ ký dưới bảng mẫu QN-OPR-PR11-FM05.01 & FM06
+    if (
+      c <= 3 &&
+      (norm.startsWith('vietbangchu') ||
+        norm.startsWith('sochungtugockemtheo') ||
+        norm.startsWith('notecotsoluong') ||
+        norm.startsWith('ghichucotsoluong') ||
+        norm === 'nguoigiaohang' ||
+        norm === 'nguoinhanhang' ||
+        norm === 'thukhonvqlvt' ||
+        norm === 'thukho' ||
+        norm === 'ptckt' ||
+        norm === 'pheduyet' ||
+        norm === 'kyghirohoten' ||
+        /^page\d+of\d+$/.test(norm))
+    ) {
+      return true;
+    }
+  }
+
+  if (nonEmptyCount === 0) return true;
+  if (
+    firstTextNorm === 'nguoigiaohang' ||
+    firstTextNorm === 'nguoinhan' ||
+    firstTextNorm === 'kyghirohoten' ||
+    /^page\d+of\d+$/.test(firstTextNorm)
+  ) {
+    return true;
+  }
+
+  // Bỏ qua dòng đánh ký hiệu cột kế toán (A | B | C | D | 1 | 2 | 3...) ngay dưới header
+  const nonEmptyNorms: string[] = [];
+  for (let i = 0; i < row.length; i++) {
+    const s = String(row[i] ?? '').trim();
+    if (!s) continue;
+    nonEmptyNorms.push(normalizeHeaderKey(s));
+  }
+  if (
+    nonEmptyNorms.length >= 4 &&
+    nonEmptyNorms[0] === 'a' &&
+    nonEmptyNorms[1] === 'b' &&
+    nonEmptyNorms.every((x) => /^[a-z]$/.test(x) || /^\d{1,2}$/.test(x))
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+function isMaterialCodeHeader(norm: string): boolean {
+  return (
+    norm.includes('mavattu') ||
+    norm.includes('mathietbi') ||
+    norm.includes('mavait') ||
+    norm.includes('mattu') ||
+    norm.includes('mavt') ||
+    norm.includes('mahang') ||
+    norm.includes('materialcode') ||
+    norm.includes('itemcode') ||
+    norm === 'maso' ||
+    norm === 'ma' ||
+    norm === 'code' ||
+    norm === 'partno' ||
+    norm === 'partnumber'
+  );
+}
+
+function isMaterialNameHeader(norm: string): boolean {
+  return (
+    norm.includes('tenvattu') ||
+    norm.includes('tenthietbi') ||
+    norm.includes('tennhanhieu') ||
+    norm.includes('tenhang') ||
+    norm.includes('tensanpham') ||
+    (norm.startsWith('ten') &&
+      (norm.includes('vattu') ||
+        norm.includes('quycach') ||
+        norm.includes('thietbi') ||
+        norm.includes('hanghoa') ||
+        norm.includes('congcu') ||
+        norm.includes('dungcu'))) ||
+    norm.includes('materialname') ||
+    norm.includes('itemname') ||
+    norm.includes('itemdescription') ||
+    norm === 'ten' ||
+    norm === 'name' ||
+    norm === 'description' ||
+    norm === 'motavattu' ||
+    norm === 'diengiai'
+  );
 }
 
 const yieldToMain = () => new Promise<void>(resolve => setTimeout(resolve, 0));
@@ -416,25 +653,273 @@ async function readSheetRows(file: File, onProgress?: ExcelProgressCallback): Pr
   }
 }
 
-function findHeaderRowIndex(rows: any[][], classifyCol: (norm: string) => string | null): number {
-  const maxScan = Math.min(10, rows.length);
+// Quét tối đa 45 dòng đầu để tìm đúng dòng Header bảng chi tiết vật tư (kể cả phiếu PNK/PXK có 12-20 dòng tiêu đề đầu phiếu)
+function findHeaderRowIndex(
+  rows: any[][],
+  classifyCol: (norm: string) => string | null,
+  coreFields: string[]
+): number {
+  const maxScan = Math.min(45, rows.length);
   let bestRow = 0;
   let bestScore = -1;
+  const coreSet = new Set(coreFields);
+
   for (let r = 0; r < maxScan; r++) {
     const row = rows[r];
     if (!Array.isArray(row)) continue;
-    let score = 0;
+
+    const matchedFields = new Set<string>();
+    let hasStt = false;
     for (let c = 0; c < row.length; c++) {
       const norm = normalizeHeaderKey(String(row[c] ?? ''));
-      if (norm && classifyCol(norm)) score++;
+      if (!norm) continue;
+      if (norm === 'stt' || norm === 'tt' || norm === 'no') {
+        hasStt = true;
+        continue;
+      }
+      // Không chấm điểm cho nhãn đầu phiếu có dấu hai chấm kèm giá trị dài
+      const rawCell = String(row[c] ?? '').trim();
+      if (rawCell.length > 65) continue;
+
+      const classified = classifyCol(norm);
+      if (classified) {
+        matchedFields.add(classified);
+      }
     }
+
+    let score = matchedFields.size * 2 + (hasStt ? 1 : 0);
+    for (const cf of coreSet) {
+      if (matchedFields.has(cf)) score += 3;
+    }
+
     if (score > bestScore) {
       bestScore = score;
       bestRow = r;
     }
-    if (r === 0 && score >= 2) return 0;
   }
   return bestRow;
+}
+
+// Nhận diện dòng sub-header gộp ô (ví dụ dòng trên là "Số lượng", dòng dưới là "Theo chứng từ | Thực nhập")
+function detectMergedSubHeader(
+  rows: any[][],
+  headerIdx: number
+): { mergedHeaderCells: string[]; dataStartIdx: number } {
+  const headerRow = rows[headerIdx] || [];
+  const nextRow = rows[headerIdx + 1];
+  if (!Array.isArray(nextRow) || isRowBlank(nextRow)) {
+    return {
+      mergedHeaderCells: headerRow.map((h) => String(h ?? '')),
+      dataStartIdx: headerIdx + 1
+    };
+  }
+
+  let subHeaderKeywordHits = 0;
+  let numericDataHits = 0;
+  for (let c = 0; c < nextRow.length; c++) {
+    const cellVal = nextRow[c];
+    if (typeof cellVal === 'number') {
+      numericDataHits++;
+      continue;
+    }
+    const norm = normalizeHeaderKey(String(cellVal ?? ''));
+    if (!norm) continue;
+    if (/^\d+$/.test(norm)) {
+      numericDataHits++;
+      continue;
+    }
+    if (
+      norm.includes('theochungtu') ||
+      norm.includes('thucnhap') ||
+      norm.includes('thucxuat') ||
+      norm.includes('yeucau') ||
+      norm === 'caytam' ||
+      norm === 'kg' ||
+      norm === 'vnd'
+    ) {
+      subHeaderKeywordHits++;
+    }
+  }
+
+  if (subHeaderKeywordHits >= 1 && numericDataHits === 0) {
+    const maxCols = Math.max(headerRow.length, nextRow.length);
+    const merged: string[] = new Array(maxCols);
+    let carryParent = '';
+    for (let c = 0; c < maxCols; c++) {
+      const topText = String(headerRow[c] ?? '').trim();
+      if (topText) carryParent = topText;
+      const subText = String(nextRow[c] ?? '').trim();
+      merged[c] = subText ? `${carryParent} ${subText}`.trim() : topText;
+    }
+    return { mergedHeaderCells: merged, dataStartIdx: headerIdx + 2 };
+  }
+
+  return {
+    mergedHeaderCells: headerRow.map((h) => String(h ?? '')),
+    dataStartIdx: headerIdx + 1
+  };
+}
+
+interface SheetVoucherMeta {
+  code?: string;
+  date?: string;
+  departmentName?: string;
+  delivererName?: string;
+  recipientName?: string;
+  recipientDepartment?: string;
+  contractNo?: string;
+  requestNo?: string;
+  notes?: string;
+  warehouseName?: string;
+}
+
+// Bóc tách thông tin đầu phiếu nếu người dùng import trực tiếp từ tờ Phiếu Nhập/Xuất Kho Excel (có phần tiêu đề phía trên bảng)
+function extractSheetVoucherMeta(rows: any[][], headerIdx: number): SheetVoucherMeta {
+  const meta: SheetVoucherMeta = {};
+  if (headerIdx <= 0) return meta;
+
+  const findNextNonEmptyInRow = (row: any[], fromCol: number): string => {
+    for (let k = fromCol + 1; k < row.length; k++) {
+      const txt = cleanCellText(row[k]);
+      if (txt) return txt;
+    }
+    return '';
+  };
+
+  const extractAfterColonOrNextCell = (row: any[], col: number, rawText: string): string => {
+    const colonIdx = rawText.indexOf(':');
+    if (colonIdx !== -1) {
+      const after = rawText.slice(colonIdx + 1).trim();
+      if (after) return after;
+    }
+    return findNextNonEmptyInRow(row, col);
+  };
+
+  for (let r = 0; r < headerIdx; r++) {
+    const row = rows[r];
+    if (!Array.isArray(row)) continue;
+    for (let c = 0; c < row.length; c++) {
+      const rawVal = row[c];
+      if (rawVal === '' || rawVal === null || rawVal === undefined) continue;
+      const text = String(rawVal).trim();
+      if (!text) continue;
+
+      const norm = normalizeHeaderKey(text);
+      if (!norm) continue;
+
+      if (!meta.date && /ng[àa]y\s*\d{1,2}\s*th[áa]ng\s*\d{1,2}\s*n[ăa]m\s*\d{4}/i.test(text)) {
+        meta.date = formatExcelDate(text);
+      }
+
+      if (
+        !meta.code &&
+        (norm.startsWith('sophieu') || norm.startsWith('maphieu') || norm === 'so')
+      ) {
+        const val = extractAfterColonOrNextCell(row, c, text);
+        if (val && val.length <= 40) meta.code = val;
+      } else if (!meta.departmentName && norm.startsWith('bophan')) {
+        const val = extractAfterColonOrNextCell(row, c, text);
+        if (val) meta.departmentName = val;
+      } else if (
+        !meta.delivererName &&
+        (norm.startsWith('donvigiaohang') || norm.startsWith('nguoigiaohang'))
+      ) {
+        const val = extractAfterColonOrNextCell(row, c, text);
+        if (val) meta.delivererName = val;
+      } else if (!meta.recipientName && (norm.startsWith('nguoinhan') || norm.startsWith('hotennguoinhan'))) {
+        const val = extractAfterColonOrNextCell(row, c, text);
+        if (val) meta.recipientName = val;
+      } else if (!meta.recipientDepartment && norm.startsWith('donvitonhom')) {
+        const val = extractAfterColonOrNextCell(row, c, text);
+        if (val) meta.recipientDepartment = val;
+      } else if (!meta.contractNo && (norm.startsWith('hopdong') || norm.startsWith('sohopdong'))) {
+        const val = extractAfterColonOrNextCell(row, c, text);
+        if (val) meta.contractNo = val;
+      } else if (
+        !meta.requestNo &&
+        (norm.startsWith('dexuatso') || norm.startsWith('sopyc') || norm.startsWith('sodexuat'))
+      ) {
+        const val = extractAfterColonOrNextCell(row, c, text);
+        if (val) meta.requestNo = val;
+      } else if (
+        !meta.notes &&
+        (norm.startsWith('noidung') || norm.startsWith('lydoxuat'))
+      ) {
+        const val = extractAfterColonOrNextCell(row, c, text);
+        if (val) meta.notes = val;
+      } else if (
+        !meta.warehouseName &&
+        (norm.startsWith('nhaptaikho') || norm.startsWith('xuattaikho') || norm.startsWith('khotiepnhan') || norm.startsWith('khoxuat'))
+      ) {
+        const val = extractAfterColonOrNextCell(row, c, text);
+        if (val) meta.warehouseName = val;
+      }
+    }
+  }
+
+  return meta;
+}
+
+// Phân loại độ ưu tiên cột Số Lượng (tránh nhầm "Tổng số lượng", "Số lượng kiện", "Số lượng tồn" và ưu tiên "Thực nhập/Thực xuất" hơn "Theo chứng từ")
+function getQuantityColPriority(norm: string): number {
+  if (!norm) return 0;
+  // Loại trừ các cột KHÔNG phải số lượng dòng vật tư
+  if (
+    norm.includes('tongsoluong') ||
+    norm.includes('tongsl') ||
+    norm.includes('totalqty') ||
+    norm.includes('totalquantity') ||
+    norm.includes('soluongkien') ||
+    norm.includes('sokien') ||
+    norm.includes('soluongton') ||
+    norm.includes('tonkho') ||
+    norm.includes('toithieu') ||
+    norm.includes('minstock')
+  ) {
+    return 0;
+  }
+
+  // Ưu tiên 3 (cao nhất): Số lượng thực nhập / thực xuất
+  if (
+    norm.includes('thucnhap') ||
+    norm.includes('thucxuat') ||
+    norm.includes('actualqty') ||
+    norm.includes('actualquantity')
+  ) {
+    return 3;
+  }
+
+  // Ưu tiên 1 (thấp nhất - chỉ dùng nếu không có cột Số lượng thực tế / chuẩn)
+  if (
+    norm.includes('theochungtu') ||
+    norm.includes('slchungtu') ||
+    norm.includes('yeucau') ||
+    norm.includes('docqty')
+  ) {
+    return 1;
+  }
+
+  // Ưu tiên 2 (chuẩn): Số lượng (cây/tấm), SL (cây/tấm), Số lượng, SL nhập, SL xuất, SL, Qty, Quantity, Cây/tấm...
+  if (
+    norm.includes('soluong') ||
+    norm === 'sl' ||
+    norm.startsWith('slcay') ||
+    norm === 'slnhap' ||
+    norm === 'slxuat' ||
+    norm === 'caytam' ||
+    norm === 'socay' ||
+    norm === 'sotam' ||
+    norm === 'soong' ||
+    norm === 'quantity' ||
+    norm === 'quantitypcs' ||
+    norm === 'qty' ||
+    norm === 'qtypcs' ||
+    norm === 'pcs'
+  ) {
+    return 2;
+  }
+
+  return 0;
 }
 
 // Parse file Excel Danh Mục Vật Tư & Thiết Bị (Hỗ trợ 100.000+ dòng)
@@ -452,9 +937,9 @@ export async function parseMaterialExcel(
   type MatCol = 'code' | 'name' | 'unit' | 'packageNo' | 'category' | 'drawingNo' | 'manufacturer' | 'supplier' | 'unitWeightKg' | 'specification' | 'minStockAlert' | 'notes';
 
   const classifyMaterialCol = (norm: string): MatCol | null => {
-    if (!norm) return null;
-    if (norm.includes('mavattu') || norm.includes('mathietbi') || norm.includes('mavait') || norm.includes('mattu') || norm.includes('mavt') || norm.includes('materialcode') || norm.includes('itemcode') || norm === 'ma' || norm === 'code') return 'code';
-    if (norm.includes('tenvattu') || norm.includes('tenthietbi') || norm.includes('materialname') || norm.includes('itemname') || norm === 'ten' || norm === 'name') return 'name';
+    if (!norm || norm === 'stt' || norm === 'tt' || norm === 'no') return null;
+    if (isMaterialCodeHeader(norm)) return 'code';
+    if (isMaterialNameHeader(norm)) return 'name';
     if (norm.includes('donvitinh') || norm === 'dvt' || norm === 'unit') return 'unit';
     if (norm.includes('packageno') || norm.includes('pkgno') || norm === 'package' || norm === 'pkg' || norm.includes('sokien') || norm.includes('kienso') || norm.includes('makien') || norm.includes('boxno') || norm.includes('crateno')) return 'packageNo';
     if (norm.includes('hangmuc') || norm.includes('category') || norm.includes('discipline')) return 'category';
@@ -468,20 +953,20 @@ export async function parseMaterialExcel(
     return null;
   };
 
-  const headerIdx = findHeaderRowIndex(rows, classifyMaterialCol);
-  const headerRow = rows[headerIdx] || [];
-  const colMap: (MatCol | null)[] = headerRow.map(h => classifyMaterialCol(normalizeHeaderKey(String(h ?? ''))));
+  const headerIdx = findHeaderRowIndex(rows, classifyMaterialCol, ['code', 'name']);
+  const { mergedHeaderCells, dataStartIdx } = detectMergedSubHeader(rows, headerIdx);
+  const colMap: (MatCol | null)[] = mergedHeaderCells.map(h => classifyMaterialCol(normalizeHeaderKey(h)));
 
-  const totalDataRows = rows.length - headerIdx - 1;
+  const totalDataRows = Math.max(1, rows.length - dataStartIdx);
   const parsedItems: Partial<MaterialItem>[] = [];
   const errors: string[] = [];
   let skippedErrorCount = 0;
   const baseTs = Date.now();
   const CHUNK_SIZE = 20000;
 
-  for (let r = headerIdx + 1; r < rows.length; r++) {
+  for (let r = dataStartIdx; r < rows.length; r++) {
     const row = rows[r];
-    if (isRowBlank(row)) continue;
+    if (isRowBlank(row) || isSummaryOrFooterRow(row)) continue;
 
     const item: Partial<MaterialItem> = { id: `mat-${baseTs}-${r}` };
 
@@ -496,10 +981,16 @@ export async function parseMaterialExcel(
       } else if (field === 'minStockAlert') {
         item.minStockAlert = parseNum(val);
       } else if (field === 'code') {
-        item.code = String(val).trim().toUpperCase();
+        const cleaned = cleanCellText(val);
+        if (cleaned) item.code = cleaned.toUpperCase();
       } else {
-        (item as any)[field] = String(val).trim();
+        const cleaned = cleanCellText(val);
+        if (cleaned) (item as any)[field] = cleaned;
       }
+    }
+
+    if (!item.code && !item.name) {
+      continue;
     }
 
     if (!item.code && item.name) {
@@ -518,7 +1009,7 @@ export async function parseMaterialExcel(
       parsedItems.push(item);
     }
 
-    const done = r - headerIdx;
+    const done = r - dataStartIdx + 1;
     if (done % CHUNK_SIZE === 0) {
       onProgress?.(40 + Math.round((done / totalDataRows) * 58), done, totalDataRows);
       await yieldToMain();
@@ -580,7 +1071,8 @@ export async function parseInboundExcel(
     | 'note';
 
   const classifyInboundCol = (norm: string): InboundCol | null => {
-    if (!norm || norm === 'stt') return null;
+    if (!norm || norm === 'stt' || norm === 'no') return null;
+    if (norm.includes('sochungtugoc')) return null;
     if (norm.includes('maphieunhap') || norm.includes('sophieunhap') || norm.includes('maphieu') || norm.includes('sophieu') || norm.includes('sochungtu') || norm.includes('receiptcode')) return 'receiptCode';
     if (norm.includes('ngaynhapkho') || norm.includes('ngaynhap') || norm.includes('ngaylap') || norm.includes('ngaychungtu') || (norm.includes('ngay') && !norm.includes('denngay')) || norm.includes('receiptdate')) return 'receiptDate';
     if (norm === 'bophan' || norm.includes('bophanduan') || norm.includes('department')) return 'departmentName';
@@ -591,43 +1083,68 @@ export async function parseInboundExcel(
     if (norm.includes('soxe') || norm.includes('phuongtien') || norm.includes('biensoxe') || norm.includes('drivervehicle')) return 'driverVehicleNo';
     if (norm.includes('nhapvaokho') || norm.includes('khotiepnhan') || norm.includes('khonhap') || norm.includes('tenkho') || norm === 'kho' || norm.includes('warehouse')) return 'warehouseName';
     if (norm.includes('packing') || norm.includes('sopackinglist') || norm === 'pl' || norm.includes('phieupacking')) return 'packingListNo';
-    if (norm === 'malo' || norm.includes('batchcode') || norm === 'lotno') return 'batchCode';
+    if (norm === 'malo' || norm.includes('batchcode') || norm === 'lotno' || norm === 'heatno') return 'batchCode';
     if (norm.includes('shipment') || norm.includes('lohang') || norm.includes('chuyentau') || norm === 'sh') return 'shipment';
+    if (getQuantityColPriority(norm) > 0) return 'quantity';
     if (norm.includes('sokien') || norm.includes('kienso') || norm.includes('makien') || norm === 'pkg' || norm === 'package' || norm.includes('packageno') || norm.includes('pkgno') || norm.includes('boxno') || norm.includes('crateno')) return 'packageNo';
-    if (norm.includes('tenkien') || norm.includes('packagename') || norm.includes('mota')) return 'packageName';
-    if (norm.includes('mavattu') || norm.includes('mathietbi') || norm.includes('mavait') || norm.includes('mattu') || norm.includes('mavt') || norm.includes('materialcode') || norm.includes('itemcode') || norm === 'ma' || norm === 'code') return 'materialCode';
-    if (norm.includes('tenvattu') || norm.includes('tenthietbi') || norm.includes('materialname') || norm.includes('itemname') || norm === 'ten' || norm === 'name') return 'materialName';
-    if (norm.includes('donvitinh') || norm === 'dvt' || norm === 'unit') return 'unit';
-    if (norm.includes('soluong') || norm === 'sl' || norm === 'quantity' || norm === 'qty') return 'quantity';
-    if (norm.includes('khoiluong') || norm.includes('trongluong') || norm.includes('weight') || norm === 'kg' || norm === 'kl') return 'weightKg';
+    if (norm.includes('tenkien') || norm.includes('packagename')) return 'packageName';
+    if (isMaterialCodeHeader(norm)) return 'materialCode';
+    if (isMaterialNameHeader(norm)) return 'materialName';
+    if (norm.includes('donvitinh') || norm === 'dvt' || norm === 'unit' || norm === 'uom') return 'unit';
+    if ((norm.includes('khoiluong') || norm.includes('trongluong') || norm.includes('weight') || norm === 'kg' || norm === 'kl') && !norm.includes('tongkhoiluong')) return 'weightKg';
     if (norm.includes('hangmuc') || norm.includes('category') || norm.includes('discipline')) return 'category';
     if (norm.includes('banve') || norm.includes('drawing') || norm === 'dwg') return 'drawingNo';
     if (norm.includes('nhasanxuat') || norm.includes('nsx') || norm.includes('manufacturer') || norm.includes('maker')) return 'manufacturer';
     if (norm.includes('nhacungcap') || norm.includes('ncc') || norm.includes('supplier') || norm.includes('vendor')) return 'supplier';
     if (norm.includes('dongia') || norm.includes('unitprice') || norm === 'gia') return 'unitPrice';
-    if (norm.includes('thanhtien') || norm.includes('totalprice') || norm === 'amount') return 'totalPrice';
+    if ((norm.includes('thanhtien') || norm.includes('totalprice') || norm === 'amount') && !norm.includes('tongthanhtien')) return 'totalPrice';
     if (norm.includes('vitri') || norm.includes('vitrikho') || norm.includes('location')) return 'storageLocation';
-    if (norm === 'ghichu' || norm === 'note') return 'note';
+    if (norm === 'ghichu' || norm === 'note' || norm === 'remarks' || norm === 'remark') return 'note';
     if (norm.includes('tinhtrang') || norm.includes('ghichu')) return 'conditionNote';
     return null;
   };
 
-  const headerIdx = findHeaderRowIndex(rows, classifyInboundCol);
-  const headerRow = rows[headerIdx] || [];
-  const colMap: (InboundCol | null)[] = headerRow.map(h => classifyInboundCol(normalizeHeaderKey(String(h ?? ''))));
+  const headerIdx = findHeaderRowIndex(rows, classifyInboundCol, ['materialCode', 'materialName', 'quantity', 'weightKg']);
+  const sheetMeta = extractSheetVoucherMeta(rows, headerIdx);
+  const { mergedHeaderCells, dataStartIdx } = detectMergedSubHeader(rows, headerIdx);
 
-  const totalDataRows = rows.length - headerIdx - 1;
+  const normalizedHeaders = mergedHeaderCells.map((h) => normalizeHeaderKey(h));
+  const colMap: (InboundCol | null)[] = normalizedHeaders.map((norm) => classifyInboundCol(norm));
+
+  // Chỉ giữ duy nhất 1 cột 'quantity' có độ ưu tiên cao nhất (ví dụ "Thực nhập" thắng "Theo chứng từ", không bị cột phụ ghi đè)
+  let bestQtyCol = -1;
+  let bestQtyPriority = 0;
+  for (let c = 0; c < colMap.length; c++) {
+    if (colMap[c] === 'quantity') {
+      const prio = getQuantityColPriority(normalizedHeaders[c]);
+      if (prio > bestQtyPriority) {
+        bestQtyPriority = prio;
+        bestQtyCol = c;
+      }
+    }
+  }
+  for (let c = 0; c < colMap.length; c++) {
+    if (colMap[c] === 'quantity' && c !== bestQtyCol) {
+      colMap[c] = null;
+    }
+  }
+
+  const totalDataRows = Math.max(1, rows.length - dataStartIdx);
   const parsedItems: Partial<InboundItemDetail>[] = [];
   const errors: string[] = [];
   let skippedErrorCount = 0;
   const baseTs = Date.now();
   const CHUNK_SIZE = 20000;
 
-  for (let r = headerIdx + 1; r < rows.length; r++) {
+  for (let r = dataStartIdx; r < rows.length; r++) {
     const row = rows[r];
-    if (isRowBlank(row)) continue;
+    if (isRowBlank(row) || isSummaryOrFooterRow(row)) continue;
 
-    const item: any = { id: `item-${baseTs}-${r}` };
+    const item: any = {
+      id: `item-${baseTs}-${r}`,
+      quantity: 0,
+      weightKg: 0
+    };
 
     for (let c = 0; c < colMap.length; c++) {
       const field = colMap[c];
@@ -636,15 +1153,33 @@ export async function parseInboundExcel(
       if (val === '' || val === null || val === undefined) continue;
 
       if (field === 'quantity' || field === 'weightKg' || field === 'unitPrice' || field === 'totalPrice') {
-        item[field] = parseNum(val);
+        item[field] = Math.max(0, parseNum(val));
       } else if (field === 'receiptDate') {
-        item.receiptDate = formatExcelDate(val);
+        const dt = formatExcelDate(val);
+        if (dt) item.receiptDate = dt;
       } else if (field === 'materialCode') {
-        item.materialCode = String(val).trim().toUpperCase();
+        const cleaned = cleanCellText(val);
+        if (cleaned) item.materialCode = cleaned.toUpperCase();
       } else {
-        item[field] = String(val).trim();
+        const cleaned = cleanCellText(val);
+        if (cleaned) item[field] = cleaned;
       }
     }
+
+    // Bỏ qua các dòng trống đánh sẵn số thứ tự trên biểu mẫu (không có mã vật tư, tên vật tư, số lượng và khối lượng)
+    if (!item.materialCode && !item.materialName && !item.packageName && !item.quantity && !item.weightKg) {
+      continue;
+    }
+
+    // Gắn thông tin đầu phiếu bóc tách từ phần tiêu đề trên của sheet (nếu cột tương ứng không có trên từng dòng)
+    if (!item.receiptCode && sheetMeta.code) item.receiptCode = sheetMeta.code;
+    if (!item.receiptDate && sheetMeta.date) item.receiptDate = sheetMeta.date;
+    if (!item.departmentName && sheetMeta.departmentName) item.departmentName = sheetMeta.departmentName;
+    if (!item.delivererName && sheetMeta.delivererName) item.delivererName = sheetMeta.delivererName;
+    if (!item.contractNo && sheetMeta.contractNo) item.contractNo = sheetMeta.contractNo;
+    if (!item.requestNo && sheetMeta.requestNo) item.requestNo = sheetMeta.requestNo;
+    if (!item.receiptNotes && sheetMeta.notes) item.receiptNotes = sheetMeta.notes;
+    if (!item.warehouseName && sheetMeta.warehouseName) item.warehouseName = sheetMeta.warehouseName;
 
     if (!item.materialName && (item.materialCode || item.packageName)) {
       item.materialName = item.materialCode || item.packageName;
@@ -654,7 +1189,7 @@ export async function parseInboundExcel(
     }
     if (item.batchCode && !item.packageNo) item.packageNo = item.batchCode;
     if (item.packageNo && !item.batchCode) item.batchCode = item.packageNo;
-    if (!item.packageNo) item.packageNo = `PKG-${r - headerIdx}`;
+    if (!item.packageNo) item.packageNo = `PKG-${parsedItems.length + 1}`;
     if (!item.packageName) item.packageName = `Kiện ${item.packageNo}`;
     if (!item.unit) item.unit = 'Ống';
     if (!item.packingListNo) item.packingListNo = 'PL-CHUA-RO';
@@ -673,7 +1208,7 @@ export async function parseInboundExcel(
       parsedItems.push(item);
     }
 
-    const done = r - headerIdx;
+    const done = r - dataStartIdx + 1;
     if (done % CHUNK_SIZE === 0) {
       onProgress?.(40 + Math.round((done / totalDataRows) * 58), done, totalDataRows);
       await yieldToMain();
@@ -732,7 +1267,7 @@ export async function parseOutboundExcel(
     | 'note';
 
   const classifyOutboundCol = (norm: string): OutboundCol | null => {
-    if (!norm || norm === 'stt') return null;
+    if (!norm || norm === 'stt' || norm === 'no') return null;
     if (norm.includes('maphieuxuat') || norm.includes('sophieuxuat') || norm.includes('maphieu') || norm.includes('sophieu') || norm.includes('sochungtu') || norm.includes('issuecode')) return 'issueCode';
     if (norm.includes('ngayxuatkho') || norm.includes('ngayxuat') || norm.includes('ngaylap') || norm.includes('ngaychungtu') || (norm.includes('ngay') && !norm.includes('denngay')) || norm.includes('issuedate')) return 'issueDate';
     if (norm === 'bophan' || norm.includes('bophanduan')) return 'departmentName';
@@ -743,40 +1278,64 @@ export async function parseOutboundExcel(
     if (norm.includes('lydoxuat') || norm === 'lydo' || norm === 'noidung') return 'issueNotes';
     if (norm.includes('xuattukho') || norm.includes('khoxuat') || norm.includes('khotiepnhan') || norm.includes('tenkho') || norm === 'kho' || norm.includes('warehouse')) return 'warehouseName';
     if (norm.includes('packing') || norm.includes('sopackinglist') || norm === 'pl') return 'packingListNo';
-    if (norm === 'malo' || norm.includes('batchcode') || norm === 'lotno') return 'batchCode';
+    if (norm === 'malo' || norm.includes('batchcode') || norm === 'lotno' || norm === 'heatno') return 'batchCode';
     if (norm.includes('shipment') || norm.includes('lohang') || norm === 'sh') return 'shipment';
+    if (getQuantityColPriority(norm) > 0) return 'quantity';
     if (norm.includes('sokien') || norm.includes('kienso') || norm.includes('makien') || norm === 'pkg' || norm === 'package' || norm.includes('packageno') || norm.includes('pkgno') || norm.includes('boxno') || norm.includes('crateno')) return 'packageNo';
     if (norm.includes('tenkien') || norm.includes('packagename')) return 'packageName';
-    if (norm.includes('mavattu') || norm.includes('mathietbi') || norm.includes('mavait') || norm.includes('mattu') || norm.includes('mavt') || norm.includes('materialcode') || norm.includes('itemcode') || norm === 'ma' || norm === 'code') return 'materialCode';
-    if (norm.includes('tenvattu') || norm.includes('tenthietbi') || norm.includes('materialname') || norm.includes('itemname') || norm === 'ten' || norm === 'name') return 'materialName';
-    if (norm.includes('donvitinh') || norm === 'dvt' || norm === 'unit') return 'unit';
-    if (norm.includes('soluong') || norm === 'sl' || norm === 'quantity' || norm === 'qty') return 'quantity';
-    if (norm.includes('khoiluong') || norm.includes('trongluong') || norm.includes('weight') || norm === 'kg' || norm === 'kl') return 'weightKg';
+    if (isMaterialCodeHeader(norm)) return 'materialCode';
+    if (isMaterialNameHeader(norm)) return 'materialName';
+    if (norm.includes('donvitinh') || norm === 'dvt' || norm === 'unit' || norm === 'uom') return 'unit';
+    if ((norm.includes('khoiluong') || norm.includes('trongluong') || norm.includes('weight') || norm === 'kg' || norm === 'kl') && !norm.includes('tongkhoiluong')) return 'weightKg';
     if (norm.includes('hangmuc') || norm.includes('category') || norm.includes('discipline')) return 'category';
     if (norm.includes('banve') || norm.includes('drawing') || norm === 'dwg') return 'drawingNo';
     if (norm.includes('nhasanxuat') || norm.includes('nsx') || norm.includes('manufacturer') || norm.includes('maker')) return 'manufacturer';
     if (norm.includes('nhacungcap') || norm.includes('ncc') || norm.includes('supplier') || norm.includes('vendor')) return 'supplier';
-    if (norm === 'ghichu' || norm === 'note') return 'note';
+    if (norm === 'ghichu' || norm === 'note' || norm === 'remarks' || norm === 'remark') return 'note';
     if (norm.includes('mucdich') || norm.includes('lapdat') || norm.includes('purpose')) return 'purpose';
     return null;
   };
 
-  const headerIdx = findHeaderRowIndex(rows, classifyOutboundCol);
-  const headerRow = rows[headerIdx] || [];
-  const colMap: (OutboundCol | null)[] = headerRow.map(h => classifyOutboundCol(normalizeHeaderKey(String(h ?? ''))));
+  const headerIdx = findHeaderRowIndex(rows, classifyOutboundCol, ['materialCode', 'materialName', 'quantity', 'weightKg']);
+  const sheetMeta = extractSheetVoucherMeta(rows, headerIdx);
+  const { mergedHeaderCells, dataStartIdx } = detectMergedSubHeader(rows, headerIdx);
 
-  const totalDataRows = rows.length - headerIdx - 1;
+  const normalizedHeaders = mergedHeaderCells.map((h) => normalizeHeaderKey(h));
+  const colMap: (OutboundCol | null)[] = normalizedHeaders.map((norm) => classifyOutboundCol(norm));
+
+  let bestQtyCol = -1;
+  let bestQtyPriority = 0;
+  for (let c = 0; c < colMap.length; c++) {
+    if (colMap[c] === 'quantity') {
+      const prio = getQuantityColPriority(normalizedHeaders[c]);
+      if (prio > bestQtyPriority) {
+        bestQtyPriority = prio;
+        bestQtyCol = c;
+      }
+    }
+  }
+  for (let c = 0; c < colMap.length; c++) {
+    if (colMap[c] === 'quantity' && c !== bestQtyCol) {
+      colMap[c] = null;
+    }
+  }
+
+  const totalDataRows = Math.max(1, rows.length - dataStartIdx);
   const parsedItems: Partial<OutboundItemDetail>[] = [];
   const errors: string[] = [];
   let skippedErrorCount = 0;
   const baseTs = Date.now();
   const CHUNK_SIZE = 20000;
 
-  for (let r = headerIdx + 1; r < rows.length; r++) {
+  for (let r = dataStartIdx; r < rows.length; r++) {
     const row = rows[r];
-    if (isRowBlank(row)) continue;
+    if (isRowBlank(row) || isSummaryOrFooterRow(row)) continue;
 
-    const item: any = { id: `out-item-${baseTs}-${r}` };
+    const item: any = {
+      id: `out-item-${baseTs}-${r}`,
+      quantity: 0,
+      weightKg: 0
+    };
 
     for (let c = 0; c < colMap.length; c++) {
       const field = colMap[c];
@@ -785,15 +1344,31 @@ export async function parseOutboundExcel(
       if (val === '' || val === null || val === undefined) continue;
 
       if (field === 'quantity' || field === 'weightKg') {
-        item[field] = parseNum(val);
+        item[field] = Math.max(0, parseNum(val));
       } else if (field === 'issueDate') {
-        item.issueDate = formatExcelDate(val);
+        const dt = formatExcelDate(val);
+        if (dt) item.issueDate = dt;
       } else if (field === 'materialCode') {
-        item.materialCode = String(val).trim().toUpperCase();
+        const cleaned = cleanCellText(val);
+        if (cleaned) item.materialCode = cleaned.toUpperCase();
       } else {
-        item[field] = String(val).trim();
+        const cleaned = cleanCellText(val);
+        if (cleaned) item[field] = cleaned;
       }
     }
+
+    if (!item.materialCode && !item.materialName && !item.packageName && !item.packingListNo && !item.quantity && !item.weightKg) {
+      continue;
+    }
+
+    if (!item.issueCode && sheetMeta.code) item.issueCode = sheetMeta.code;
+    if (!item.issueDate && sheetMeta.date) item.issueDate = sheetMeta.date;
+    if (!item.departmentName && sheetMeta.departmentName) item.departmentName = sheetMeta.departmentName;
+    if (!item.recipientName && sheetMeta.recipientName) item.recipientName = sheetMeta.recipientName;
+    if (!item.recipientDepartment && sheetMeta.recipientDepartment) item.recipientDepartment = sheetMeta.recipientDepartment;
+    if (!item.requestNo && sheetMeta.requestNo) item.requestNo = sheetMeta.requestNo;
+    if (!item.issueNotes && sheetMeta.notes) item.issueNotes = sheetMeta.notes;
+    if (!item.warehouseName && sheetMeta.warehouseName) item.warehouseName = sheetMeta.warehouseName;
 
     if (item.batchCode && !item.packageNo) item.packageNo = item.batchCode;
     if (item.packageNo && !item.batchCode) item.batchCode = item.packageNo;
@@ -811,7 +1386,7 @@ export async function parseOutboundExcel(
       parsedItems.push(item);
     }
 
-    const done = r - headerIdx;
+    const done = r - dataStartIdx + 1;
     if (done % CHUNK_SIZE === 0) {
       onProgress?.(40 + Math.round((done / totalDataRows) * 58), done, totalDataRows);
       await yieldToMain();

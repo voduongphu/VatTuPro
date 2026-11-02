@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { InboundReceipt, OutboundReceipt } from '../../types/inventory';
+import { roundQty, sumInboundItems, sumOutboundItems } from '../../utils/additiveMerge';
+import { formatExcelDate } from '../../services/excelService';
 import { Printer, X, ChevronLeft, ChevronRight, SlidersHorizontal, Check } from 'lucide-react';
 
 interface ReceiptPrintModalProps {
@@ -13,28 +15,29 @@ interface ReceiptPrintModalProps {
 const PRINT_PAGE_SIZE = 200;
 
 function formatVietnameseVoucherDate(dateStr?: string): string {
-  if (!dateStr) {
+  const normalized = formatExcelDate(dateStr);
+  if (!normalized) {
     const now = new Date();
     const d = String(now.getDate()).padStart(2, '0');
     const m = String(now.getMonth() + 1).padStart(2, '0');
     const y = now.getFullYear();
     return `Ngày ${d} tháng ${m} năm ${y}`;
   }
-  const ymd = dateStr.trim().match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+  const ymd = normalized.trim().match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
   if (ymd) {
     const y = ymd[1];
     const m = ymd[2].padStart(2, '0');
     const d = ymd[3].padStart(2, '0');
     return `Ngày ${d} tháng ${m} năm ${y}`;
   }
-  const parsed = new Date(dateStr);
+  const parsed = new Date(normalized);
   if (!isNaN(parsed.getTime())) {
     const d = String(parsed.getDate()).padStart(2, '0');
     const m = String(parsed.getMonth() + 1).padStart(2, '0');
     const y = parsed.getFullYear();
     return `Ngày ${d} tháng ${m} năm ${y}`;
   }
-  return dateStr;
+  return normalized;
 }
 
 function formatWeightKg(val?: number): string {
@@ -170,38 +173,34 @@ export const ReceiptPrintModal: React.FC<ReceiptPrintModalProps> = ({
 
   const totals = useMemo(() => {
     if (inbound) {
-      let qty = 0;
-      let weight = 0;
-      let amount = 0;
-      for (let i = 0; i < inbound.items.length; i++) {
-        const it = inbound.items[i];
-        const q = Number(it.quantity) || 0;
-        const w = Number(it.weightKg) || 0;
-        const lineAmt =
-          it.totalPrice !== undefined && Number(it.totalPrice) > 0
-            ? Number(it.totalPrice)
-            : q * (Number(it.unitPrice) || 0);
-        qty += q;
-        weight += w;
-        amount += lineAmt;
+      const inItems = Array.isArray(inbound.items) ? inbound.items : [];
+      if (inItems.length > 0) {
+        const sums = sumInboundItems(inItems);
+        return {
+          totalQty: sums.totalQuantity,
+          totalWeight: sums.totalWeightKg,
+          totalAmount: sums.totalAmount
+        };
       }
       return {
-        totalQty: inbound.totalQuantity || qty,
-        totalWeight: inbound.totalWeightKg || weight,
-        totalAmount: inbound.totalAmount !== undefined ? inbound.totalAmount : amount
+        totalQty: roundQty(inbound.totalQuantity),
+        totalWeight: Number(inbound.totalWeightKg) || 0,
+        totalAmount: Number(inbound.totalAmount) || 0
       };
     }
     if (outbound) {
-      let qty = 0;
-      let weight = 0;
-      for (let i = 0; i < outbound.items.length; i++) {
-        const it = outbound.items[i];
-        qty += Number(it.quantity) || 0;
-        weight += Number(it.weightKg) || 0;
+      const outItems = Array.isArray(outbound.items) ? outbound.items : [];
+      if (outItems.length > 0) {
+        const sums = sumOutboundItems(outItems);
+        return {
+          totalQty: sums.totalQuantity,
+          totalWeight: sums.totalWeightKg,
+          totalAmount: 0
+        };
       }
       return {
-        totalQty: outbound.totalQuantity || qty,
-        totalWeight: outbound.totalWeightKg || weight,
+        totalQty: roundQty(outbound.totalQuantity),
+        totalWeight: Number(outbound.totalWeightKg) || 0,
         totalAmount: 0
       };
     }

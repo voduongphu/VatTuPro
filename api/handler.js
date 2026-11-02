@@ -504,9 +504,53 @@ function mergeMaterialsAdditive(existing, incoming, tombstones) {
   return { list: result, changed };
 }
 
+function roundQty(val) {
+  const n = Number(val);
+  if (!Number.isFinite(n)) return 0;
+  return Math.round(n * 10000) / 10000;
+}
+
+function sumInboundItems(items) {
+  let totalQty = 0;
+  let totalWeight = 0;
+  let totalAmt = 0;
+  let pkgCount = 0;
+  for (let i = 0; i < items.length; i++) {
+    const it = items[i];
+    const q = roundQty(it.quantity);
+    const w = Number(it.weightKg) || 0;
+    const uPrice = Number(it.unitPrice) || 0;
+    const lineAmt = Number(it.totalPrice) > 0 ? Number(it.totalPrice) : q * uPrice;
+    totalQty += q;
+    totalWeight += w;
+    totalAmt += lineAmt;
+    if (it.batchCode || it.packageNo) pkgCount++;
+  }
+  return {
+    totalQuantity: roundQty(totalQty),
+    totalWeightKg: Math.round(totalWeight * 100) / 100,
+    totalAmount: Math.round(totalAmt * 100) / 100,
+    packageCount: pkgCount
+  };
+}
+
+function sumOutboundItems(items) {
+  let totalQty = 0;
+  let totalWeight = 0;
+  for (let i = 0; i < items.length; i++) {
+    const it = items[i];
+    totalQty += roundQty(it.quantity);
+    totalWeight += Number(it.weightKg) || 0;
+  }
+  return {
+    totalQuantity: roundQty(totalQty),
+    totalWeightKg: Math.round(totalWeight * 100) / 100
+  };
+}
+
 function makeItemSig(it) {
   if (it.id) return it.id;
-  return `${it.materialCode}__${it.packingListNo}__${it.packageNo}__${it.drawingNo}__${it.quantity}__${it.weightKg}`;
+  return `${it.materialCode}__${it.batchCode || ''}__${it.packingListNo}__${it.packageNo}__${it.drawingNo}__${roundQty(it.quantity)}__${Number(it.weightKg) || 0}`;
 }
 
 function mergeInboundReceiptsAdditive(existing, incoming, tombstones) {
@@ -521,7 +565,25 @@ function mergeInboundReceiptsAdditive(existing, incoming, tombstones) {
       changed = true;
       continue;
     }
-    existingFiltered.push(r);
+    const items = Array.isArray(r.items) ? r.items : [];
+    const sums = sumInboundItems(items);
+    if (
+      r.totalQuantity !== sums.totalQuantity ||
+      r.totalWeightKg !== sums.totalWeightKg ||
+      (r.totalAmount ?? 0) !== sums.totalAmount
+    ) {
+      existingFiltered.push({
+        ...r,
+        items,
+        packageCount: sums.packageCount,
+        totalQuantity: sums.totalQuantity,
+        totalWeightKg: sums.totalWeightKg,
+        totalAmount: sums.totalAmount
+      });
+      changed = true;
+    } else {
+      existingFiltered.push(r);
+    }
   }
 
   const indexByCode = new Map();
@@ -548,27 +610,15 @@ function mergeInboundReceiptsAdditive(existing, incoming, tombstones) {
 
     if (existIdx === undefined && prepIdx === undefined) {
       const items = Array.isArray(inc.items) ? inc.items : [];
-      let totalQty = 0;
-      let totalWeight = 0;
-      let totalAmt = 0;
-      let pkgCount = 0;
-      for (let j = 0; j < items.length; j++) {
-        const it = items[j];
-        const q = Number(it.quantity) || 0;
-        const w = Number(it.weightKg) || 0;
-        totalQty += q;
-        totalWeight += w;
-        totalAmt += Number(it.totalPrice) || q * (Number(it.unitPrice) || 0);
-        if (it.packageNo) pkgCount++;
-      }
+      const sums = sumInboundItems(items);
 
       const cleanReceipt = {
         ...inc,
         items,
-        packageCount: pkgCount,
-        totalQuantity: totalQty,
-        totalWeightKg: Math.round(totalWeight * 100) / 100,
-        totalAmount: totalAmt,
+        packageCount: sums.packageCount,
+        totalQuantity: sums.totalQuantity,
+        totalWeightKg: sums.totalWeightKg,
+        totalAmount: sums.totalAmount,
         updatedAt: Number(inc.updatedAt) || 1
       };
 
@@ -603,19 +653,7 @@ function mergeInboundReceiptsAdditive(existing, incoming, tombstones) {
 
       if (addedItems.length > 0 || headerNewer) {
         const mergedItems = addedItems.length > 0 ? curr.items.concat(addedItems) : curr.items;
-        let totalQty = 0;
-        let totalWeight = 0;
-        let totalAmt = 0;
-        let pkgCount = 0;
-        for (let j = 0; j < mergedItems.length; j++) {
-          const it = mergedItems[j];
-          const q = Number(it.quantity) || 0;
-          const w = Number(it.weightKg) || 0;
-          totalQty += q;
-          totalWeight += w;
-          totalAmt += Number(it.totalPrice) || q * (Number(it.unitPrice) || 0);
-          if (it.packageNo) pkgCount++;
-        }
+        const sums = sumInboundItems(mergedItems);
 
         targetArr[targetIdx] = {
           ...curr,
@@ -666,10 +704,10 @@ function mergeInboundReceiptsAdditive(existing, incoming, tombstones) {
               : curr.driverVehicleNo || inc.driverVehicleNo,
           notes: headerNewer && inc.notes !== undefined ? inc.notes : curr.notes || inc.notes,
           items: mergedItems,
-          packageCount: pkgCount,
-          totalQuantity: totalQty,
-          totalWeightKg: Math.round(totalWeight * 100) / 100,
-          totalAmount: totalAmt,
+          packageCount: sums.packageCount,
+          totalQuantity: sums.totalQuantity,
+          totalWeightKg: sums.totalWeightKg,
+          totalAmount: sums.totalAmount,
           updatedAt: Math.max(currTs, incTs) || 1
         };
         touchedSet.add(rKey);
@@ -695,7 +733,19 @@ function mergeOutboundReceiptsAdditive(existing, incoming, tombstones) {
       changed = true;
       continue;
     }
-    existingFiltered.push(r);
+    const items = Array.isArray(r.items) ? r.items : [];
+    const sums = sumOutboundItems(items);
+    if (r.totalQuantity !== sums.totalQuantity || r.totalWeightKg !== sums.totalWeightKg) {
+      existingFiltered.push({
+        ...r,
+        items,
+        totalQuantity: sums.totalQuantity,
+        totalWeightKg: sums.totalWeightKg
+      });
+      changed = true;
+    } else {
+      existingFiltered.push(r);
+    }
   }
 
   const indexByCode = new Map();
@@ -722,19 +772,14 @@ function mergeOutboundReceiptsAdditive(existing, incoming, tombstones) {
 
     if (existIdx === undefined && prepIdx === undefined) {
       const items = Array.isArray(inc.items) ? inc.items : [];
-      let totalQty = 0;
-      let totalWeight = 0;
-      for (let j = 0; j < items.length; j++) {
-        totalQty += Number(items[j].quantity) || 0;
-        totalWeight += Number(items[j].weightKg) || 0;
-      }
+      const sums = sumOutboundItems(items);
 
       const cleanReceipt = {
         ...inc,
         items,
         packingListSummary: inc.packingListSummary || computePackingListSummary(items),
-        totalQuantity: totalQty,
-        totalWeightKg: Math.round(totalWeight * 100) / 100,
+        totalQuantity: sums.totalQuantity,
+        totalWeightKg: sums.totalWeightKg,
         updatedAt: Number(inc.updatedAt) || 1
       };
 
@@ -769,12 +814,7 @@ function mergeOutboundReceiptsAdditive(existing, incoming, tombstones) {
 
       if (addedItems.length > 0 || headerNewer) {
         const mergedItems = addedItems.length > 0 ? curr.items.concat(addedItems) : curr.items;
-        let totalQty = 0;
-        let totalWeight = 0;
-        for (let j = 0; j < mergedItems.length; j++) {
-          totalQty += Number(mergedItems[j].quantity) || 0;
-          totalWeight += Number(mergedItems[j].weightKg) || 0;
-        }
+        const sums = sumOutboundItems(mergedItems);
 
         targetArr[targetIdx] = {
           ...curr,
@@ -807,8 +847,8 @@ function mergeOutboundReceiptsAdditive(existing, incoming, tombstones) {
           notes: headerNewer && inc.notes !== undefined ? inc.notes : curr.notes || inc.notes,
           items: mergedItems,
           packingListSummary: computePackingListSummary(mergedItems),
-          totalQuantity: totalQty,
-          totalWeightKg: Math.round(totalWeight * 100) / 100,
+          totalQuantity: sums.totalQuantity,
+          totalWeightKg: sums.totalWeightKg,
           updatedAt: Math.max(currTs, incTs) || 1
         };
         touchedSet.add(rKey);

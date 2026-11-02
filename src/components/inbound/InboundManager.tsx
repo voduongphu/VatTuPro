@@ -6,7 +6,16 @@ import { ExcelImportModal } from '../common/ExcelImportModal';
 import { ReceiptPrintModal } from '../common/ReceiptPrintModal';
 import { ConfirmDeleteModal } from '../common/ConfirmDeleteModal';
 import { PaginationBar } from '../common/PaginationBar';
-import { downloadInboundTemplate } from '../../services/excelService';
+import {
+  downloadInboundTemplate,
+  formatExcelDate,
+  formatVoucherDateVi
+} from '../../services/excelService';
+import {
+  roundQty,
+  sumInboundItems,
+  buildDeterministicItemId
+} from '../../utils/additiveMerge';
 import {
   ArrowDownLeft,
   Plus,
@@ -206,7 +215,8 @@ export const InboundManager: React.FC = () => {
   const updateItemRow = (idx: number, field: keyof InboundItemDetail, val: any) => {
     setFormItems((prev) => {
       const copy = [...prev];
-      copy[idx] = { ...copy[idx], [field]: val };
+      const prevRow = prev[idx];
+      copy[idx] = { ...prevRow, [field]: val };
 
       if (field === 'materialCode') {
         const found = materialMap.get(String(val).trim().toLowerCase());
@@ -222,7 +232,7 @@ export const InboundManager: React.FC = () => {
           if (found.manufacturer) copy[idx].manufacturer = found.manufacturer;
           if (found.supplier) copy[idx].supplier = found.supplier;
           if (found.unitWeightKg && copy[idx].quantity) {
-            copy[idx].weightKg = Math.round(found.unitWeightKg * copy[idx].quantity * 100) / 100;
+            copy[idx].weightKg = Math.round(found.unitWeightKg * roundQty(copy[idx].quantity) * 100) / 100;
           }
         }
       }
@@ -231,10 +241,22 @@ export const InboundManager: React.FC = () => {
         copy[idx].packageNo = String(val);
       }
 
+      if (field === 'quantity') {
+        const nextQty = Math.max(0, roundQty(val));
+        const found = materialMap.get(String(copy[idx].materialCode || '').trim().toLowerCase());
+        if (found && found.unitWeightKg && found.unitWeightKg > 0) {
+          const prevAutoW = Math.round(found.unitWeightKg * roundQty(prevRow.quantity) * 100) / 100;
+          const currW = Number(prevRow.weightKg) || 0;
+          if (currW === 0 || Math.abs(currW - prevAutoW) < 0.05) {
+            copy[idx].weightKg = Math.round(found.unitWeightKg * nextQty * 100) / 100;
+          }
+        }
+      }
+
       if (field === 'quantity' || field === 'unitPrice') {
-        const qty = Number(field === 'quantity' ? val : copy[idx].quantity) || 0;
-        const price = Number(field === 'unitPrice' ? val : copy[idx].unitPrice) || 0;
-        copy[idx].totalPrice = qty * price;
+        const qty = Math.max(0, roundQty(field === 'quantity' ? val : copy[idx].quantity));
+        const price = Math.max(0, Number(field === 'unitPrice' ? val : copy[idx].unitPrice) || 0);
+        copy[idx].totalPrice = Math.round(qty * price * 100) / 100;
       }
 
       return copy;
@@ -371,37 +393,39 @@ export const InboundManager: React.FC = () => {
 
         const len = whItems.length;
         const fullItems: InboundItemDetail[] = new Array(len);
-        let totalQty = 0;
-        let totalWeight = 0;
-        let totalAmount = 0;
-        let pkgCount = 0;
+        const occurrenceMap = new Map<string, number>();
 
         for (let idx = 0; idx < len; idx++) {
           const item = whItems[idx] as any;
-          const qty = Number(item.quantity) || 1;
-          const weight = Number(item.weightKg) || 0;
-          const uPrice = Number(item.unitPrice) || 0;
-          const tPrice = Number(item.totalPrice) > 0 ? Number(item.totalPrice) : qty * uPrice;
-          const batchVal = item.batchCode || item.packageNo || '';
-          const pkgNo = item.packageNo || batchVal || `PKG-${idx + 1}`;
-          if (pkgNo) pkgCount++;
+          const qty = Math.max(0, roundQty(item.quantity));
+          const weight = Math.max(0, Math.round((Number(item.weightKg) || 0) * 100) / 100);
+          const uPrice = Math.max(0, Number(item.unitPrice) || 0);
+          const tPrice =
+            Number(item.totalPrice) > 0
+              ? Math.round(Number(item.totalPrice) * 100) / 100
+              : Math.round(qty * uPrice * 100) / 100;
+          const batchVal = String(item.batchCode || item.packageNo || '').trim();
+          const pkgNo = String(item.packageNo || batchVal || `PKG-${idx + 1}`).trim();
+          const matCode = String(item.materialCode || `VT-AUTO-${idx + 1}`).trim().toUpperCase();
+          const plNo = String(item.packingListNo || first?.packingListNo || 'PL-EXCEL-01').trim();
+          const dwgNo = String(item.drawingNo || 'N/A').trim();
 
-          totalQty += qty;
-          totalWeight += weight;
-          totalAmount += tPrice;
+          const sigSeed = `${matCode}|${batchVal}|${plNo}|${pkgNo}|${dwgNo}|${qty}|${weight}`;
+          const occ = (occurrenceMap.get(sigSeed) || 0) + 1;
+          occurrenceMap.set(sigSeed, occ);
 
           fullItems[idx] = {
-            id: item.id || `in-item-${baseTs}-${batchSalt}-${createdCount}-${idx}`,
-            materialCode: item.materialCode || `VT-AUTO-${idx + 1}`,
+            id: buildDeterministicItemId('in', generatedCode, sigSeed, occ),
+            materialCode: matCode,
             materialName: item.materialName || 'Vật tư nhập Excel',
             unit: item.unit || 'Ống',
             batchCode: batchVal,
-            packingListNo: item.packingListNo || first?.packingListNo || 'PL-EXCEL-01',
+            packingListNo: plNo,
             shipment: item.shipment || first?.shipment || 'SHP-EXCEL',
             packageNo: pkgNo,
             packageName: item.packageName || `Kiện ${pkgNo}`,
             category: item.category || 'Hạng mục dự án',
-            drawingNo: item.drawingNo || 'N/A',
+            drawingNo: dwgNo,
             manufacturer: item.manufacturer || first?.manufacturer || 'N/A',
             supplier: item.supplier || first?.supplier || 'N/A',
             weightKg: weight,
@@ -415,6 +439,9 @@ export const InboundManager: React.FC = () => {
           };
         }
 
+        const sums = sumInboundItems(fullItems);
+        const normalizedRcpDate = formatExcelDate(customRcpDate) || todayDate;
+
         const effectiveSupplier =
           first.supplier && first.supplier !== 'Đang cập nhật' ? first.supplier : '';
         const effectiveDeliverer =
@@ -423,7 +450,7 @@ export const InboundManager: React.FC = () => {
         newReceipts.push({
           id: `in-rcp-${baseTs}-${batchSalt}-${createdCount}`,
           receiptCode: generatedCode,
-          receiptDate: customRcpDate || todayDate,
+          receiptDate: normalizedRcpDate,
           warehouseId: targetWh.id,
           warehouseName: targetWh.name,
           departmentName: customDept || '',
@@ -439,10 +466,10 @@ export const InboundManager: React.FC = () => {
           driverVehicleNo: customVehicle || first.driverVehicleNo || '',
           notes: customNotes || '',
           items: fullItems,
-          packageCount: pkgCount,
-          totalQuantity: totalQty,
-          totalWeightKg: Math.round(totalWeight * 100) / 100,
-          totalAmount,
+          packageCount: sums.packageCount,
+          totalQuantity: sums.totalQuantity,
+          totalWeightKg: sums.totalWeightKg,
+          totalAmount: sums.totalAmount,
           createdAt: todayIso,
           createdBy: userFullName
         });
@@ -481,8 +508,14 @@ export const InboundManager: React.FC = () => {
         setFormError(`Dòng số ${i + 1}: Vui lòng nhập Tên vật tư.`);
         return;
       }
-      if (!it.quantity || it.quantity <= 0) {
-        setFormError(`Dòng số ${i + 1}: Số lượng phải lớn hơn 0.`);
+      const q = roundQty(it.quantity);
+      const w = Number(it.weightKg) || 0;
+      if (q < 0 || w < 0) {
+        setFormError(`Dòng số ${i + 1}: Số lượng và Khối lượng không được là số âm.`);
+        return;
+      }
+      if (q <= 0 && w <= 0) {
+        setFormError(`Dòng số ${i + 1}: Vui lòng nhập Số lượng (> 0) hoặc Khối lượng (> 0).`);
         return;
       }
     }
@@ -496,9 +529,12 @@ export const InboundManager: React.FC = () => {
     const normalizedItems: InboundItemDetail[] = formItems.map((it, idx) => {
       const batch = (it.batchCode || it.packageNo || '').trim();
       const pkg = (it.packageNo || batch || `LO-${idx + 1}`).trim();
-      const qty = Number(it.quantity) || 0;
-      const uPrice = Number(it.unitPrice) || 0;
-      const tPrice = Number(it.totalPrice) > 0 ? Number(it.totalPrice) : qty * uPrice;
+      const qty = Math.max(0, roundQty(it.quantity));
+      const uPrice = Math.max(0, Number(it.unitPrice) || 0);
+      const tPrice =
+        Number(it.totalPrice) > 0
+          ? Math.round(Number(it.totalPrice) * 100) / 100
+          : Math.round(qty * uPrice * 100) / 100;
       const noteText = (it.note ?? it.conditionNote ?? '').trim();
 
       return {
@@ -518,7 +554,7 @@ export const InboundManager: React.FC = () => {
         category: it.category?.trim() || formNotes.trim() || 'Vật tư dự án',
         drawingNo: it.drawingNo?.trim() || 'N/A',
         quantity: qty,
-        weightKg: Number(it.weightKg) || 0,
+        weightKg: Math.max(0, Math.round((Number(it.weightKg) || 0) * 100) / 100),
         unitPrice: uPrice,
         totalPrice: tPrice,
         conditionNote: noteText,
@@ -526,10 +562,7 @@ export const InboundManager: React.FC = () => {
       };
     });
 
-    const totalQty = normalizedItems.reduce((sum, it) => sum + (Number(it.quantity) || 0), 0);
-    const totalWeight = normalizedItems.reduce((sum, it) => sum + (Number(it.weightKg) || 0), 0);
-    const totalAmount = normalizedItems.reduce((sum, it) => sum + (Number(it.totalPrice) || 0), 0);
-    const pkgCount = normalizedItems.reduce((sum, it) => sum + (it.batchCode || it.packageNo ? 1 : 0), 0);
+    const sums = sumInboundItems(normalizedItems);
 
     const newReceipt: InboundReceipt = {
       id: `in-rcp-${Date.now()}`,
@@ -552,10 +585,10 @@ export const InboundManager: React.FC = () => {
       driverVehicleNo: formDriverVehicle.trim(),
       notes: formNotes.trim(),
       items: normalizedItems,
-      packageCount: pkgCount,
-      totalQuantity: totalQty,
-      totalWeightKg: Math.round(totalWeight * 100) / 100,
-      totalAmount,
+      packageCount: sums.packageCount,
+      totalQuantity: sums.totalQuantity,
+      totalWeightKg: sums.totalWeightKg,
+      totalAmount: sums.totalAmount,
       createdAt: new Date().toISOString(),
       createdBy: currentUser?.fullName || 'Võ Dương Phú'
     };
@@ -607,8 +640,9 @@ export const InboundManager: React.FC = () => {
 
     return receipts.filter((r) => {
       if (checkWh && r.warehouseId !== filterWarehouse) return false;
-      if (startDate && r.receiptDate < startDate) return false;
-      if (endDate && r.receiptDate > endDate) return false;
+      const normDate = formatExcelDate(r.receiptDate);
+      if (startDate && normDate < startDate) return false;
+      if (endDate && normDate > endDate) return false;
 
       if (q) {
         const headerMatch =
@@ -672,6 +706,19 @@ export const InboundManager: React.FC = () => {
     const start = (detailPage - 1) * detailPageSize;
     return filteredDetailItems.slice(start, start + detailPageSize);
   }, [filteredDetailItems, detailPage, detailPageSize]);
+
+  const detailTotals = useMemo(
+    () => sumInboundItems(filteredDetailItems),
+    [filteredDetailItems]
+  );
+
+  const viewingReceiptTotals = useMemo(
+    () =>
+      viewingReceipt
+        ? sumInboundItems(viewingReceipt.items)
+        : { totalQuantity: 0, totalWeightKg: 0, totalAmount: 0, packageCount: 0 },
+    [viewingReceipt]
+  );
 
   return (
     <div className="space-y-6">
@@ -796,7 +843,7 @@ export const InboundManager: React.FC = () => {
                 <th className="px-5 py-3.5">Đơn Vị Giao Hàng & Hợp Đồng</th>
                 <th className="px-5 py-3.5">Bộ Phận & Kho Lưu Trữ</th>
                 <th className="px-5 py-3.5">Nội Dung / Lô Hàng</th>
-                <th className="px-5 py-3.5 text-right">Tổng SL / Mục Hàng</th>
+                <th className="px-5 py-3.5 text-right">Tổng Số Lượng</th>
                 <th className="px-5 py-3.5 text-right">Tổng Khối Lượng (Kg)</th>
                 <th className="px-5 py-3.5 text-right">Thao Tác</th>
               </tr>
@@ -814,6 +861,7 @@ export const InboundManager: React.FC = () => {
                     r.delivererName && r.delivererName !== 'Nhập từ File Excel tự động'
                       ? r.delivererName
                       : r.supplier;
+                  const rowSums = sumInboundItems(r.items);
                   return (
                     <tr key={r.id} className="hover:bg-slate-50/60 transition">
                       <td className="px-5 py-4">
@@ -823,7 +871,7 @@ export const InboundManager: React.FC = () => {
                           </span>
                           <div className="text-xs text-slate-500 flex items-center gap-1">
                             <Calendar className="w-3 h-3 text-slate-400" />
-                            <span>{new Date(r.receiptDate).toLocaleDateString('vi-VN')}</span>
+                            <span>{formatVoucherDateVi(r.receiptDate)}</span>
                           </div>
                         </div>
                       </td>
@@ -863,16 +911,16 @@ export const InboundManager: React.FC = () => {
                       </td>
 
                       <td className="px-5 py-4 text-right">
-                        <div className="font-bold text-slate-900 font-mono text-sm">
-                          {r.totalQuantity.toLocaleString('vi-VN')}
+                        <div className="font-bold text-slate-900 font-mono text-sm tabular-nums">
+                          {rowSums.totalQuantity.toLocaleString('vi-VN')}
                         </div>
                         <div className="text-[11px] text-slate-500">
                           {r.inboundType === 'return' ? 'Nhập trả kho' : 'Nhập mới'}
                         </div>
                       </td>
 
-                      <td className="px-5 py-4 text-right font-mono font-bold text-emerald-700">
-                        {r.totalWeightKg.toLocaleString('en-US', {
+                      <td className="px-5 py-4 text-right font-mono font-bold text-emerald-700 tabular-nums">
+                        {rowSums.totalWeightKg.toLocaleString('en-US', {
                           minimumFractionDigits: 2,
                           maximumFractionDigits: 2
                         })}{' '}
@@ -1180,7 +1228,7 @@ export const InboundManager: React.FC = () => {
                         <th className="p-2 w-36">Mã vật tư</th>
                         <th className="p-2 min-w-[220px]">Tên vật tư (*)</th>
                         <th className="p-2 w-32">Mã lô</th>
-                        <th className="p-2 w-24 text-right">Số lượng (cây/tấm) (*)</th>
+                        <th className="p-2 w-24 text-right">Số lượng (cây/tấm)</th>
                         <th className="p-2 w-20 text-center">ĐVT</th>
                         <th className="p-2 w-28 text-right">Khối lượng (Kg)</th>
                         <th className="p-2 w-28 text-right">Đơn giá (VNĐ)</th>
@@ -1224,12 +1272,18 @@ export const InboundManager: React.FC = () => {
                           <td className="p-2 text-right">
                             <input
                               type="number"
-                              min="0.01"
+                              min="0"
                               step="any"
-                              value={item.quantity}
-                              onChange={(e) => updateItemRow(idx, 'quantity', Number(e.target.value))}
+                              value={item.quantity === 0 ? '' : item.quantity}
+                              placeholder="0"
+                              onChange={(e) =>
+                                updateItemRow(
+                                  idx,
+                                  'quantity',
+                                  e.target.value === '' ? 0 : roundQty(e.target.value)
+                                )
+                              }
                               className="w-full px-2 py-1 bg-white border border-slate-200 rounded text-right font-bold outline-none text-xs"
-                              required
                             />
                           </td>
                           <td className="p-2">
@@ -1244,9 +1298,17 @@ export const InboundManager: React.FC = () => {
                           <td className="p-2 text-right">
                             <input
                               type="number"
+                              min="0"
                               step="0.01"
-                              value={item.weightKg}
-                              onChange={(e) => updateItemRow(idx, 'weightKg', Number(e.target.value))}
+                              value={item.weightKg === 0 ? '' : item.weightKg}
+                              placeholder="0"
+                              onChange={(e) =>
+                                updateItemRow(
+                                  idx,
+                                  'weightKg',
+                                  e.target.value === '' ? 0 : Number(e.target.value)
+                                )
+                              }
                               className="w-full px-2 py-1 bg-white border border-slate-200 rounded text-right font-mono font-medium outline-none text-xs"
                             />
                           </td>
@@ -1299,9 +1361,9 @@ export const InboundManager: React.FC = () => {
                     <span>
                       Tổng số lượng:{' '}
                       <strong className="text-blue-700 tabular-nums">
-                        {formItems
-                          .reduce((s, it) => s + (Number(it.quantity) || 0), 0)
-                          .toLocaleString('vi-VN')}
+                        {roundQty(
+                          formItems.reduce((s, it) => s + roundQty(it.quantity), 0)
+                        ).toLocaleString('vi-VN')}
                       </strong>
                     </span>
                     <span>
@@ -1354,9 +1416,12 @@ export const InboundManager: React.FC = () => {
                     Phiếu Nhập Kho: {viewingReceipt.receiptCode}
                   </h3>
                   <p className="text-xs text-slate-500 line-clamp-1">
-                    Ngày: {new Date(viewingReceipt.receiptDate).toLocaleDateString('vi-VN')} | Kho:{' '}
+                    Ngày: {formatVoucherDateVi(viewingReceipt.receiptDate)} | Kho:{' '}
                     {viewingReceipt.warehouseName} | {viewingReceipt.items.length.toLocaleString('vi-VN')}{' '}
-                    mục hàng
+                    mục hàng | Tổng SL:{' '}
+                    <strong className="text-blue-700 font-mono">
+                      {viewingReceiptTotals.totalQuantity.toLocaleString('vi-VN')}
+                    </strong>
                   </p>
                 </div>
               </div>
@@ -1496,17 +1561,19 @@ export const InboundManager: React.FC = () => {
                               <td className="p-2.5 text-center font-mono text-slate-800">
                                 {batchText}
                               </td>
-                              <td className="p-2.5 text-right font-bold font-mono text-slate-900">
-                                {Number(it.quantity)?.toLocaleString('vi-VN')}
+                              <td className="p-2.5 text-right font-bold font-mono text-slate-900 tabular-nums">
+                                {roundQty(it.quantity) > 0
+                                  ? roundQty(it.quantity).toLocaleString('vi-VN')
+                                  : '-'}
                               </td>
                               <td className="p-2.5 text-center">{it.unit}</td>
-                              <td className="p-2.5 text-right font-bold font-mono text-emerald-700">
+                              <td className="p-2.5 text-right font-bold font-mono text-emerald-700 tabular-nums">
                                 {Number(it.weightKg || 0).toLocaleString('en-US', {
                                   minimumFractionDigits: 2,
                                   maximumFractionDigits: 2
                                 })}
                               </td>
-                              <td className="p-2.5 text-right font-mono text-slate-700">
+                              <td className="p-2.5 text-right font-mono text-slate-700 tabular-nums">
                                 {lineTotal > 0 ? lineTotal.toLocaleString('en-US') : '-'}
                               </td>
                               <td className="p-2.5 text-[11px] text-slate-600">
@@ -1520,22 +1587,26 @@ export const InboundManager: React.FC = () => {
                     <tfoot className="bg-slate-50 font-bold border-t border-slate-200">
                       <tr>
                         <td></td>
-                        <td className="p-2.5 text-center uppercase">TỔNG CỘNG</td>
-                        <td></td>
-                        <td></td>
-                        <td className="p-2.5 text-right text-blue-700 font-mono">
-                          {viewingReceipt.totalQuantity.toLocaleString('vi-VN')}
+                        <td className="p-2.5 text-center uppercase whitespace-nowrap">
+                          {deferredDetailSearch.trim() ? 'TỔNG CỘNG (LỌC)' : 'TỔNG CỘNG'}
                         </td>
                         <td></td>
-                        <td className="p-2.5 text-right text-emerald-700 font-mono">
-                          {viewingReceipt.totalWeightKg.toLocaleString('en-US', {
+                        <td></td>
+                        <td className="p-2.5 text-right text-blue-700 font-mono tabular-nums">
+                          {detailTotals.totalQuantity > 0
+                            ? detailTotals.totalQuantity.toLocaleString('vi-VN')
+                            : '-'}
+                        </td>
+                        <td></td>
+                        <td className="p-2.5 text-right text-emerald-700 font-mono tabular-nums">
+                          {detailTotals.totalWeightKg.toLocaleString('en-US', {
                             minimumFractionDigits: 2,
                             maximumFractionDigits: 2
                           })}
                         </td>
-                        <td className="p-2.5 text-right font-mono">
-                          {viewingReceipt.totalAmount && viewingReceipt.totalAmount > 0
-                            ? viewingReceipt.totalAmount.toLocaleString('en-US')
+                        <td className="p-2.5 text-right font-mono tabular-nums">
+                          {detailTotals.totalAmount > 0
+                            ? detailTotals.totalAmount.toLocaleString('en-US')
                             : '-'}
                         </td>
                         <td></td>
