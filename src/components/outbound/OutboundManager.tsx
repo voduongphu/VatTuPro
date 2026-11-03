@@ -86,6 +86,8 @@ export const OutboundManager: React.FC = () => {
   const [detailPageSize, setDetailPageSize] = useState(100);
 
   const [receiptToDelete, setReceiptToDelete] = useState<OutboundReceipt | null>(null);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [isDeleteSelectedModalOpen, setIsDeleteSelectedModalOpen] = useState(false);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
 
   // Form New Outbound (Theo mẫu QN-OPR-PR11-FM06)
@@ -131,6 +133,28 @@ export const OutboundManager: React.FC = () => {
   useEffect(() => {
     setCurrentPage(1);
   }, [deferredSearch, filterWarehouse, startDate, endDate]);
+
+  // Đồng bộ làm sạch danh sách checkbox nếu có phiếu xuất vừa bị xóa hoặc đổi quyền user
+  useEffect(() => {
+    if (!isAdmin) {
+      setSelectedIds((prev) => (prev.size > 0 ? new Set() : prev));
+      return;
+    }
+    setSelectedIds((prev) => {
+      if (prev.size === 0) return prev;
+      const validIds = new Set(receipts.map((r) => r.id));
+      let changed = false;
+      const next = new Set<string>();
+      prev.forEach((id) => {
+        if (validIds.has(id)) {
+          next.add(id);
+        } else {
+          changed = true;
+        }
+      });
+      return changed ? next : prev;
+    });
+  }, [receipts, isAdmin]);
 
   const materialMap = useMemo(() => {
     const map = new Map<string, MaterialItem>();
@@ -764,6 +788,12 @@ export const OutboundManager: React.FC = () => {
 
     StorageService.deleteOutboundReceipt(targetId);
     setReceipts((prev) => prev.filter((r) => r.id !== targetId));
+    setSelectedIds((prev) => {
+      if (!prev.has(targetId)) return prev;
+      const next = new Set(prev);
+      next.delete(targetId);
+      return next;
+    });
     loadData();
     showToast(`Đã xóa phiếu xuất "${targetCode}" thành công!`);
     setReceiptToDelete(null);
@@ -771,6 +801,23 @@ export const OutboundManager: React.FC = () => {
     if (viewingReceipt?.id === targetId) {
       setViewingReceipt(null);
     }
+  };
+
+  const confirmDeleteSelectedOutbound = () => {
+    if (!isAdmin || selectedIds.size === 0) return;
+    const idsToDelete = Array.from(selectedIds);
+    const deletedCount = StorageService.deleteOutboundReceipts(idsToDelete);
+
+    if (viewingReceipt && selectedIds.has(viewingReceipt.id)) {
+      setViewingReceipt(null);
+    }
+
+    setSelectedIds(new Set());
+    setIsDeleteSelectedModalOpen(false);
+    loadData();
+    showToast(
+      `Đã xóa thành công ${deletedCount.toLocaleString('vi-VN')} phiếu xuất kho đã chọn!`
+    );
   };
 
   const openDetailModal = (rcp: OutboundReceipt) => {
@@ -832,6 +879,82 @@ export const OutboundManager: React.FC = () => {
     const start = (currentPage - 1) * pageSize;
     return filteredReceipts.slice(start, start + pageSize);
   }, [filteredReceipts, currentPage, pageSize]);
+
+  // Thao tác chọn checkbox xóa nhiều phiếu xuất (chỉ dành cho Admin, O(pageSize) trên mỗi trang)
+  const toggleSelectReceipt = (id: string) => {
+    if (!isAdmin) return;
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  };
+
+  const isAllPageSelected =
+    isAdmin && pagedReceipts.length > 0 && pagedReceipts.every((r) => selectedIds.has(r.id));
+  const isSomePageSelected =
+    isAdmin && pagedReceipts.some((r) => selectedIds.has(r.id)) && !isAllPageSelected;
+
+  const toggleSelectCurrentPage = () => {
+    if (!isAdmin) return;
+    if (isAllPageSelected) {
+      setSelectedIds((prev) => {
+        const next = new Set(prev);
+        for (let i = 0; i < pagedReceipts.length; i++) {
+          next.delete(pagedReceipts[i].id);
+        }
+        return next;
+      });
+    } else {
+      setSelectedIds((prev) => {
+        const next = new Set(prev);
+        for (let i = 0; i < pagedReceipts.length; i++) {
+          next.add(pagedReceipts[i].id);
+        }
+        return next;
+      });
+    }
+  };
+
+  const selectAllFiltered = () => {
+    if (!isAdmin) return;
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      for (let i = 0; i < filteredReceipts.length; i++) {
+        next.add(filteredReceipts[i].id);
+      }
+      return next;
+    });
+  };
+
+  const selectAllTotal = () => {
+    if (!isAdmin) return;
+    setSelectedIds(new Set(receipts.map((r) => r.id)));
+  };
+
+  const clearSelection = () => {
+    setSelectedIds(new Set());
+  };
+
+  const selectedReceiptsSummary = useMemo(() => {
+    if (selectedIds.size === 0) return '';
+    const sampleCodes: string[] = [];
+    for (let i = 0; i < receipts.length; i++) {
+      if (selectedIds.has(receipts[i].id)) {
+        sampleCodes.push(receipts[i].issueCode);
+        if (sampleCodes.length >= 4) break;
+      }
+    }
+    const extra = selectedIds.size - sampleCodes.length;
+    if (extra > 0) {
+      return `${sampleCodes.join(', ')} và ${extra.toLocaleString('vi-VN')} phiếu xuất khác`;
+    }
+    return sampleCodes.join(', ');
+  }, [receipts, selectedIds]);
 
   // Tồn kho lọc cho modal chọn vật tư xuất
   const availableStockForPicker = useMemo(() => {
@@ -962,6 +1085,18 @@ export const OutboundManager: React.FC = () => {
         </div>
 
         <div className="grid grid-cols-1 sm:flex sm:items-center gap-2 sm:gap-2.5 sm:flex-wrap w-full md:w-auto">
+          {isAdmin && selectedIds.size > 0 && (
+            <button
+              type="button"
+              onClick={() => setIsDeleteSelectedModalOpen(true)}
+              className="flex items-center justify-center gap-1.5 px-3.5 py-2.5 bg-rose-600 hover:bg-rose-700 text-white rounded-xl font-semibold text-xs shadow-md shadow-rose-600/20 transition active:scale-95 min-h-[42px]"
+              title="Xóa các phiếu xuất kho đã đánh dấu chọn"
+            >
+              <Trash2 className="w-4 h-4 shrink-0" />
+              <span>Xóa Đã Chọn ({selectedIds.size.toLocaleString('vi-VN')})</span>
+            </button>
+          )}
+
           <button
             onClick={downloadOutboundTemplate}
             title="Tải tệp Excel mẫu chuẩn để chuẩn bị xuất kho"
@@ -1038,12 +1173,100 @@ export const OutboundManager: React.FC = () => {
         </div>
       </div>
 
+      {/* Thanh thao tác chọn xóa nhiều phiếu xuất (chỉ hiển thị cho Admin khi có chọn checkbox) */}
+      {isAdmin && selectedIds.size > 0 && (
+        <div className="bg-blue-50/90 border border-blue-200 rounded-2xl p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-sm animate-in slide-in-from-top-2">
+          <div className="flex items-center gap-3">
+            <div className="min-w-8 px-2 h-8 rounded-xl bg-blue-600 text-white flex items-center justify-center font-bold text-xs tabular-nums">
+              {selectedIds.size.toLocaleString('vi-VN')}
+            </div>
+            <div>
+              <div className="text-sm font-bold text-blue-950 flex flex-wrap items-center gap-1.5">
+                <span>
+                  Đã chọn {selectedIds.size.toLocaleString('vi-VN')} /{' '}
+                  {receipts.length.toLocaleString('vi-VN')} phiếu xuất kho
+                </span>
+                <span aria-hidden="true" className="text-blue-400">
+                  ·
+                </span>
+                <span className="text-xs font-medium text-blue-700">
+                  {selectedIds.size === receipts.length
+                    ? 'Đã chọn tất cả'
+                    : `${filteredReceipts.length.toLocaleString('vi-VN')} kết quả lọc`}
+                </span>
+              </div>
+              <div className="text-xs text-blue-700">
+                Xóa các phiếu xuất kho đã đánh dấu sẽ tự động hoàn trả lại tồn kho tương ứng và đồng bộ trên toàn hệ thống.
+              </div>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2 flex-wrap w-full sm:w-auto">
+            {filteredReceipts.length < receipts.length &&
+              selectedIds.size < filteredReceipts.length && (
+                <button
+                  type="button"
+                  onClick={selectAllFiltered}
+                  className="px-3 py-1.5 bg-white hover:bg-blue-100 text-blue-700 border border-blue-300 rounded-xl text-xs font-semibold transition min-h-[36px]"
+                >
+                  Chọn kết quả lọc ({filteredReceipts.length.toLocaleString('vi-VN')})
+                </button>
+              )}
+
+            {selectedIds.size < receipts.length && (
+              <button
+                type="button"
+                onClick={selectAllTotal}
+                className="px-3 py-1.5 bg-white hover:bg-blue-100 text-blue-700 border border-blue-300 rounded-xl text-xs font-semibold transition min-h-[36px]"
+              >
+                Chọn tất cả ({receipts.length.toLocaleString('vi-VN')})
+              </button>
+            )}
+
+            <button
+              type="button"
+              onClick={clearSelection}
+              className="px-3 py-1.5 bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 rounded-xl text-xs font-semibold transition min-h-[36px]"
+            >
+              Bỏ chọn
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setIsDeleteSelectedModalOpen(true)}
+              className="flex items-center gap-1.5 px-4 py-1.5 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-bold shadow-md shadow-rose-600/20 transition active:scale-95 min-h-[36px]"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+              <span>Xóa {selectedIds.size.toLocaleString('vi-VN')} phiếu đã chọn</span>
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Outbound Receipts Table */}
       <div className="bg-white rounded-2xl border border-slate-200/80 shadow-sm overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full min-w-[780px] text-left text-sm">
             <thead className="bg-slate-50/80 text-slate-600 border-b border-slate-200 text-xs font-semibold uppercase tracking-wider">
               <tr>
+                {isAdmin && (
+                  <th className="w-12 px-4 py-3.5 text-center">
+                    <input
+                      type="checkbox"
+                      checked={isAllPageSelected}
+                      ref={(el) => {
+                        if (el) el.indeterminate = isSomePageSelected;
+                      }}
+                      onChange={toggleSelectCurrentPage}
+                      className="w-4 h-4 rounded text-blue-600 focus:ring-blue-500 border-slate-300 cursor-pointer"
+                      title={
+                        isAllPageSelected
+                          ? 'Bỏ chọn các phiếu xuất trên trang này'
+                          : 'Chọn tất cả các phiếu xuất trên trang này'
+                      }
+                    />
+                  </th>
+                )}
                 <th className="px-5 py-3.5">Số Phiếu Xuất & Ngày</th>
                 <th className="px-5 py-3.5">Người Nhận & Đơn Vị/Tổ/Nhóm</th>
                 <th className="px-5 py-3.5">Bộ Phận & Kho Xuất</th>
@@ -1056,7 +1279,7 @@ export const OutboundManager: React.FC = () => {
             <tbody className="divide-y divide-slate-100">
               {pagedReceipts.length === 0 ? (
                 <tr>
-                  <td colSpan={7} className="px-6 py-12 text-center text-slate-400">
+                  <td colSpan={isAdmin ? 8 : 7} className="px-6 py-12 text-center text-slate-400">
                     Chưa có phiếu xuất kho nào phù hợp điều kiện lọc.
                   </td>
                 </tr>
@@ -1065,8 +1288,25 @@ export const OutboundManager: React.FC = () => {
                   const plDisplay =
                     r.packingListSummary || buildPackingListSummary(r.items.slice(0, 50));
                   const rowSums = sumOutboundItems(r.items);
+                  const isRowSelected = isAdmin && selectedIds.has(r.id);
                   return (
-                    <tr key={r.id} className="hover:bg-slate-50/60 transition">
+                    <tr
+                      key={r.id}
+                      className={`hover:bg-slate-50/60 transition ${
+                        isRowSelected ? 'bg-blue-50/40' : ''
+                      }`}
+                    >
+                      {isAdmin && (
+                        <td className="w-12 px-4 py-4 text-center">
+                          <input
+                            type="checkbox"
+                            checked={isRowSelected}
+                            onChange={() => toggleSelectReceipt(r.id)}
+                            className="w-4 h-4 rounded text-blue-600 focus:ring-blue-500 border-slate-300 cursor-pointer"
+                            title={`Chọn phiếu xuất ${r.issueCode}`}
+                          />
+                        </td>
+                      )}
                       <td className="px-5 py-4">
                         <div>
                           <span className="font-mono font-bold text-xs text-rose-700 bg-rose-50 px-2 py-0.5 rounded border border-rose-200 inline-block mb-1">
@@ -2006,7 +2246,7 @@ export const OutboundManager: React.FC = () => {
         outbound={selectedReceiptForPrint}
       />
 
-      {/* Modal Xác Nhận Xóa Phiếu Xuất */}
+      {/* Modal Xác Nhận Xóa 1 Phiếu Xuất */}
       <ConfirmDeleteModal
         isOpen={Boolean(receiptToDelete)}
         onClose={() => setReceiptToDelete(null)}
@@ -2019,6 +2259,17 @@ export const OutboundManager: React.FC = () => {
         }
         itemType="phiếu xuất kho"
         warningText="Xóa phiếu xuất kho sẽ tự động hoàn trả lại số lượng và khối lượng tồn kho cho các kiện hàng liên quan. Bạn có chắc chắn muốn xóa không?"
+      />
+
+      {/* Modal Xác Nhận Xóa Nhiều Phiếu Xuất Đã Chọn */}
+      <ConfirmDeleteModal
+        isOpen={isDeleteSelectedModalOpen}
+        onClose={() => setIsDeleteSelectedModalOpen(false)}
+        onConfirm={confirmDeleteSelectedOutbound}
+        title="Xác Nhận Xóa Nhiều Phiếu Xuất Kho"
+        itemName={`${selectedIds.size.toLocaleString('vi-VN')} phiếu xuất đã chọn (${selectedReceiptsSummary})`}
+        itemType="danh sách phiếu xuất kho"
+        warningText="Toàn bộ các phiếu xuất kho đã đánh dấu sẽ bị xóa vĩnh viễn và tự động hoàn trả lại số lượng, khối lượng tồn kho cho các mặt hàng liên quan trên toàn hệ thống."
       />
     </div>
   );

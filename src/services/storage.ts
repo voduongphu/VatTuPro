@@ -1085,6 +1085,7 @@ export const StorageService = {
     tombstones.inbound[normKey(id)] = now;
     if (target) {
       tombstones.inbound[target.id] = now;
+      tombstones.inbound[target.receiptCode] = now;
       tombstones.inbound[normKey(target.receiptCode)] = now;
     }
     this.saveTombstones(tombstones);
@@ -1094,6 +1095,35 @@ export const StorageService = {
     notifySubscribers();
     emitLocalMutation('meta');
     return true;
+  },
+
+  deleteInboundReceipts(ids: string[]): number {
+    if (!ids || ids.length === 0) return 0;
+    const idSet = new Set(ids);
+    const inbounds = this.getInboundReceipts();
+    const now = Date.now();
+    const tombstones = this.getTombstones();
+    const filtered: InboundReceipt[] = [];
+
+    for (let i = 0; i < inbounds.length; i++) {
+      const r = inbounds[i];
+      if (idSet.has(r.id) || idSet.has(r.receiptCode)) {
+        tombstones.inbound[r.id] = now;
+        tombstones.inbound[r.receiptCode] = now;
+        tombstones.inbound[normKey(r.receiptCode)] = now;
+      } else {
+        filtered.push(r);
+      }
+    }
+
+    const deletedCount = inbounds.length - filtered.length;
+    if (deletedCount > 0) {
+      this.saveTombstones(tombstones);
+      this.saveInboundReceipts(filtered);
+      notifySubscribers();
+      emitLocalMutation('meta');
+    }
+    return deletedCount;
   },
 
   // OUTBOUND RECEIPTS
@@ -1205,6 +1235,7 @@ export const StorageService = {
     tombstones.outbound[normKey(id)] = now;
     if (target) {
       tombstones.outbound[target.id] = now;
+      tombstones.outbound[target.issueCode] = now;
       tombstones.outbound[normKey(target.issueCode)] = now;
     }
     this.saveTombstones(tombstones);
@@ -1214,6 +1245,35 @@ export const StorageService = {
     notifySubscribers();
     emitLocalMutation('meta');
     return true;
+  },
+
+  deleteOutboundReceipts(ids: string[]): number {
+    if (!ids || ids.length === 0) return 0;
+    const idSet = new Set(ids);
+    const outbounds = this.getOutboundReceipts();
+    const now = Date.now();
+    const tombstones = this.getTombstones();
+    const filtered: OutboundReceipt[] = [];
+
+    for (let i = 0; i < outbounds.length; i++) {
+      const o = outbounds[i];
+      if (idSet.has(o.id) || idSet.has(o.issueCode)) {
+        tombstones.outbound[o.id] = now;
+        tombstones.outbound[o.issueCode] = now;
+        tombstones.outbound[normKey(o.issueCode)] = now;
+      } else {
+        filtered.push(o);
+      }
+    }
+
+    const deletedCount = outbounds.length - filtered.length;
+    if (deletedCount > 0) {
+      this.saveTombstones(tombstones);
+      this.saveOutboundReceipts(filtered);
+      notifySubscribers();
+      emitLocalMutation('meta');
+    }
+    return deletedCount;
   },
 
   // ==========================================================================
