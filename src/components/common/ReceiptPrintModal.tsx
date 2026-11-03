@@ -2,8 +2,20 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { InboundReceipt, OutboundReceipt } from '../../types/inventory';
 import { roundQty, sumInboundItems, sumOutboundItems } from '../../utils/additiveMerge';
-import { formatExcelDate } from '../../services/excelService';
-import { Printer, X, ChevronLeft, ChevronRight, SlidersHorizontal, Check } from 'lucide-react';
+import {
+  formatExcelDate,
+  exportInboundReceiptToExcel,
+  exportOutboundReceiptToExcel
+} from '../../services/excelService';
+import {
+  Printer,
+  FileSpreadsheet,
+  X,
+  ChevronLeft,
+  ChevronRight,
+  SlidersHorizontal,
+  Check
+} from 'lucide-react';
 
 interface ReceiptPrintModalProps {
   isOpen: boolean;
@@ -228,6 +240,32 @@ export const ReceiptPrintModal: React.FC<ReceiptPrintModalProps> = ({
     window.print();
   };
 
+  const handleExportExcel = () => {
+    if (inbound) {
+      exportInboundReceiptToExcel({
+        ...inbound,
+        departmentName: customDepartment.trim(),
+        delivererName: customDelivererOrRecipient.trim(),
+        contractNo: customSubUnitOrContract.trim(),
+        requestNo: customRequestNo.trim(),
+        notes: customReasonOrContent.trim(),
+        amountInWords: customAmountInWords.trim(),
+        attachedDocs: customAttachedDocs.trim(),
+        inboundType: inboundCheck || inbound.inboundType
+      });
+    } else if (outbound) {
+      exportOutboundReceiptToExcel({
+        ...outbound,
+        departmentName: customDepartment.trim(),
+        recipientName: customDelivererOrRecipient.trim(),
+        recipientDepartment: customSubUnitOrContract.trim(),
+        requestNo: customRequestNo.trim(),
+        notes: customReasonOrContent.trim(),
+        outboundType: outboundCheck || outbound.outboundType
+      });
+    }
+  };
+
   const getItemBatchDisplay = (item: any): string => {
     if (item.batchCode && String(item.batchCode).trim()) {
       return String(item.batchCode).trim();
@@ -331,6 +369,16 @@ export const ReceiptPrintModal: React.FC<ReceiptPrintModalProps> = ({
               >
                 <SlidersHorizontal className="w-3.5 h-3.5" />
                 <span>Hiệu chỉnh thông tin in</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={handleExportExcel}
+                className="flex items-center gap-1.5 px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-semibold shadow-sm transition min-h-[40px]"
+                title="Xuất phiếu này ra file Excel (.xlsx)"
+              >
+                <FileSpreadsheet className="w-4 h-4" />
+                <span>Xuất Excel</span>
               </button>
 
               <button

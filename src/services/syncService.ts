@@ -24,6 +24,7 @@ interface ManifestReceiptEntry {
   id: string;
   itemCount: number;
   updatedAt: number;
+  itemsReplacedAt?: number;
   digest: string;
 }
 
@@ -832,8 +833,15 @@ async function reconcileInternal(): Promise<void> {
       const entry = manifest.inboundManifest[i];
       serverInMap.set(entry.code, entry);
       const localRcp = localInMap.get(entry.code);
-      if (
-        !localRcp ||
+      const localRep = Number(localRcp?.itemsReplacedAt) || 0;
+      const srvRep = Number(entry.itemsReplacedAt) || 0;
+      if (!localRcp) {
+        inboundCodesToPull.push(entry.code);
+      } else if (localRep > srvRep) {
+        // Máy hiện tại có bản sửa Admin mới hơn Server -> không kéo bản cũ về mà để Bước 4 đẩy thẳng lên Server
+        continue;
+      } else if (
+        srvRep > localRep ||
         localRcp.items.length < entry.itemCount ||
         computeInboundReceiptDigest(localRcp) !== entry.digest
       ) {
@@ -858,8 +866,14 @@ async function reconcileInternal(): Promise<void> {
       const entry = manifest.outboundManifest[i];
       serverOutMap.set(entry.code, entry);
       const localRcp = localOutMap.get(entry.code);
-      if (
-        !localRcp ||
+      const localRep = Number(localRcp?.itemsReplacedAt) || 0;
+      const srvRep = Number(entry.itemsReplacedAt) || 0;
+      if (!localRcp) {
+        outboundCodesToPull.push(entry.code);
+      } else if (localRep > srvRep) {
+        continue;
+      } else if (
+        srvRep > localRep ||
         localRcp.items.length < entry.itemCount ||
         computeOutboundReceiptDigest(localRcp) !== entry.digest
       ) {
@@ -878,7 +892,14 @@ async function reconcileInternal(): Promise<void> {
       const rcp = refreshedInbounds[i];
       const code = normKey(rcp.receiptCode || rcp.id);
       const srv = serverInMap.get(code);
-      if (!srv || rcp.items.length > srv.itemCount || computeInboundReceiptDigest(rcp) !== srv.digest) {
+      const localRep = Number(rcp.itemsReplacedAt) || 0;
+      const srvRep = Number(srv?.itemsReplacedAt) || 0;
+      if (
+        !srv ||
+        localRep > srvRep ||
+        (localRep === srvRep && rcp.items.length > srv.itemCount) ||
+        computeInboundReceiptDigest(rcp) !== srv.digest
+      ) {
         inboundsToPush.push(rcp);
       }
     }
@@ -893,7 +914,14 @@ async function reconcileInternal(): Promise<void> {
       const rcp = refreshedOutbounds[i];
       const code = normKey(rcp.issueCode || rcp.id);
       const srv = serverOutMap.get(code);
-      if (!srv || rcp.items.length > srv.itemCount || computeOutboundReceiptDigest(rcp) !== srv.digest) {
+      const localRep = Number(rcp.itemsReplacedAt) || 0;
+      const srvRep = Number(srv?.itemsReplacedAt) || 0;
+      if (
+        !srv ||
+        localRep > srvRep ||
+        (localRep === srvRep && rcp.items.length > srv.itemCount) ||
+        computeOutboundReceiptDigest(rcp) !== srv.digest
+      ) {
         outboundsToPush.push(rcp);
       }
     }

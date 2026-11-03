@@ -117,13 +117,14 @@ const outboundDigestCache = new WeakMap<OutboundReceipt, { len: number; updatedA
 export function computeInboundReceiptDigest(rcp: InboundReceipt): string {
   const items = Array.isArray(rcp.items) ? rcp.items : [];
   const up = Number(rcp.updatedAt) || 0;
+  const rep = Number(rcp.itemsReplacedAt) || 0;
   const cached = inboundDigestCache.get(rcp);
-  if (cached && cached.len === items.length && cached.updatedAt === up) {
+  if (cached && cached.len === items.length && cached.updatedAt === up + rep) {
     return cached.digest;
   }
 
   const [hh1, hh2] = hashPair(
-    `IH|${normKey(rcp.receiptCode || rcp.id)}|${rcp.receiptDate || ''}|${rcp.warehouseId || ''}|${rcp.warehouseName || ''}|${rcp.departmentName || ''}|${rcp.contractNo || ''}|${rcp.requestNo || ''}|${rcp.inboundType || ''}|${rcp.amountInWords || ''}|${rcp.attachedDocs || ''}|${rcp.supplier || ''}|${rcp.manufacturer || ''}|${rcp.shipment || ''}|${rcp.packingListNo || ''}|${rcp.delivererName || ''}|${rcp.receiverName || ''}|${rcp.driverVehicleNo || ''}|${rcp.notes || ''}|${Number(rcp.totalQuantity) || 0}|${Number(rcp.totalWeightKg) || 0}`
+    `IH|${normKey(rcp.receiptCode || rcp.id)}|${rcp.receiptDate || ''}|${rcp.warehouseId || ''}|${rcp.warehouseName || ''}|${rcp.departmentName || ''}|${rcp.contractNo || ''}|${rcp.requestNo || ''}|${rcp.inboundType || ''}|${rcp.amountInWords || ''}|${rcp.attachedDocs || ''}|${rcp.supplier || ''}|${rcp.manufacturer || ''}|${rcp.shipment || ''}|${rcp.packingListNo || ''}|${rcp.delivererName || ''}|${rcp.receiverName || ''}|${rcp.driverVehicleNo || ''}|${rcp.notes || ''}|${Number(rcp.totalQuantity) || 0}|${Number(rcp.totalWeightKg) || 0}|${Number(rcp.totalAmount) || 0}|${rep}`
   );
 
   let sum1 = hh1;
@@ -131,27 +132,28 @@ export function computeInboundReceiptDigest(rcp: InboundReceipt): string {
   for (let i = 0; i < items.length; i++) {
     const it = items[i];
     const [h1, h2] = hashPair(
-      `${it.id || ''}|${it.materialCode || ''}|${it.batchCode || ''}|${it.packingListNo || ''}|${it.shipment || ''}|${it.packageNo || ''}|${it.drawingNo || ''}|${Number(it.quantity) || 0}|${Number(it.weightKg) || 0}|${it.note || ''}`
+      `${it.id || ''}|${it.materialCode || ''}|${it.materialName || ''}|${it.unit || ''}|${it.batchCode || ''}|${it.packingListNo || ''}|${it.shipment || ''}|${it.packageNo || ''}|${it.drawingNo || ''}|${it.category || ''}|${it.manufacturer || ''}|${it.supplier || ''}|${it.storageLocation || ''}|${Number(it.quantity) || 0}|${Number(it.weightKg) || 0}|${Number(it.unitPrice) || 0}|${Number(it.totalPrice) || 0}|${it.conditionNote || ''}|${it.note || ''}`
     );
     sum1 = (sum1 + h1) >>> 0;
     sum2 = (sum2 + h2) >>> 0;
   }
 
   const digest = `${items.length}:${sum1.toString(36)}:${sum2.toString(36)}`;
-  inboundDigestCache.set(rcp, { len: items.length, updatedAt: up, digest });
+  inboundDigestCache.set(rcp, { len: items.length, updatedAt: up + rep, digest });
   return digest;
 }
 
 export function computeOutboundReceiptDigest(rcp: OutboundReceipt): string {
   const items = Array.isArray(rcp.items) ? rcp.items : [];
   const up = Number(rcp.updatedAt) || 0;
+  const rep = Number(rcp.itemsReplacedAt) || 0;
   const cached = outboundDigestCache.get(rcp);
-  if (cached && cached.len === items.length && cached.updatedAt === up) {
+  if (cached && cached.len === items.length && cached.updatedAt === up + rep) {
     return cached.digest;
   }
 
   const [hh1, hh2] = hashPair(
-    `OH|${normKey(rcp.issueCode || rcp.id)}|${rcp.issueDate || ''}|${rcp.warehouseId || ''}|${rcp.warehouseName || ''}|${rcp.departmentName || ''}|${rcp.requestNo || ''}|${rcp.outboundType || ''}|${rcp.projectName || ''}|${rcp.recipientDepartment || ''}|${rcp.recipientName || ''}|${rcp.issuerName || ''}|${rcp.notes || ''}|${Number(rcp.totalQuantity) || 0}|${Number(rcp.totalWeightKg) || 0}`
+    `OH|${normKey(rcp.issueCode || rcp.id)}|${rcp.issueDate || ''}|${rcp.warehouseId || ''}|${rcp.warehouseName || ''}|${rcp.departmentName || ''}|${rcp.requestNo || ''}|${rcp.outboundType || ''}|${rcp.projectName || ''}|${rcp.recipientDepartment || ''}|${rcp.recipientName || ''}|${rcp.issuerName || ''}|${rcp.notes || ''}|${Number(rcp.totalQuantity) || 0}|${Number(rcp.totalWeightKg) || 0}|${rep}`
   );
 
   let sum1 = hh1;
@@ -159,14 +161,14 @@ export function computeOutboundReceiptDigest(rcp: OutboundReceipt): string {
   for (let i = 0; i < items.length; i++) {
     const it = items[i];
     const [h1, h2] = hashPair(
-      `${it.id || ''}|${it.materialCode || ''}|${it.batchCode || ''}|${it.packingListNo || ''}|${it.shipment || ''}|${it.packageNo || ''}|${it.drawingNo || ''}|${Number(it.quantity) || 0}|${Number(it.weightKg) || 0}|${it.note || ''}`
+      `${it.id || ''}|${it.materialCode || ''}|${it.materialName || ''}|${it.unit || ''}|${it.batchCode || ''}|${it.packingListNo || ''}|${it.shipment || ''}|${it.packageNo || ''}|${it.drawingNo || ''}|${it.category || ''}|${it.manufacturer || ''}|${it.supplier || ''}|${Number(it.quantity) || 0}|${Number(it.weightKg) || 0}|${it.purpose || ''}|${it.note || ''}`
     );
     sum1 = (sum1 + h1) >>> 0;
     sum2 = (sum2 + h2) >>> 0;
   }
 
   const digest = `${items.length}:${sum1.toString(36)}:${sum2.toString(36)}`;
-  outboundDigestCache.set(rcp, { len: items.length, updatedAt: up, digest });
+  outboundDigestCache.set(rcp, { len: items.length, updatedAt: up + rep, digest });
   return digest;
 }
 
@@ -643,7 +645,8 @@ export function mergeInboundReceiptsAdditive(
         totalQuantity: sums.totalQuantity,
         totalWeightKg: sums.totalWeightKg,
         totalAmount: sums.totalAmount,
-        updatedAt: Number(inc.updatedAt) || 1
+        updatedAt: Number(inc.updatedAt) || 1,
+        itemsReplacedAt: Number(inc.itemsReplacedAt) || undefined
       };
 
       const pIdx = newlyPrepended.length;
@@ -652,32 +655,93 @@ export function mergeInboundReceiptsAdditive(
       touchedSet.add(rKey);
       changed = true;
     } else {
-      // Phiếu đã tồn tại -> cộng gộp thêm các dòng items chưa có + cập nhật thông tin header nếu mới hơn
       const targetArr = existIdx !== undefined ? existingFiltered : newlyPrepended;
       const targetIdx = existIdx !== undefined ? existIdx : prepIdx!;
       const curr = targetArr[targetIdx];
       const incItems = Array.isArray(inc.items) ? inc.items : [];
 
-      const seenItemSigs = new Set<string>();
-      for (let j = 0; j < curr.items.length; j++) {
-        seenItemSigs.add(makeInboundItemSig(curr.items[j]));
+      const incTs = Number(inc.updatedAt) || 0;
+      const currTs = Number(curr.updatedAt) || 0;
+      const incRev = Number(inc.itemsReplacedAt) || 0;
+      const currRev = Number(curr.itemsReplacedAt) || 0;
+
+      // Trường hợp 1: Bản ghi đến từ thao tác Admin sửa phiếu mới hơn -> thay thế toàn bộ items & thông tin phiếu theo bản sửa mới nhất
+      if (incRev > currRev) {
+        const dedupedIncItems: InboundItemDetail[] = [];
+        const seenSigs = new Set<string>();
+        for (let j = 0; j < incItems.length; j++) {
+          const sig = makeInboundItemSig(incItems[j]);
+          if (!seenSigs.has(sig)) {
+            seenSigs.add(sig);
+            dedupedIncItems.push(incItems[j]);
+          }
+        }
+        const sums = sumInboundItems(dedupedIncItems);
+        targetArr[targetIdx] = {
+          ...curr,
+          ...inc,
+          id: curr.id || inc.id,
+          receiptCode: inc.receiptCode || curr.receiptCode,
+          items: dedupedIncItems,
+          packageCount: sums.packageCount,
+          totalQuantity: sums.totalQuantity,
+          totalWeightKg: sums.totalWeightKg,
+          totalAmount: sums.totalAmount,
+          updatedAt: Math.max(currTs, incTs, incRev) || 1,
+          itemsReplacedAt: incRev,
+          lastEditedBy: inc.lastEditedBy ?? curr.lastEditedBy,
+          lastEditedAt: inc.lastEditedAt ?? curr.lastEditedAt
+        };
+        touchedSet.add(rKey);
+        changed = true;
+        continue;
       }
 
-      const addedItems: InboundItemDetail[] = [];
+      // Trường hợp 2: Bản ghi đến là bản cũ trước khi Admin sửa -> bỏ qua để không khôi phục dòng đã xóa/sửa
+      if (incRev < currRev) {
+        continue;
+      }
+
+      // Trường hợp 3 (incRev === currRev): Cộng gộp các dòng chưa có (hoặc các chunk của cùng 1 phiên sửa)
+      const seenItemSigs = new Map<string, number>();
+      const nextItems = curr.items.slice();
+      let itemsMutated = false;
+
+      for (let j = 0; j < nextItems.length; j++) {
+        seenItemSigs.set(makeInboundItemSig(nextItems[j]), j);
+      }
+
+      const headerNewer = incTs > currTs;
+
       for (let j = 0; j < incItems.length; j++) {
-        const sig = makeInboundItemSig(incItems[j]);
-        if (!seenItemSigs.has(sig)) {
-          seenItemSigs.add(sig);
-          addedItems.push(incItems[j]);
+        const incIt = incItems[j];
+        const sig = makeInboundItemSig(incIt);
+        const existingItemIdx = seenItemSigs.get(sig);
+        if (existingItemIdx === undefined) {
+          seenItemSigs.set(sig, nextItems.length);
+          nextItems.push(incIt);
+          itemsMutated = true;
+        } else if (headerNewer) {
+          const prevIt = nextItems[existingItemIdx];
+          if (
+            prevIt.quantity !== incIt.quantity ||
+            prevIt.weightKg !== incIt.weightKg ||
+            prevIt.materialCode !== incIt.materialCode ||
+            prevIt.materialName !== incIt.materialName ||
+            prevIt.unit !== incIt.unit ||
+            prevIt.batchCode !== incIt.batchCode ||
+            prevIt.unitPrice !== incIt.unitPrice ||
+            prevIt.totalPrice !== incIt.totalPrice ||
+            prevIt.note !== incIt.note
+          ) {
+            nextItems[existingItemIdx] = incIt;
+            itemsMutated = true;
+          }
         }
       }
 
-      const incTs = Number(inc.updatedAt) || 0;
-      const currTs = Number(curr.updatedAt) || 0;
-      const headerNewer = incTs > currTs;
-
-      if (addedItems.length > 0 || headerNewer) {
-        const mergedItems = addedItems.length > 0 ? curr.items.concat(addedItems) : curr.items;
+      if (itemsMutated || headerNewer) {
+        const mergedItems = itemsMutated ? nextItems : curr.items;
         const sums = sumInboundItems(mergedItems);
 
         targetArr[targetIdx] = {
@@ -721,7 +785,10 @@ export function mergeInboundReceiptsAdditive(
           totalQuantity: sums.totalQuantity,
           totalWeightKg: sums.totalWeightKg,
           totalAmount: sums.totalAmount,
-          updatedAt: Math.max(currTs, incTs) || 1
+          updatedAt: Math.max(currTs, incTs) || 1,
+          itemsReplacedAt: currRev || undefined,
+          lastEditedBy: headerNewer && inc.lastEditedBy ? inc.lastEditedBy : curr.lastEditedBy,
+          lastEditedAt: headerNewer && inc.lastEditedAt ? inc.lastEditedAt : curr.lastEditedAt
         };
         touchedSet.add(rKey);
         changed = true;
@@ -733,7 +800,7 @@ export function mergeInboundReceiptsAdditive(
   return { list: finalList, changed, touchedCodes: Array.from(touchedSet) };
 }
 
-// 5. OUTBOUND RECEIPTS: Đồng bộ cộng gộp O(N) theo issueCode + cộng gộp dòng vật tư xuất
+// 5. OUTBOUND RECEIPTS: Đồng bộ cộng gộp O(N) theo issueCode + hỗ trợ Admin sửa phiếu chuẩn xác
 export function mergeOutboundReceiptsAdditive(
   existing: OutboundReceipt[],
   incoming: OutboundReceipt[],
@@ -797,7 +864,8 @@ export function mergeOutboundReceiptsAdditive(
         packingListSummary: inc.packingListSummary || computePackingListSummary(items),
         totalQuantity: sums.totalQuantity,
         totalWeightKg: sums.totalWeightKg,
-        updatedAt: Number(inc.updatedAt) || 1
+        updatedAt: Number(inc.updatedAt) || 1,
+        itemsReplacedAt: Number(inc.itemsReplacedAt) || undefined
       };
 
       const pIdx = newlyPrepended.length;
@@ -811,26 +879,86 @@ export function mergeOutboundReceiptsAdditive(
       const curr = targetArr[targetIdx];
       const incItems = Array.isArray(inc.items) ? inc.items : [];
 
-      const seenItemSigs = new Set<string>();
-      for (let j = 0; j < curr.items.length; j++) {
-        seenItemSigs.add(makeOutboundItemSig(curr.items[j]));
+      const incTs = Number(inc.updatedAt) || 0;
+      const currTs = Number(curr.updatedAt) || 0;
+      const incRev = Number(inc.itemsReplacedAt) || 0;
+      const currRev = Number(curr.itemsReplacedAt) || 0;
+
+      // Trường hợp 1: Bản ghi đến từ thao tác Admin sửa phiếu xuất mới hơn -> thay thế toàn bộ items & header theo bản sửa mới nhất
+      if (incRev > currRev) {
+        const dedupedIncItems: OutboundItemDetail[] = [];
+        const seenSigs = new Set<string>();
+        for (let j = 0; j < incItems.length; j++) {
+          const sig = makeOutboundItemSig(incItems[j]);
+          if (!seenSigs.has(sig)) {
+            seenSigs.add(sig);
+            dedupedIncItems.push(incItems[j]);
+          }
+        }
+        const sums = sumOutboundItems(dedupedIncItems);
+        targetArr[targetIdx] = {
+          ...curr,
+          ...inc,
+          id: curr.id || inc.id,
+          issueCode: inc.issueCode || curr.issueCode,
+          items: dedupedIncItems,
+          packingListSummary: computePackingListSummary(dedupedIncItems),
+          totalQuantity: sums.totalQuantity,
+          totalWeightKg: sums.totalWeightKg,
+          updatedAt: Math.max(currTs, incTs, incRev) || 1,
+          itemsReplacedAt: incRev,
+          lastEditedBy: inc.lastEditedBy ?? curr.lastEditedBy,
+          lastEditedAt: inc.lastEditedAt ?? curr.lastEditedAt
+        };
+        touchedSet.add(rKey);
+        changed = true;
+        continue;
       }
 
-      const addedItems: OutboundItemDetail[] = [];
+      // Trường hợp 2: Bản ghi đến là bản cũ trước khi Admin sửa -> bỏ qua
+      if (incRev < currRev) {
+        continue;
+      }
+
+      // Trường hợp 3 (incRev === currRev): Cộng gộp dòng mới hoặc chunk cùng phiên sửa
+      const seenItemSigs = new Map<string, number>();
+      const nextItems = curr.items.slice();
+      let itemsMutated = false;
+
+      for (let j = 0; j < nextItems.length; j++) {
+        seenItemSigs.set(makeOutboundItemSig(nextItems[j]), j);
+      }
+
+      const headerNewer = incTs > currTs;
+
       for (let j = 0; j < incItems.length; j++) {
-        const sig = makeOutboundItemSig(incItems[j]);
-        if (!seenItemSigs.has(sig)) {
-          seenItemSigs.add(sig);
-          addedItems.push(incItems[j]);
+        const incIt = incItems[j];
+        const sig = makeOutboundItemSig(incIt);
+        const existingItemIdx = seenItemSigs.get(sig);
+        if (existingItemIdx === undefined) {
+          seenItemSigs.set(sig, nextItems.length);
+          nextItems.push(incIt);
+          itemsMutated = true;
+        } else if (headerNewer) {
+          const prevIt = nextItems[existingItemIdx];
+          if (
+            prevIt.quantity !== incIt.quantity ||
+            prevIt.weightKg !== incIt.weightKg ||
+            prevIt.materialCode !== incIt.materialCode ||
+            prevIt.materialName !== incIt.materialName ||
+            prevIt.unit !== incIt.unit ||
+            prevIt.batchCode !== incIt.batchCode ||
+            prevIt.purpose !== incIt.purpose ||
+            prevIt.note !== incIt.note
+          ) {
+            nextItems[existingItemIdx] = incIt;
+            itemsMutated = true;
+          }
         }
       }
 
-      const incTs = Number(inc.updatedAt) || 0;
-      const currTs = Number(curr.updatedAt) || 0;
-      const headerNewer = incTs > currTs;
-
-      if (addedItems.length > 0 || headerNewer) {
-        const mergedItems = addedItems.length > 0 ? curr.items.concat(addedItems) : curr.items;
+      if (itemsMutated || headerNewer) {
+        const mergedItems = itemsMutated ? nextItems : curr.items;
         const sums = sumOutboundItems(mergedItems);
 
         targetArr[targetIdx] = {
@@ -861,7 +989,10 @@ export function mergeOutboundReceiptsAdditive(
           packingListSummary: computePackingListSummary(mergedItems),
           totalQuantity: sums.totalQuantity,
           totalWeightKg: sums.totalWeightKg,
-          updatedAt: Math.max(currTs, incTs) || 1
+          updatedAt: Math.max(currTs, incTs) || 1,
+          itemsReplacedAt: currRev || undefined,
+          lastEditedBy: headerNewer && inc.lastEditedBy ? inc.lastEditedBy : curr.lastEditedBy,
+          lastEditedAt: headerNewer && inc.lastEditedAt ? inc.lastEditedAt : curr.lastEditedAt
         };
         touchedSet.add(rKey);
         changed = true;

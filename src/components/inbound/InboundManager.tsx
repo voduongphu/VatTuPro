@@ -8,10 +8,12 @@ import { ConfirmDeleteModal } from '../common/ConfirmDeleteModal';
 import { PaginationBar } from '../common/PaginationBar';
 import {
   downloadInboundTemplate,
+  exportInboundReceiptToExcel,
   formatExcelDate,
   formatVoucherDateVi
 } from '../../services/excelService';
 import {
+  normKey,
   roundQty,
   sumInboundItems,
   buildDeterministicItemId
@@ -25,11 +27,14 @@ import {
   Calendar,
   Eye,
   Printer,
+  Pencil,
   Trash2,
   CheckCircle2,
   AlertCircle,
   X
 } from 'lucide-react';
+
+const FORM_ITEM_PAGE_SIZE = 100;
 
 export const InboundManager: React.FC = () => {
   const { currentUser, isAdmin } = useAuth();
@@ -81,8 +86,13 @@ export const InboundManager: React.FC = () => {
   const [formPackingListNo, setFormPackingListNo] = useState('');
   const [formDriverVehicle, setFormDriverVehicle] = useState('');
 
-  // Danh sách dòng vật tư trong phiếu
+  // Chế độ chỉnh sửa phiếu nhập kho (chỉ dành cho Admin; null = lập phiếu mới)
+  const [editingReceipt, setEditingReceipt] = useState<InboundReceipt | null>(null);
+
+  // Danh sách dòng vật tư trong phiếu + tìm kiếm/phân trang cho phiếu lớn
   const [formItems, setFormItems] = useState<InboundItemDetail[]>([]);
+  const [formItemSearch, setFormItemSearch] = useState('');
+  const [formItemPage, setFormItemPage] = useState(1);
   const [formError, setFormError] = useState('');
 
   const showToast = (message: string, type: 'success' | 'error' = 'success') => {
@@ -130,6 +140,7 @@ export const InboundManager: React.FC = () => {
   const openCreateModal = () => {
     const mats = StorageService.getMaterials();
     const currentReceipts = StorageService.getInboundReceipts();
+    setEditingReceipt(null);
     setMaterials(mats);
     setReceiptCode(generateNextPnkCode(currentReceipts));
     setReceiptDate(new Date().toISOString().slice(0, 10));
@@ -151,6 +162,8 @@ export const InboundManager: React.FC = () => {
     setFormPackingListNo('');
     setFormDriverVehicle('');
     setFormError('');
+    setFormItemSearch('');
+    setFormItemPage(1);
 
     setFormItems([
       {
@@ -180,32 +193,135 @@ export const InboundManager: React.FC = () => {
     setIsCreateModalOpen(true);
   };
 
+  const openEditModal = (rcp: InboundReceipt) => {
+    if (!isAdmin) {
+      showToast('Chỉ tài khoản Quản trị viên (Admin) mới có quyền sửa phiếu nhập kho.', 'error');
+      return;
+    }
+
+    const mats = StorageService.getMaterials();
+    const whList = StorageService.getWarehouses();
+    setMaterials(mats);
+    setEditingReceipt(rcp);
+    setReceiptCode(rcp.receiptCode || '');
+    setReceiptDate(formatExcelDate(rcp.receiptDate) || new Date().toISOString().slice(0, 10));
+    setSelectedWarehouseId(rcp.warehouseId || whList[0]?.id || '');
+
+    setFormDepartmentName(
+      rcp.departmentName && rcp.departmentName !== 'DỰ ÁN LTIA-4.9' ? rcp.departmentName : ''
+    );
+    const rawDeliverer =
+      rcp.delivererName && rcp.delivererName !== 'Nhập từ File Excel tự động'
+        ? rcp.delivererName
+        : rcp.supplier &&
+            rcp.supplier !== 'Nhiều nhà cung cấp' &&
+            rcp.supplier !== 'Theo phiếu nhập' &&
+            rcp.supplier !== 'Đơn vị giao hàng'
+          ? rcp.supplier
+          : rcp.delivererName || '';
+    setFormDeliverer(rawDeliverer);
+    setFormContractNo(rcp.contractNo || '');
+    setFormRequestNo(rcp.requestNo || '');
+    setFormNotes(rcp.notes && !rcp.notes.startsWith('Import thành công ') ? rcp.notes : '');
+    setFormInboundType(rcp.inboundType || 'new');
+    setFormAmountInWords(rcp.amountInWords || '');
+    setFormAttachedDocs(rcp.attachedDocs || '');
+
+    setFormSupplier(
+      rcp.supplier && rcp.supplier !== 'Đơn vị giao hàng' && rcp.supplier !== 'Theo phiếu nhập'
+        ? rcp.supplier
+        : ''
+    );
+    setFormManufacturer(rcp.manufacturer && rcp.manufacturer !== 'N/A' ? rcp.manufacturer : '');
+    setFormShipment(
+      rcp.shipment && rcp.shipment !== 'N/A' && rcp.shipment !== 'SHP-EXCEL' ? rcp.shipment : ''
+    );
+    setFormPackingListNo(
+      rcp.packingListNo && rcp.packingListNo !== 'PL-EXCEL' ? rcp.packingListNo : ''
+    );
+    setFormDriverVehicle(rcp.driverVehicleNo || '');
+    setFormError('');
+    setFormItemSearch('');
+    setFormItemPage(1);
+
+    const clonedItems: InboundItemDetail[] = (rcp.items || []).map((it, idx) => ({
+      ...it,
+      id: it.id || `item-edit-${Date.now()}-${idx}`,
+      note: it.note ?? it.conditionNote ?? ''
+    }));
+    setFormItems(
+      clonedItems.length > 0
+        ? clonedItems
+        : [
+            {
+              id: `item-${Date.now()}`,
+              materialCode: '',
+              materialName: '',
+              unit: 'Ống',
+              batchCode: '',
+              packingListNo: '',
+              shipment: '',
+              packageNo: '',
+              packageName: '',
+              category: '',
+              drawingNo: '',
+              manufacturer: '',
+              supplier: '',
+              weightKg: 0,
+              quantity: 1,
+              unitPrice: 0,
+              totalPrice: 0,
+              storageLocation: '',
+              conditionNote: '',
+              note: ''
+            }
+          ]
+    );
+
+    setIsCreateModalOpen(true);
+  };
+
+  const handleExportReceiptExcel = (rcp: InboundReceipt) => {
+    try {
+      exportInboundReceiptToExcel(rcp);
+      showToast(`Đã xuất file Excel cho phiếu nhập "${rcp.receiptCode}"!`);
+    } catch (err) {
+      console.error('Export Inbound Excel error:', err);
+      showToast('Không thể xuất file Excel. Vui lòng thử lại.', 'error');
+    }
+  };
+
   const addNewItemRow = () => {
-    setFormItems((prev) => [
-      ...prev,
-      {
-        id: `item-${Date.now()}-${Math.random().toString(36).substring(2, 5)}`,
-        materialCode: '',
-        materialName: '',
-        unit: 'Ống',
-        batchCode: '',
-        packingListNo: formPackingListNo || '',
-        shipment: formShipment || '',
-        packageNo: '',
-        packageName: '',
-        category: '',
-        drawingNo: '',
-        manufacturer: formManufacturer || '',
-        supplier: formSupplier || '',
-        weightKg: 0,
-        quantity: 1,
-        unitPrice: 0,
-        totalPrice: 0,
-        storageLocation: '',
-        conditionNote: '',
-        note: ''
-      }
-    ]);
+    setFormItemSearch('');
+    setFormItems((prev) => {
+      const next: InboundItemDetail[] = [
+        ...prev,
+        {
+          id: `item-${Date.now()}-${Math.random().toString(36).substring(2, 5)}`,
+          materialCode: '',
+          materialName: '',
+          unit: 'Ống',
+          batchCode: '',
+          packingListNo: formPackingListNo || '',
+          shipment: formShipment || '',
+          packageNo: '',
+          packageName: '',
+          category: '',
+          drawingNo: '',
+          manufacturer: formManufacturer || '',
+          supplier: formSupplier || '',
+          weightKg: 0,
+          quantity: 1,
+          unitPrice: 0,
+          totalPrice: 0,
+          storageLocation: '',
+          conditionNote: '',
+          note: ''
+        }
+      ];
+      setFormItemPage(Math.max(1, Math.ceil(next.length / FORM_ITEM_PAGE_SIZE)));
+      return next;
+    });
   };
 
   const removeItemRow = (idx: number) => {
@@ -493,12 +609,34 @@ export const InboundManager: React.FC = () => {
 
   const handleSaveCreate = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!receiptCode.trim()) {
+    const trimmedCode = receiptCode.trim();
+    if (!trimmedCode) {
       setFormError('Số phiếu nhập không được để trống.');
+      return;
+    }
+    if (!editingReceipt && !formDeliverer.trim()) {
+      setFormError('Vui lòng nhập Đơn vị giao hàng.');
       return;
     }
     if (formItems.length === 0) {
       setFormError('Vui lòng thêm ít nhất một dòng vật tư vào phiếu nhập kho.');
+      return;
+    }
+
+    if (editingReceipt && !isAdmin) {
+      setFormError('Chỉ tài khoản Quản trị viên (Admin) mới có quyền sửa phiếu nhập kho.');
+      return;
+    }
+
+    const existingDuplicate = receipts.find(
+      (r) =>
+        (!editingReceipt || r.id !== editingReceipt.id) &&
+        normKey(r.receiptCode) === normKey(trimmedCode)
+    );
+    if (existingDuplicate) {
+      setFormError(
+        `Số phiếu "${trimmedCode}" đã tồn tại trong hệ thống. Vui lòng nhập số phiếu khác.`
+      );
       return;
     }
 
@@ -521,10 +659,14 @@ export const InboundManager: React.FC = () => {
     }
 
     const wh = warehouses.find((w) => w.id === selectedWarehouseId) || warehouses[0];
-    const headerPl = formPackingListNo.trim() || receiptCode.trim();
-    const headerShp = formShipment.trim() || 'N/A';
-    const headerSup = formSupplier.trim() || formDeliverer.trim() || 'N/A';
-    const headerMaker = formManufacturer.trim() || 'N/A';
+    const headerPl =
+      formPackingListNo.trim() || editingReceipt?.packingListNo || trimmedCode;
+    const headerShp =
+      formShipment.trim() || editingReceipt?.shipment || 'N/A';
+    const headerSup =
+      formSupplier.trim() || formDeliverer.trim() || editingReceipt?.supplier || 'N/A';
+    const headerMaker =
+      formManufacturer.trim() || editingReceipt?.manufacturer || 'N/A';
 
     const normalizedItems: InboundItemDetail[] = formItems.map((it, idx) => {
       const batch = (it.batchCode || it.packageNo || '').trim();
@@ -553,6 +695,7 @@ export const InboundManager: React.FC = () => {
         manufacturer: it.manufacturer?.trim() || headerMaker,
         category: it.category?.trim() || formNotes.trim() || 'Vật tư dự án',
         drawingNo: it.drawingNo?.trim() || 'N/A',
+        warehouseName: wh?.name || it.warehouseName || 'Kho Dự Án',
         quantity: qty,
         weightKg: Math.max(0, Math.round((Number(it.weightKg) || 0) * 100) / 100),
         unitPrice: uPrice,
@@ -563,10 +706,59 @@ export const InboundManager: React.FC = () => {
     });
 
     const sums = sumInboundItems(normalizedItems);
+    const editorName = currentUser?.fullName || 'Võ Dương Phú';
+
+    if (editingReceipt) {
+      const updatedReceipt: InboundReceipt = {
+        ...editingReceipt,
+        receiptCode: trimmedCode,
+        receiptDate,
+        warehouseId: wh?.id || editingReceipt.warehouseId || 'wh-01',
+        warehouseName: wh?.name || editingReceipt.warehouseName || 'Kho Dự Án',
+        departmentName: formDepartmentName.trim(),
+        contractNo: formContractNo.trim(),
+        requestNo: formRequestNo.trim(),
+        inboundType: formInboundType,
+        amountInWords: formAmountInWords.trim(),
+        attachedDocs: formAttachedDocs.trim(),
+        supplier:
+          formSupplier.trim() ||
+          formDeliverer.trim() ||
+          editingReceipt.supplier ||
+          'Đơn vị giao hàng',
+        manufacturer: formManufacturer.trim(),
+        shipment: headerShp,
+        packingListNo: headerPl,
+        delivererName: formDeliverer.trim() || formSupplier.trim(),
+        receiverName: editingReceipt.receiverName || editorName,
+        driverVehicleNo: formDriverVehicle.trim(),
+        notes: formNotes.trim(),
+        items: normalizedItems,
+        packageCount: sums.packageCount,
+        totalQuantity: sums.totalQuantity,
+        totalWeightKg: sums.totalWeightKg,
+        totalAmount: sums.totalAmount,
+        lastEditedBy: editorName,
+        lastEditedAt: new Date().toISOString()
+      };
+
+      StorageService.updateInboundReceipt(editingReceipt.id, updatedReceipt);
+      loadData();
+      setIsCreateModalOpen(false);
+      setEditingReceipt(null);
+      if (viewingReceipt?.id === editingReceipt.id) {
+        const refreshed = StorageService.getInboundReceipts().find(
+          (r) => normKey(r.receiptCode) === normKey(trimmedCode)
+        );
+        if (refreshed) setViewingReceipt(refreshed);
+      }
+      showToast(`Đã cập nhật phiếu nhập kho "${trimmedCode}" thành công!`);
+      return;
+    }
 
     const newReceipt: InboundReceipt = {
       id: `in-rcp-${Date.now()}`,
-      receiptCode: receiptCode.trim(),
+      receiptCode: trimmedCode,
       receiptDate,
       warehouseId: wh?.id || 'wh-01',
       warehouseName: wh?.name || 'Kho Dự Án',
@@ -581,7 +773,7 @@ export const InboundManager: React.FC = () => {
       shipment: headerShp,
       packingListNo: headerPl,
       delivererName: formDeliverer.trim() || formSupplier.trim(),
-      receiverName: currentUser?.fullName || 'Võ Dương Phú',
+      receiverName: editorName,
       driverVehicleNo: formDriverVehicle.trim(),
       notes: formNotes.trim(),
       items: normalizedItems,
@@ -590,13 +782,13 @@ export const InboundManager: React.FC = () => {
       totalWeightKg: sums.totalWeightKg,
       totalAmount: sums.totalAmount,
       createdAt: new Date().toISOString(),
-      createdBy: currentUser?.fullName || 'Võ Dương Phú'
+      createdBy: editorName
     };
 
     StorageService.addInboundReceipt(newReceipt);
     loadData();
     setIsCreateModalOpen(false);
-    showToast(`Đã lập phiếu nhập kho "${receiptCode}" thành công!`);
+    showToast(`Đã lập phiếu nhập kho "${trimmedCode}" thành công!`);
   };
 
   const handleDeleteReceipt = (rcp: InboundReceipt) => {
@@ -719,6 +911,36 @@ export const InboundManager: React.FC = () => {
         : { totalQuantity: 0, totalWeightKg: 0, totalAmount: 0, packageCount: 0 },
     [viewingReceipt]
   );
+
+  // Lọc & phân trang các dòng vật tư trong form Lập / Sửa Phiếu (hỗ trợ mượt mà cả phiếu nhiều nghìn dòng)
+  const indexedFormItems = useMemo(() => {
+    const q = formItemSearch.trim().toLowerCase();
+    const out: { item: InboundItemDetail; realIdx: number }[] = [];
+    for (let i = 0; i < formItems.length; i++) {
+      const it = formItems[i];
+      if (q) {
+        const hit =
+          (it.materialCode || '').toLowerCase().includes(q) ||
+          (it.materialName || '').toLowerCase().includes(q) ||
+          (it.batchCode || '').toLowerCase().includes(q) ||
+          (it.packageNo || '').toLowerCase().includes(q) ||
+          (it.note || '').toLowerCase().includes(q);
+        if (!hit) continue;
+      }
+      out.push({ item: it, realIdx: i });
+    }
+    return out;
+  }, [formItems, formItemSearch]);
+
+  const totalFormItemPages = Math.max(1, Math.ceil(indexedFormItems.length / FORM_ITEM_PAGE_SIZE));
+  const safeFormItemPage = Math.min(formItemPage, totalFormItemPages);
+
+  const visibleFormItems = useMemo(() => {
+    const start = (safeFormItemPage - 1) * FORM_ITEM_PAGE_SIZE;
+    return indexedFormItems.slice(start, start + FORM_ITEM_PAGE_SIZE);
+  }, [indexedFormItems, safeFormItemPage]);
+
+  const formTotals = useMemo(() => sumInboundItems(formItems), [formItems]);
 
   return (
     <div className="space-y-6">
@@ -943,6 +1165,22 @@ export const InboundManager: React.FC = () => {
                           >
                             <Printer className="w-4 h-4" />
                           </button>
+                          <button
+                            onClick={() => handleExportReceiptExcel(r)}
+                            className="p-1.5 text-emerald-700 hover:bg-emerald-50 rounded-lg border border-emerald-200 transition"
+                            title="Xuất phiếu nhập kho ra Excel (.xlsx)"
+                          >
+                            <FileSpreadsheet className="w-4 h-4" />
+                          </button>
+                          {isAdmin && (
+                            <button
+                              onClick={() => openEditModal(r)}
+                              className="p-1.5 text-amber-700 hover:bg-amber-50 rounded-lg border border-amber-200 transition"
+                              title="Sửa phiếu nhập kho (Admin)"
+                            >
+                              <Pencil className="w-4 h-4" />
+                            </button>
+                          )}
                           {isAdmin && (
                             <button
                               onClick={() => handleDeleteReceipt(r)}
@@ -973,26 +1211,43 @@ export const InboundManager: React.FC = () => {
         />
       </div>
 
-      {/* Modal Lập Phiếu Nhập Kho Mới (Chuẩn QN-OPR-PR11-FM05.01) */}
+      {/* Modal Lập / Chỉnh Sửa Phiếu Nhập Kho (Chuẩn QN-OPR-PR11-FM05.01) */}
       {isCreateModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-2 sm:p-4">
           <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-6xl max-h-[92dvh] flex flex-col overflow-hidden animate-in zoom-in-95">
             <div className="flex items-center justify-between p-4 sm:p-5 border-b border-slate-100 bg-slate-50 gap-2">
               <div className="flex items-center gap-2.5 min-w-0">
-                <div className="p-2 bg-emerald-100 text-emerald-800 rounded-xl shrink-0">
-                  <ArrowDownLeft className="w-5 h-5" />
+                <div
+                  className={`p-2 rounded-xl shrink-0 ${
+                    editingReceipt
+                      ? 'bg-amber-100 text-amber-800'
+                      : 'bg-emerald-100 text-emerald-800'
+                  }`}
+                >
+                  {editingReceipt ? (
+                    <Pencil className="w-5 h-5" />
+                  ) : (
+                    <ArrowDownLeft className="w-5 h-5" />
+                  )}
                 </div>
                 <div className="min-w-0">
                   <h3 className="font-bold text-slate-900 text-sm sm:text-base truncate">
-                    Lập Phiếu Nhập Kho (Mẫu QN-OPR-PR11-FM05.01)
+                    {editingReceipt
+                      ? `Chỉnh Sửa Phiếu Nhập Kho: ${editingReceipt.receiptCode} (Mẫu QN-OPR-PR11-FM05.01)`
+                      : 'Lập Phiếu Nhập Kho (Mẫu QN-OPR-PR11-FM05.01)'}
                   </h3>
                   <p className="text-xs text-slate-500 line-clamp-1">
-                    CÔNG TY CỔ PHẦN DỊCH VỤ DẦU KHÍ QUẢNG NGÃI PTSC — Nhập đầy đủ thông tin để in phiếu A4 chuẩn
+                    {editingReceipt
+                      ? 'Quyền Quản trị viên (Admin) — Mọi thay đổi số lượng/khối lượng sẽ tự động cập nhật lại tồn kho & đồng bộ thiết bị'
+                      : 'CÔNG TY CỔ PHẦN DỊCH VỤ DẦU KHÍ QUẢNG NGÃI PTSC — Nhập đầy đủ thông tin để in phiếu A4 chuẩn'}
                   </p>
                 </div>
               </div>
               <button
-                onClick={() => setIsCreateModalOpen(false)}
+                onClick={() => {
+                  setIsCreateModalOpen(false);
+                  setEditingReceipt(null);
+                }}
                 className="p-2 hover:bg-slate-200 rounded-lg text-slate-500 shrink-0"
               >
                 <X className="w-4 h-4" />
@@ -1071,7 +1326,7 @@ export const InboundManager: React.FC = () => {
                 <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3">
                   <div className="sm:col-span-2">
                     <label className="block font-semibold text-slate-700 uppercase mb-1">
-                      Đơn vị giao hàng (*)
+                      Đơn vị giao hàng {!editingReceipt && '(*)'}
                     </label>
                     <input
                       type="text"
@@ -1079,7 +1334,7 @@ export const InboundManager: React.FC = () => {
                       onChange={(e) => setFormDeliverer(e.target.value)}
                       placeholder="Ví dụ: Việt Xuân Mới"
                       className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded-lg font-semibold outline-none focus:border-blue-500"
-                      required
+                      required={!editingReceipt}
                     />
                   </div>
 
@@ -1206,18 +1461,35 @@ export const InboundManager: React.FC = () => {
 
               {/* Danh sách 10 cột vật tư chuẩn theo mẫu PNK QLVT */}
               <div className="space-y-3">
-                <div className="flex items-center justify-between">
+                <div className="flex flex-wrap items-center justify-between gap-2">
                   <h4 className="font-bold text-sm text-slate-800">
-                    Chi Tiết Vật Tư Nhập Kho ({formItems.length} mục hàng)
+                    Chi Tiết Vật Tư Nhập Kho ({formItems.length.toLocaleString('vi-VN')} mục hàng)
                   </h4>
-                  <button
-                    type="button"
-                    onClick={addNewItemRow}
-                    className="flex items-center gap-1 px-3 py-1.5 bg-blue-50 text-blue-700 hover:bg-blue-100 rounded-lg text-xs font-semibold border border-blue-200 transition"
-                  >
-                    <Plus className="w-3.5 h-3.5" />
-                    <span>Thêm Dòng Vật Tư</span>
-                  </button>
+                  <div className="flex flex-wrap items-center gap-2">
+                    {formItems.length > 15 && (
+                      <div className="relative">
+                        <input
+                          type="text"
+                          value={formItemSearch}
+                          onChange={(e) => {
+                            setFormItemSearch(e.target.value);
+                            setFormItemPage(1);
+                          }}
+                          placeholder="Lọc dòng vật tư..."
+                          className="pl-7 pr-3 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs outline-none focus:bg-white focus:border-blue-500"
+                        />
+                        <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2 top-2" />
+                      </div>
+                    )}
+                    <button
+                      type="button"
+                      onClick={addNewItemRow}
+                      className="flex items-center gap-1 px-3 py-1.5 bg-blue-50 text-blue-700 hover:bg-blue-100 rounded-lg text-xs font-semibold border border-blue-200 transition"
+                    >
+                      <Plus className="w-3.5 h-3.5" />
+                      <span>Thêm Dòng Vật Tư</span>
+                    </button>
+                  </div>
                 </div>
 
                 <div className="border border-slate-200 rounded-xl overflow-x-auto">
@@ -1238,143 +1510,167 @@ export const InboundManager: React.FC = () => {
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
-                      {formItems.map((item, idx) => (
-                        <tr key={item.id} className="hover:bg-slate-50/70">
-                          <td className="p-2 text-center text-slate-500 font-mono">{idx + 1}</td>
-                          <td className="p-2">
-                            <input
-                              type="text"
-                              value={item.materialCode}
-                              onChange={(e) => updateItemRow(idx, 'materialCode', e.target.value)}
-                              placeholder="PI-P.AA.S..."
-                              className="w-full px-2 py-1 bg-white border border-slate-200 rounded font-mono outline-none text-xs"
-                            />
-                          </td>
-                          <td className="p-2">
-                            <input
-                              type="text"
-                              value={item.materialName}
-                              onChange={(e) => updateItemRow(idx, 'materialName', e.target.value)}
-                              placeholder='20"x12m PIPE, API 5L B...'
-                              className="w-full px-2 py-1 bg-white border border-slate-200 rounded font-medium outline-none text-xs"
-                              required
-                            />
-                          </td>
-                          <td className="p-2">
-                            <input
-                              type="text"
-                              value={item.batchCode ?? item.packageNo ?? ''}
-                              onChange={(e) => updateItemRow(idx, 'batchCode', e.target.value)}
-                              placeholder="183A0108"
-                              className="w-full px-2 py-1 bg-white border border-slate-200 rounded font-mono outline-none text-xs"
-                            />
-                          </td>
-                          <td className="p-2 text-right">
-                            <input
-                              type="number"
-                              min="0"
-                              step="any"
-                              value={item.quantity === 0 ? '' : item.quantity}
-                              placeholder="0"
-                              onChange={(e) =>
-                                updateItemRow(
-                                  idx,
-                                  'quantity',
-                                  e.target.value === '' ? 0 : roundQty(e.target.value)
-                                )
-                              }
-                              className="w-full px-2 py-1 bg-white border border-slate-200 rounded text-right font-bold outline-none text-xs"
-                            />
-                          </td>
-                          <td className="p-2">
-                            <input
-                              type="text"
-                              value={item.unit}
-                              onChange={(e) => updateItemRow(idx, 'unit', e.target.value)}
-                              placeholder="Ống"
-                              className="w-full px-2 py-1 bg-white border border-slate-200 rounded text-center outline-none text-xs"
-                            />
-                          </td>
-                          <td className="p-2 text-right">
-                            <input
-                              type="number"
-                              min="0"
-                              step="0.01"
-                              value={item.weightKg === 0 ? '' : item.weightKg}
-                              placeholder="0"
-                              onChange={(e) =>
-                                updateItemRow(
-                                  idx,
-                                  'weightKg',
-                                  e.target.value === '' ? 0 : Number(e.target.value)
-                                )
-                              }
-                              className="w-full px-2 py-1 bg-white border border-slate-200 rounded text-right font-mono font-medium outline-none text-xs"
-                            />
-                          </td>
-                          <td className="p-2 text-right">
-                            <input
-                              type="number"
-                              min="0"
-                              step="any"
-                              value={item.unitPrice || ''}
-                              onChange={(e) => updateItemRow(idx, 'unitPrice', Number(e.target.value))}
-                              placeholder="-"
-                              className="w-full px-2 py-1 bg-white border border-slate-200 rounded text-right font-mono outline-none text-xs"
-                            />
-                          </td>
-                          <td className="p-2 text-right font-mono font-semibold text-slate-700">
-                            {Number(item.totalPrice) > 0
-                              ? Number(item.totalPrice).toLocaleString('en-US')
-                              : '-'}
-                          </td>
-                          <td className="p-2">
-                            <input
-                              type="text"
-                              value={item.note ?? ''}
-                              onChange={(e) => updateItemRow(idx, 'note', e.target.value)}
-                              placeholder="Ghi chú..."
-                              className="w-full px-2 py-1 bg-white border border-slate-200 rounded outline-none text-xs"
-                            />
-                          </td>
-                          <td className="p-2 text-center">
-                            {formItems.length > 1 && (
-                              <button
-                                type="button"
-                                onClick={() => removeItemRow(idx)}
-                                className="p-1 text-rose-500 hover:bg-rose-50 rounded"
-                              >
-                                <Trash2 className="w-3.5 h-3.5" />
-                              </button>
-                            )}
+                      {visibleFormItems.length === 0 ? (
+                        <tr>
+                          <td colSpan={11} className="p-6 text-center text-slate-400">
+                            Không có dòng vật tư nào khớp từ khóa lọc.
                           </td>
                         </tr>
-                      ))}
+                      ) : (
+                        visibleFormItems.map(({ item, realIdx }) => (
+                          <tr key={item.id || realIdx} className="hover:bg-slate-50/70">
+                            <td className="p-2 text-center text-slate-500 font-mono">
+                              {realIdx + 1}
+                            </td>
+                            <td className="p-2">
+                              <input
+                                type="text"
+                                value={item.materialCode}
+                                onChange={(e) =>
+                                  updateItemRow(realIdx, 'materialCode', e.target.value)
+                                }
+                                placeholder="PI-P.AA.S..."
+                                className="w-full px-2 py-1 bg-white border border-slate-200 rounded font-mono outline-none text-xs"
+                              />
+                            </td>
+                            <td className="p-2">
+                              <input
+                                type="text"
+                                value={item.materialName}
+                                onChange={(e) =>
+                                  updateItemRow(realIdx, 'materialName', e.target.value)
+                                }
+                                placeholder='20"x12m PIPE, API 5L B...'
+                                className="w-full px-2 py-1 bg-white border border-slate-200 rounded font-medium outline-none text-xs"
+                              />
+                            </td>
+                            <td className="p-2">
+                              <input
+                                type="text"
+                                value={item.batchCode ?? item.packageNo ?? ''}
+                                onChange={(e) =>
+                                  updateItemRow(realIdx, 'batchCode', e.target.value)
+                                }
+                                placeholder="183A0108"
+                                className="w-full px-2 py-1 bg-white border border-slate-200 rounded font-mono outline-none text-xs"
+                              />
+                            </td>
+                            <td className="p-2 text-right">
+                              <input
+                                type="number"
+                                min="0"
+                                step="any"
+                                value={item.quantity === 0 ? '' : item.quantity}
+                                placeholder="0"
+                                onChange={(e) =>
+                                  updateItemRow(
+                                    realIdx,
+                                    'quantity',
+                                    e.target.value === '' ? 0 : roundQty(e.target.value)
+                                  )
+                                }
+                                className="w-full px-2 py-1 bg-white border border-slate-200 rounded text-right font-bold outline-none text-xs tabular-nums"
+                              />
+                            </td>
+                            <td className="p-2">
+                              <input
+                                type="text"
+                                value={item.unit}
+                                onChange={(e) => updateItemRow(realIdx, 'unit', e.target.value)}
+                                placeholder="Ống"
+                                className="w-full px-2 py-1 bg-white border border-slate-200 rounded text-center outline-none text-xs"
+                              />
+                            </td>
+                            <td className="p-2 text-right">
+                              <input
+                                type="number"
+                                min="0"
+                                step="0.01"
+                                value={item.weightKg === 0 ? '' : item.weightKg}
+                                placeholder="0"
+                                onChange={(e) =>
+                                  updateItemRow(
+                                    realIdx,
+                                    'weightKg',
+                                    e.target.value === '' ? 0 : Number(e.target.value)
+                                  )
+                                }
+                                className="w-full px-2 py-1 bg-white border border-slate-200 rounded text-right font-mono font-medium outline-none text-xs tabular-nums"
+                              />
+                            </td>
+                            <td className="p-2 text-right">
+                              <input
+                                type="number"
+                                min="0"
+                                step="any"
+                                value={item.unitPrice || ''}
+                                onChange={(e) =>
+                                  updateItemRow(realIdx, 'unitPrice', Number(e.target.value))
+                                }
+                                placeholder="-"
+                                className="w-full px-2 py-1 bg-white border border-slate-200 rounded text-right font-mono outline-none text-xs tabular-nums"
+                              />
+                            </td>
+                            <td className="p-2 text-right font-mono font-semibold text-slate-700 tabular-nums">
+                              {Number(item.totalPrice) > 0
+                                ? Number(item.totalPrice).toLocaleString('en-US')
+                                : '-'}
+                            </td>
+                            <td className="p-2">
+                              <input
+                                type="text"
+                                value={item.note ?? ''}
+                                onChange={(e) => updateItemRow(realIdx, 'note', e.target.value)}
+                                placeholder="Ghi chú..."
+                                className="w-full px-2 py-1 bg-white border border-slate-200 rounded outline-none text-xs"
+                              />
+                            </td>
+                            <td className="p-2 text-center">
+                              {formItems.length > 1 && (
+                                <button
+                                  type="button"
+                                  onClick={() => removeItemRow(realIdx)}
+                                  className="p-1 text-rose-500 hover:bg-rose-50 rounded"
+                                  title="Xóa dòng vật tư này"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              )}
+                            </td>
+                          </tr>
+                        ))
+                      )}
                     </tbody>
                   </table>
+
+                  {totalFormItemPages > 1 && (
+                    <PaginationBar
+                      currentPage={safeFormItemPage}
+                      totalItems={indexedFormItems.length}
+                      pageSize={FORM_ITEM_PAGE_SIZE}
+                      onPageChange={setFormItemPage}
+                      itemLabel="dòng vật tư"
+                    />
+                  )}
                 </div>
 
                 {/* Tóm tắt TỔNG CỘNG */}
                 <div className="bg-slate-50 p-3 rounded-xl border border-slate-200 flex flex-col sm:flex-row sm:justify-between sm:items-center gap-2 text-xs font-semibold">
-                  <span>TỔNG CỘNG: {formItems.length} mục hàng</span>
+                  <span>TỔNG CỘNG: {formItems.length.toLocaleString('vi-VN')} mục hàng</span>
                   <div className="flex flex-wrap gap-4">
                     <span>
                       Tổng số lượng:{' '}
                       <strong className="text-blue-700 tabular-nums">
-                        {roundQty(
-                          formItems.reduce((s, it) => s + roundQty(it.quantity), 0)
-                        ).toLocaleString('vi-VN')}
+                        {formTotals.totalQuantity.toLocaleString('vi-VN')}
                       </strong>
                     </span>
                     <span>
                       Tổng khối lượng:{' '}
                       <strong className="text-emerald-700 tabular-nums">
-                        {formItems
-                          .reduce((s, it) => s + (Number(it.weightKg) || 0), 0)
-                          .toLocaleString('en-US', {
-                            minimumFractionDigits: 2,
-                            maximumFractionDigits: 2
-                          })}{' '}
+                        {formTotals.totalWeightKg.toLocaleString('en-US', {
+                          minimumFractionDigits: 2,
+                          maximumFractionDigits: 2
+                        })}{' '}
                         Kg
                       </strong>
                     </span>
@@ -1385,13 +1681,20 @@ export const InboundManager: React.FC = () => {
               <div className="pt-3 flex gap-2">
                 <button
                   type="submit"
-                  className="flex-1 py-2.5 bg-blue-600 hover:bg-blue-700 text-white font-semibold text-sm rounded-xl transition shadow-md shadow-blue-500/20"
+                  className={`flex-1 py-2.5 text-white font-semibold text-sm rounded-xl transition shadow-md ${
+                    editingReceipt
+                      ? 'bg-amber-600 hover:bg-amber-700 shadow-amber-600/20'
+                      : 'bg-blue-600 hover:bg-blue-700 shadow-blue-500/20'
+                  }`}
                 >
-                  Lưu Phiếu Nhập Kho
+                  {editingReceipt ? 'Lưu Cập Nhật Phiếu Nhập Kho' : 'Lưu Phiếu Nhập Kho'}
                 </button>
                 <button
                   type="button"
-                  onClick={() => setIsCreateModalOpen(false)}
+                  onClick={() => {
+                    setIsCreateModalOpen(false);
+                    setEditingReceipt(null);
+                  }}
                   className="py-2.5 px-5 bg-slate-100 hover:bg-slate-200 text-slate-700 text-sm font-semibold rounded-xl transition"
                 >
                   Hủy
@@ -1425,7 +1728,15 @@ export const InboundManager: React.FC = () => {
                   </p>
                 </div>
               </div>
-              <div className="flex items-center gap-2 w-full sm:w-auto justify-end">
+              <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto justify-end">
+                <button
+                  onClick={() => handleExportReceiptExcel(viewingReceipt)}
+                  className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-semibold transition min-h-[36px]"
+                  title="Xuất phiếu nhập kho ra Excel (.xlsx)"
+                >
+                  <FileSpreadsheet className="w-4 h-4" />
+                  <span>Xuất Excel</span>
+                </button>
                 <button
                   onClick={() => {
                     setSelectedReceiptForPrint(viewingReceipt);
@@ -1436,6 +1747,20 @@ export const InboundManager: React.FC = () => {
                   <Printer className="w-4 h-4" />
                   <span>Xem & In Phiếu (FM05.01)</span>
                 </button>
+                {isAdmin && (
+                  <button
+                    onClick={() => {
+                      const target = viewingReceipt;
+                      setViewingReceipt(null);
+                      openEditModal(target);
+                    }}
+                    className="flex items-center gap-1.5 px-3 py-1.5 bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 rounded-lg text-xs font-semibold transition min-h-[36px]"
+                    title="Sửa phiếu nhập kho này (Admin)"
+                  >
+                    <Pencil className="w-4 h-4" />
+                    <span>Sửa Phiếu</span>
+                  </button>
+                )}
                 {isAdmin && (
                   <button
                     onClick={() => {

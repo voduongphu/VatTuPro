@@ -979,6 +979,103 @@ export const StorageService = {
     return { addedCount: stampedRcps.length, newMaterialsCount };
   },
 
+  updateInboundReceipt(
+    originalId: string,
+    updated: InboundReceipt
+  ): { success: boolean; newMaterialsCount: number } {
+    const inbounds = [...this.getInboundReceipts()];
+    const idx = inbounds.findIndex((r) => r.id === originalId || normKey(r.receiptCode) === normKey(originalId));
+    if (idx === -1) {
+      return { success: false, newMaterialsCount: 0 };
+    }
+
+    const oldRcp = inbounds[idx];
+    const now = Date.now();
+    const oldCodeKey = normKey(oldRcp.receiptCode || oldRcp.id);
+    const newCodeKey = normKey(updated.receiptCode || updated.id);
+    const isCodeChanged = Boolean(oldCodeKey && newCodeKey && oldCodeKey !== newCodeKey);
+
+    const items = Array.isArray(updated.items) ? updated.items : [];
+    const sums = sumInboundItems(items);
+    const salt = Math.random().toString(36).slice(2, 6);
+
+    if (isCodeChanged) {
+      const tombstones = this.getTombstones();
+      const delTs = now - 1;
+      tombstones.inbound[oldRcp.id] = delTs;
+      tombstones.inbound[oldRcp.receiptCode] = delTs;
+      tombstones.inbound[oldCodeKey] = delTs;
+      this.saveTombstones(tombstones);
+    }
+
+    const savedReceipt: InboundReceipt = {
+      ...oldRcp,
+      ...updated,
+      id: isCodeChanged ? `in-rcp-${now}-${salt}` : oldRcp.id,
+      items,
+      packageCount: sums.packageCount,
+      totalQuantity: sums.totalQuantity,
+      totalWeightKg: sums.totalWeightKg,
+      totalAmount: sums.totalAmount,
+      updatedAt: now,
+      itemsReplacedAt: now
+    };
+
+    inbounds[idx] = savedReceipt;
+    this.saveInboundReceipts(inbounds);
+
+    // Tự động bổ sung vật tư mới nếu Admin thêm dòng vật tư mới khi sửa phiếu
+    const currentMaterials = [...this.getMaterials()];
+    const existingMatCodes = new Set<string>();
+    for (let i = 0; i < currentMaterials.length; i++) {
+      existingMatCodes.add(currentMaterials[i].code.toUpperCase());
+    }
+
+    let newMaterialsCount = 0;
+    for (let iIdx = 0; iIdx < items.length; iIdx++) {
+      const item = items[iIdx];
+      const rawCode = (item.materialCode || '').trim();
+      const rawName = (item.materialName || '').trim();
+      if (!rawCode && !rawName) continue;
+
+      const code = (rawCode || `VT-${rawName.slice(0, 6).toUpperCase().replace(/\s+/g, '')}`).toUpperCase();
+      if (!existingMatCodes.has(code)) {
+        existingMatCodes.add(code);
+        const qty = roundQty(item.quantity);
+        const weight = Number(item.weightKg) || 0;
+        currentMaterials.push({
+          id: `mat-auto-${now}-${salt}-${newMaterialsCount}`,
+          code,
+          name: rawName || code,
+          unit: (item.unit || '').trim() || 'Bộ',
+          category: (item.category || '').trim() || 'Chung',
+          packageNo: (item.packageNo || '').trim() || '',
+          drawingNo: (item.drawingNo || '').trim() || '',
+          manufacturer: (item.manufacturer || '').trim() || '',
+          supplier: (item.supplier || '').trim() || '',
+          unitWeightKg: weight > 0 && qty > 0 ? Math.round((weight / qty) * 100) / 100 : 0,
+          specification: item.conditionNote || '',
+          minStockAlert: 2,
+          notes: `Tự động tạo khi cập nhật phiếu nhập kho ${savedReceipt.receiptCode}`,
+          updatedAt: now
+        });
+        newMaterialsCount++;
+      }
+    }
+
+    if (newMaterialsCount > 0) {
+      this.saveMaterials(currentMaterials);
+      emitLocalMutation('materials');
+    }
+
+    if (isCodeChanged) {
+      emitLocalMutation('meta');
+    }
+    notifySubscribers();
+    emitLocalMutation('inbound', [newCodeKey]);
+    return { success: true, newMaterialsCount };
+  },
+
   deleteInboundReceipt(id: string): boolean {
     const inbounds = this.getInboundReceipts();
     const target = inbounds.find((i) => i.id === id || i.receiptCode === id);
@@ -1049,6 +1146,54 @@ export const StorageService = {
     notifySubscribers();
     emitLocalMutation('outbound', mergedOut.touchedCodes);
     return { addedCount: stampedRcps.length };
+  },
+
+  updateOutboundReceipt(originalId: string, updated: OutboundReceipt): { success: boolean } {
+    const outbounds = [...this.getOutboundReceipts()];
+    const idx = outbounds.findIndex((o) => o.id === originalId || normKey(o.issueCode) === normKey(originalId));
+    if (idx === -1) {
+      return { success: false };
+    }
+
+    const oldRcp = outbounds[idx];
+    const now = Date.now();
+    const oldCodeKey = normKey(oldRcp.issueCode || oldRcp.id);
+    const newCodeKey = normKey(updated.issueCode || updated.id);
+    const isCodeChanged = Boolean(oldCodeKey && newCodeKey && oldCodeKey !== newCodeKey);
+
+    if (isCodeChanged) {
+      const tombstones = this.getTombstones();
+      const delTs = now - 1;
+      tombstones.outbound[oldRcp.id] = delTs;
+      tombstones.outbound[oldRcp.issueCode] = delTs;
+      tombstones.outbound[oldCodeKey] = delTs;
+      this.saveTombstones(tombstones);
+    }
+
+    const items = Array.isArray(updated.items) ? updated.items : [];
+    const sums = sumOutboundItems(items);
+    const salt = Math.random().toString(36).slice(2, 6);
+
+    const savedReceipt: OutboundReceipt = {
+      ...oldRcp,
+      ...updated,
+      id: isCodeChanged ? `out-rcp-${now}-${salt}` : oldRcp.id,
+      items,
+      totalQuantity: sums.totalQuantity,
+      totalWeightKg: sums.totalWeightKg,
+      updatedAt: now,
+      itemsReplacedAt: now
+    };
+
+    outbounds[idx] = savedReceipt;
+    this.saveOutboundReceipts(outbounds);
+
+    if (isCodeChanged) {
+      emitLocalMutation('meta');
+    }
+    notifySubscribers();
+    emitLocalMutation('outbound', [newCodeKey]);
+    return { success: true };
   },
 
   deleteOutboundReceipt(id: string): boolean {

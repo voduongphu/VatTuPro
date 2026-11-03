@@ -156,15 +156,16 @@ function computeMaterialsDigest(materials) {
 
 function computeInboundReceiptDigest(rcp) {
   const items = Array.isArray(rcp.items) ? rcp.items : [];
+  const rep = Number(rcp.itemsReplacedAt) || 0;
   const [hh1, hh2] = hashPair(
-    `IH|${normKey(rcp.receiptCode || rcp.id)}|${rcp.receiptDate || ''}|${rcp.warehouseId || ''}|${rcp.warehouseName || ''}|${rcp.departmentName || ''}|${rcp.contractNo || ''}|${rcp.requestNo || ''}|${rcp.inboundType || ''}|${rcp.amountInWords || ''}|${rcp.attachedDocs || ''}|${rcp.supplier || ''}|${rcp.manufacturer || ''}|${rcp.shipment || ''}|${rcp.packingListNo || ''}|${rcp.delivererName || ''}|${rcp.receiverName || ''}|${rcp.driverVehicleNo || ''}|${rcp.notes || ''}|${Number(rcp.totalQuantity) || 0}|${Number(rcp.totalWeightKg) || 0}`
+    `IH|${normKey(rcp.receiptCode || rcp.id)}|${rcp.receiptDate || ''}|${rcp.warehouseId || ''}|${rcp.warehouseName || ''}|${rcp.departmentName || ''}|${rcp.contractNo || ''}|${rcp.requestNo || ''}|${rcp.inboundType || ''}|${rcp.amountInWords || ''}|${rcp.attachedDocs || ''}|${rcp.supplier || ''}|${rcp.manufacturer || ''}|${rcp.shipment || ''}|${rcp.packingListNo || ''}|${rcp.delivererName || ''}|${rcp.receiverName || ''}|${rcp.driverVehicleNo || ''}|${rcp.notes || ''}|${Number(rcp.totalQuantity) || 0}|${Number(rcp.totalWeightKg) || 0}|${Number(rcp.totalAmount) || 0}|${rep}`
   );
   let sum1 = hh1;
   let sum2 = hh2;
   for (let i = 0; i < items.length; i++) {
     const it = items[i];
     const [h1, h2] = hashPair(
-      `${it.id || ''}|${it.materialCode || ''}|${it.batchCode || ''}|${it.packingListNo || ''}|${it.shipment || ''}|${it.packageNo || ''}|${it.drawingNo || ''}|${Number(it.quantity) || 0}|${Number(it.weightKg) || 0}|${it.note || ''}`
+      `${it.id || ''}|${it.materialCode || ''}|${it.materialName || ''}|${it.unit || ''}|${it.batchCode || ''}|${it.packingListNo || ''}|${it.shipment || ''}|${it.packageNo || ''}|${it.drawingNo || ''}|${it.category || ''}|${it.manufacturer || ''}|${it.supplier || ''}|${it.storageLocation || ''}|${Number(it.quantity) || 0}|${Number(it.weightKg) || 0}|${Number(it.unitPrice) || 0}|${Number(it.totalPrice) || 0}|${it.conditionNote || ''}|${it.note || ''}`
     );
     sum1 = (sum1 + h1) >>> 0;
     sum2 = (sum2 + h2) >>> 0;
@@ -174,15 +175,16 @@ function computeInboundReceiptDigest(rcp) {
 
 function computeOutboundReceiptDigest(rcp) {
   const items = Array.isArray(rcp.items) ? rcp.items : [];
+  const rep = Number(rcp.itemsReplacedAt) || 0;
   const [hh1, hh2] = hashPair(
-    `OH|${normKey(rcp.issueCode || rcp.id)}|${rcp.issueDate || ''}|${rcp.warehouseId || ''}|${rcp.warehouseName || ''}|${rcp.departmentName || ''}|${rcp.requestNo || ''}|${rcp.outboundType || ''}|${rcp.projectName || ''}|${rcp.recipientDepartment || ''}|${rcp.recipientName || ''}|${rcp.issuerName || ''}|${rcp.notes || ''}|${Number(rcp.totalQuantity) || 0}|${Number(rcp.totalWeightKg) || 0}`
+    `OH|${normKey(rcp.issueCode || rcp.id)}|${rcp.issueDate || ''}|${rcp.warehouseId || ''}|${rcp.warehouseName || ''}|${rcp.departmentName || ''}|${rcp.requestNo || ''}|${rcp.outboundType || ''}|${rcp.projectName || ''}|${rcp.recipientDepartment || ''}|${rcp.recipientName || ''}|${rcp.issuerName || ''}|${rcp.notes || ''}|${Number(rcp.totalQuantity) || 0}|${Number(rcp.totalWeightKg) || 0}|${rep}`
   );
   let sum1 = hh1;
   let sum2 = hh2;
   for (let i = 0; i < items.length; i++) {
     const it = items[i];
     const [h1, h2] = hashPair(
-      `${it.id || ''}|${it.materialCode || ''}|${it.batchCode || ''}|${it.packingListNo || ''}|${it.shipment || ''}|${it.packageNo || ''}|${it.drawingNo || ''}|${Number(it.quantity) || 0}|${Number(it.weightKg) || 0}|${it.note || ''}`
+      `${it.id || ''}|${it.materialCode || ''}|${it.materialName || ''}|${it.unit || ''}|${it.batchCode || ''}|${it.packingListNo || ''}|${it.shipment || ''}|${it.packageNo || ''}|${it.drawingNo || ''}|${it.category || ''}|${it.manufacturer || ''}|${it.supplier || ''}|${Number(it.quantity) || 0}|${Number(it.weightKg) || 0}|${it.purpose || ''}|${it.note || ''}`
     );
     sum1 = (sum1 + h1) >>> 0;
     sum2 = (sum2 + h2) >>> 0;
@@ -213,6 +215,7 @@ function mergeTombstones(target, incoming) {
 }
 
 function isRecordDeleted(bucket, keysToCheck, recordUpdatedAt) {
+  if (!bucket) return false;
   const recTs = Number(recordUpdatedAt) || 0;
   for (let i = 0; i < keysToCheck.length; i++) {
     const k = keysToCheck[i];
@@ -619,7 +622,8 @@ function mergeInboundReceiptsAdditive(existing, incoming, tombstones) {
         totalQuantity: sums.totalQuantity,
         totalWeightKg: sums.totalWeightKg,
         totalAmount: sums.totalAmount,
-        updatedAt: Number(inc.updatedAt) || 1
+        updatedAt: Number(inc.updatedAt) || 1,
+        itemsReplacedAt: Number(inc.itemsReplacedAt) || undefined
       };
 
       const pIdx = newlyPrepended.length;
@@ -633,26 +637,85 @@ function mergeInboundReceiptsAdditive(existing, incoming, tombstones) {
       const curr = targetArr[targetIdx];
       const incItems = Array.isArray(inc.items) ? inc.items : [];
 
-      const seenItemSigs = new Set();
-      for (let j = 0; j < curr.items.length; j++) {
-        seenItemSigs.add(makeItemSig(curr.items[j]));
+      const incTs = Number(inc.updatedAt) || 0;
+      const currTs = Number(curr.updatedAt) || 0;
+      const incRev = Number(inc.itemsReplacedAt) || 0;
+      const currRev = Number(curr.itemsReplacedAt) || 0;
+
+      if (incRev > currRev) {
+        const dedupedIncItems = [];
+        const seenSigs = new Set();
+        for (let j = 0; j < incItems.length; j++) {
+          const sig = makeItemSig(incItems[j]);
+          if (!seenSigs.has(sig)) {
+            seenSigs.add(sig);
+            dedupedIncItems.push(incItems[j]);
+          }
+        }
+        const sums = sumInboundItems(dedupedIncItems);
+        targetArr[targetIdx] = {
+          ...curr,
+          ...inc,
+          id: curr.id || inc.id,
+          receiptCode: inc.receiptCode || curr.receiptCode,
+          items: dedupedIncItems,
+          packageCount: sums.packageCount,
+          totalQuantity: sums.totalQuantity,
+          totalWeightKg: sums.totalWeightKg,
+          totalAmount: sums.totalAmount,
+          updatedAt: Math.max(currTs, incTs, incRev) || 1,
+          itemsReplacedAt: incRev,
+          lastEditedBy: inc.lastEditedBy ?? curr.lastEditedBy,
+          lastEditedAt: inc.lastEditedAt ?? curr.lastEditedAt
+        };
+        touchedSet.add(rKey);
+        changed = true;
+        continue;
       }
 
-      const addedItems = [];
+      if (incRev < currRev) {
+        continue;
+      }
+
+      const seenItemSigs = new Map();
+      const nextItems = curr.items.slice();
+      let itemsMutated = false;
+
+      for (let j = 0; j < nextItems.length; j++) {
+        seenItemSigs.set(makeItemSig(nextItems[j]), j);
+      }
+
+      const headerNewer = incTs > currTs;
+
       for (let j = 0; j < incItems.length; j++) {
-        const sig = makeItemSig(incItems[j]);
-        if (!seenItemSigs.has(sig)) {
-          seenItemSigs.add(sig);
-          addedItems.push(incItems[j]);
+        const incIt = incItems[j];
+        const sig = makeItemSig(incIt);
+        const existingItemIdx = seenItemSigs.get(sig);
+        if (existingItemIdx === undefined) {
+          seenItemSigs.set(sig, nextItems.length);
+          nextItems.push(incIt);
+          itemsMutated = true;
+        } else if (headerNewer) {
+          const prevIt = nextItems[existingItemIdx];
+          if (
+            prevIt.quantity !== incIt.quantity ||
+            prevIt.weightKg !== incIt.weightKg ||
+            prevIt.materialCode !== incIt.materialCode ||
+            prevIt.materialName !== incIt.materialName ||
+            prevIt.unit !== incIt.unit ||
+            prevIt.batchCode !== incIt.batchCode ||
+            prevIt.unitPrice !== incIt.unitPrice ||
+            prevIt.totalPrice !== incIt.totalPrice ||
+            prevIt.note !== incIt.note
+          ) {
+            nextItems[existingItemIdx] = incIt;
+            itemsMutated = true;
+          }
         }
       }
 
-      const incTs = Number(inc.updatedAt) || 0;
-      const currTs = Number(curr.updatedAt) || 0;
-      const headerNewer = incTs > currTs;
-
-      if (addedItems.length > 0 || headerNewer) {
-        const mergedItems = addedItems.length > 0 ? curr.items.concat(addedItems) : curr.items;
+      if (itemsMutated || headerNewer) {
+        const mergedItems = itemsMutated ? nextItems : curr.items;
         const sums = sumInboundItems(mergedItems);
 
         targetArr[targetIdx] = {
@@ -708,7 +771,10 @@ function mergeInboundReceiptsAdditive(existing, incoming, tombstones) {
           totalQuantity: sums.totalQuantity,
           totalWeightKg: sums.totalWeightKg,
           totalAmount: sums.totalAmount,
-          updatedAt: Math.max(currTs, incTs) || 1
+          updatedAt: Math.max(currTs, incTs) || 1,
+          itemsReplacedAt: currRev || undefined,
+          lastEditedBy: headerNewer && inc.lastEditedBy ? inc.lastEditedBy : curr.lastEditedBy,
+          lastEditedAt: headerNewer && inc.lastEditedAt ? inc.lastEditedAt : curr.lastEditedAt
         };
         touchedSet.add(rKey);
         changed = true;
@@ -780,7 +846,8 @@ function mergeOutboundReceiptsAdditive(existing, incoming, tombstones) {
         packingListSummary: inc.packingListSummary || computePackingListSummary(items),
         totalQuantity: sums.totalQuantity,
         totalWeightKg: sums.totalWeightKg,
-        updatedAt: Number(inc.updatedAt) || 1
+        updatedAt: Number(inc.updatedAt) || 1,
+        itemsReplacedAt: Number(inc.itemsReplacedAt) || undefined
       };
 
       const pIdx = newlyPrepended.length;
@@ -794,26 +861,83 @@ function mergeOutboundReceiptsAdditive(existing, incoming, tombstones) {
       const curr = targetArr[targetIdx];
       const incItems = Array.isArray(inc.items) ? inc.items : [];
 
-      const seenItemSigs = new Set();
-      for (let j = 0; j < curr.items.length; j++) {
-        seenItemSigs.add(makeItemSig(curr.items[j]));
+      const incTs = Number(inc.updatedAt) || 0;
+      const currTs = Number(curr.updatedAt) || 0;
+      const incRev = Number(inc.itemsReplacedAt) || 0;
+      const currRev = Number(curr.itemsReplacedAt) || 0;
+
+      if (incRev > currRev) {
+        const dedupedIncItems = [];
+        const seenSigs = new Set();
+        for (let j = 0; j < incItems.length; j++) {
+          const sig = makeItemSig(incItems[j]);
+          if (!seenSigs.has(sig)) {
+            seenSigs.add(sig);
+            dedupedIncItems.push(incItems[j]);
+          }
+        }
+        const sums = sumOutboundItems(dedupedIncItems);
+        targetArr[targetIdx] = {
+          ...curr,
+          ...inc,
+          id: curr.id || inc.id,
+          issueCode: inc.issueCode || curr.issueCode,
+          items: dedupedIncItems,
+          packingListSummary: computePackingListSummary(dedupedIncItems),
+          totalQuantity: sums.totalQuantity,
+          totalWeightKg: sums.totalWeightKg,
+          updatedAt: Math.max(currTs, incTs, incRev) || 1,
+          itemsReplacedAt: incRev,
+          lastEditedBy: inc.lastEditedBy ?? curr.lastEditedBy,
+          lastEditedAt: inc.lastEditedAt ?? curr.lastEditedAt
+        };
+        touchedSet.add(rKey);
+        changed = true;
+        continue;
       }
 
-      const addedItems = [];
+      if (incRev < currRev) {
+        continue;
+      }
+
+      const seenItemSigs = new Map();
+      const nextItems = curr.items.slice();
+      let itemsMutated = false;
+
+      for (let j = 0; j < nextItems.length; j++) {
+        seenItemSigs.set(makeItemSig(nextItems[j]), j);
+      }
+
+      const headerNewer = incTs > currTs;
+
       for (let j = 0; j < incItems.length; j++) {
-        const sig = makeItemSig(incItems[j]);
-        if (!seenItemSigs.has(sig)) {
-          seenItemSigs.add(sig);
-          addedItems.push(incItems[j]);
+        const incIt = incItems[j];
+        const sig = makeItemSig(incIt);
+        const existingItemIdx = seenItemSigs.get(sig);
+        if (existingItemIdx === undefined) {
+          seenItemSigs.set(sig, nextItems.length);
+          nextItems.push(incIt);
+          itemsMutated = true;
+        } else if (headerNewer) {
+          const prevIt = nextItems[existingItemIdx];
+          if (
+            prevIt.quantity !== incIt.quantity ||
+            prevIt.weightKg !== incIt.weightKg ||
+            prevIt.materialCode !== incIt.materialCode ||
+            prevIt.materialName !== incIt.materialName ||
+            prevIt.unit !== incIt.unit ||
+            prevIt.batchCode !== incIt.batchCode ||
+            prevIt.purpose !== incIt.purpose ||
+            prevIt.note !== incIt.note
+          ) {
+            nextItems[existingItemIdx] = incIt;
+            itemsMutated = true;
+          }
         }
       }
 
-      const incTs = Number(inc.updatedAt) || 0;
-      const currTs = Number(curr.updatedAt) || 0;
-      const headerNewer = incTs > currTs;
-
-      if (addedItems.length > 0 || headerNewer) {
-        const mergedItems = addedItems.length > 0 ? curr.items.concat(addedItems) : curr.items;
+      if (itemsMutated || headerNewer) {
+        const mergedItems = itemsMutated ? nextItems : curr.items;
         const sums = sumOutboundItems(mergedItems);
 
         targetArr[targetIdx] = {
@@ -849,7 +973,10 @@ function mergeOutboundReceiptsAdditive(existing, incoming, tombstones) {
           packingListSummary: computePackingListSummary(mergedItems),
           totalQuantity: sums.totalQuantity,
           totalWeightKg: sums.totalWeightKg,
-          updatedAt: Math.max(currTs, incTs) || 1
+          updatedAt: Math.max(currTs, incTs) || 1,
+          itemsReplacedAt: currRev || undefined,
+          lastEditedBy: headerNewer && inc.lastEditedBy ? inc.lastEditedBy : curr.lastEditedBy,
+          lastEditedAt: headerNewer && inc.lastEditedAt ? inc.lastEditedAt : curr.lastEditedAt
         };
         touchedSet.add(rKey);
         changed = true;
@@ -1854,6 +1981,7 @@ export default async function handler(req, res) {
         id: r.id,
         itemCount: r.items.length,
         updatedAt: r.updatedAt || 0,
+        itemsReplacedAt: r.itemsReplacedAt || 0,
         digest: computeInboundReceiptDigest(r)
       }));
 
@@ -1863,6 +1991,7 @@ export default async function handler(req, res) {
         id: r.id,
         itemCount: r.items.length,
         updatedAt: r.updatedAt || 0,
+        itemsReplacedAt: r.itemsReplacedAt || 0,
         digest: computeOutboundReceiptDigest(r)
       }));
 

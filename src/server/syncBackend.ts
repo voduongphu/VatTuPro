@@ -1271,6 +1271,7 @@ export function createSyncBackend(options: SyncBackendOptions = {}): SyncBackend
       id: r.id,
       itemCount: r.items.length,
       updatedAt: r.updatedAt || 0,
+      itemsReplacedAt: r.itemsReplacedAt || 0,
       digest: computeInboundReceiptDigest(r)
     }));
 
@@ -1280,6 +1281,7 @@ export function createSyncBackend(options: SyncBackendOptions = {}): SyncBackend
       id: r.id,
       itemCount: r.items.length,
       updatedAt: r.updatedAt || 0,
+      itemsReplacedAt: r.itemsReplacedAt || 0,
       digest: computeOutboundReceiptDigest(r)
     }));
 

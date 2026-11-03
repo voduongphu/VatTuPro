@@ -1,5 +1,12 @@
 import * as XLSX from 'xlsx';
-import { InboundItemDetail, OutboundItemDetail, MaterialItem } from '../types/inventory';
+import {
+  InboundReceipt,
+  InboundItemDetail,
+  OutboundReceipt,
+  OutboundItemDetail,
+  MaterialItem
+} from '../types/inventory';
+import { roundQty, sumInboundItems, sumOutboundItems } from '../utils/additiveMerge';
 
 export type ExcelProgressCallback = (percent: number, processedRows: number, totalRows: number) => void;
 
@@ -1411,4 +1418,507 @@ export function exportToExcel(data: any[], fileName: string, sheetTitle: string 
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, sheetTitle);
   XLSX.writeFile(wb, `${fileName}.xlsx`, { compression: true });
+}
+
+function formatVietnameseVoucherDateForExcel(dateStr?: string): string {
+  const normalized = formatExcelDate(dateStr);
+  if (!normalized) {
+    const now = new Date();
+    const d = String(now.getDate()).padStart(2, '0');
+    const m = String(now.getMonth() + 1).padStart(2, '0');
+    const y = now.getFullYear();
+    return `Ngày ${d} tháng ${m} năm ${y}`;
+  }
+  const ymd = normalized.trim().match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+  if (ymd) {
+    return `Ngày ${ymd[3].padStart(2, '0')} tháng ${ymd[2].padStart(2, '0')} năm ${ymd[1]}`;
+  }
+  return normalized;
+}
+
+function sanitizeExcelFileName(raw: string): string {
+  return String(raw || 'Phieu')
+    .trim()
+    .replace(/[\\/:*?"<>|]+/g, '_')
+    .replace(/\s+/g, '_');
+}
+
+function getExportItemBatch(item: { batchCode?: string; packageNo?: string; shipment?: string }): string {
+  if (item.batchCode && String(item.batchCode).trim()) {
+    return String(item.batchCode).trim();
+  }
+  if (
+    item.packageNo &&
+    item.packageNo !== 'N/A' &&
+    !String(item.packageNo).startsWith('LO-') &&
+    String(item.packageNo).trim()
+  ) {
+    return String(item.packageNo).trim();
+  }
+  if (
+    item.shipment &&
+    item.shipment !== 'N/A' &&
+    item.shipment !== 'SHP-CHUA-RO' &&
+    item.shipment !== 'SHP-EXCEL'
+  ) {
+    return String(item.shipment).trim();
+  }
+  return '';
+}
+
+// Xây dựng Workbook Excel cho Phiếu Nhập Kho chuẩn PTSC Quảng Ngãi (Mẫu QN-OPR-PR11-FM05.01)
+export function buildInboundReceiptWorkbook(receipt: InboundReceipt): XLSX.WorkBook {
+  const items = Array.isArray(receipt.items) ? receipt.items : [];
+  const sums = sumInboundItems(items);
+
+  const rawDept =
+    receipt.departmentName && receipt.departmentName !== 'DỰ ÁN LTIA-4.9'
+      ? receipt.departmentName.trim().toUpperCase()
+      : '';
+  const deptDisplay = !rawDept
+    ? 'BỘ PHẬN:'
+    : rawDept.startsWith('BỘ PHẬN:')
+      ? rawDept
+      : `BỘ PHẬN: ${rawDept}`;
+
+  const delivererDisplay =
+    receipt.delivererName && receipt.delivererName !== 'Nhập từ File Excel tự động'
+      ? receipt.delivererName
+      : receipt.supplier &&
+          receipt.supplier !== 'Nhiều nhà cung cấp' &&
+          receipt.supplier !== 'Theo phiếu nhập' &&
+          receipt.supplier !== 'Đơn vị giao hàng'
+        ? receipt.supplier
+        : receipt.delivererName || '';
+
+  const cleanNotes =
+    receipt.notes && !receipt.notes.startsWith('Import thành công ') ? receipt.notes : '';
+
+  const inboundTypeText =
+    receipt.inboundType === 'return'
+      ? '☐ Nhập mới          ☑ Nhập trả kho'
+      : '☑ Nhập mới          ☐ Nhập trả kho';
+
+  // Sheet 1: Biểu mẫu QN-OPR-PR11-FM05.01 (10 cột A..J)
+  const aoa: any[][] = [
+    ['', '', '', '', '', '', '', '', 'QN-OPR-PR11-FM05.01', ''],
+    ['', '', '', '', '', '', '', '', 'NHL: 02/08/2024', ''],
+    ['CÔNG TY CỔ PHẦN DỊCH VỤ DẦU KHÍ QUẢNG NGÃI PTSC', '', '', '', '', '', '', '', '', ''],
+    [deptDisplay, '', '', '', '', '', '', '', '', ''],
+    ['', '', '', '', '', '', '', '', 'SỐ PHIẾU:', receipt.receiptCode || ''],
+    [],
+    ['PHIẾU NHẬP KHO', '', '', '', '', '', '', '', '', ''],
+    [formatVietnameseVoucherDateForExcel(receipt.receiptDate), '', '', '', '', '', '', '', '', ''],
+    [],
+    ['Đơn vị giao hàng:', '', delivererDisplay, '', '', '', '', 'Kho tiếp nhận:', receipt.warehouseName || '', ''],
+    ['Hợp đồng:', '', receipt.contractNo || '', '', '', '', '', '', '', ''],
+    ['Đề xuất số:', '', receipt.requestNo || '', '', '', '', '', '', '', ''],
+    ['Nội dung:', '', cleanNotes, '', '', '', '', '', '', ''],
+    ['', '', inboundTypeText, '', '', '', '', '', '', ''],
+    [],
+    [
+      'STT',
+      'Mã vật tư',
+      'Tên vật tư',
+      'Mã lô',
+      'Số lượng (cây/tấm)',
+      'ĐVT',
+      'Khối lượng (Kg)',
+      'Đơn giá (VNĐ)',
+      'Thành tiền (VNĐ)',
+      'Ghi chú'
+    ]
+  ];
+
+  const firstItemRowIdx = aoa.length;
+  for (let i = 0; i < items.length; i++) {
+    const it = items[i];
+    const qty = roundQty(it.quantity);
+    const weight = Math.round((Number(it.weightKg) || 0) * 100) / 100;
+    const uPrice = Number(it.unitPrice) || 0;
+    const tPrice =
+      it.totalPrice !== undefined && Number(it.totalPrice) > 0
+        ? Math.round(Number(it.totalPrice) * 100) / 100
+        : Math.round(qty * uPrice * 100) / 100;
+    const noteText =
+      it.note !== undefined
+        ? it.note
+        : it.conditionNote &&
+            it.conditionNote !== 'Nhập từ file Excel' &&
+            it.conditionNote !== 'Mới 100%, nguyên niêm phong'
+          ? it.conditionNote
+          : '';
+
+    aoa.push([
+      i + 1,
+      it.materialCode || '',
+      it.materialName || '',
+      getExportItemBatch(it),
+      qty > 0 ? qty : '',
+      it.unit || '',
+      weight > 0 ? weight : 0,
+      uPrice > 0 ? uPrice : '-',
+      tPrice > 0 ? tPrice : '-',
+      noteText || ''
+    ]);
+  }
+
+  const totalRowIdx = aoa.length;
+  aoa.push([
+    '',
+    'TỔNG CỘNG',
+    '',
+    '',
+    sums.totalQuantity > 0 ? sums.totalQuantity : '-',
+    '',
+    sums.totalWeightKg,
+    '',
+    sums.totalAmount > 0 ? sums.totalAmount : '-',
+    ''
+  ]);
+
+  aoa.push([]);
+  const wordsRowIdx = aoa.length;
+  aoa.push([`Viết bằng chữ : ${receipt.amountInWords || ''}`, '', '', '', '', '', '', '', '', '']);
+  const docsRowIdx = aoa.length;
+  aoa.push([`Số chứng từ gốc kèm theo: ${receipt.attachedDocs || ''}`, '', '', '', '', '', '', '', '', '']);
+  const noteRowIdx = aoa.length;
+  aoa.push([
+    'Note: Cột số lượng (cây/tấm), mã lô, chiều rộng, chiều dài chỉ áp dụng đối với vật tư chính.',
+    '',
+    '',
+    '',
+    '',
+    '',
+    '',
+    '',
+    '',
+    ''
+  ]);
+  aoa.push([]);
+
+  const sigTitleRowIdx = aoa.length;
+  aoa.push([
+    'Người giao hàng',
+    '',
+    'Thủ kho/NV QLVT',
+    '',
+    '',
+    'P.TCKT',
+    '',
+    '',
+    'Phê duyệt',
+    ''
+  ]);
+  const sigSubRowIdx = aoa.length;
+  aoa.push([
+    '(Ký, ghi rõ họ tên)',
+    '',
+    '(Ký, ghi rõ họ tên)',
+    '',
+    '',
+    '(Ký, ghi rõ họ tên)',
+    '',
+    '',
+    '(Ký, ghi rõ họ tên)',
+    ''
+  ]);
+
+  const wsVoucher = XLSX.utils.aoa_to_sheet(aoa, { dense: true } as any);
+  wsVoucher['!cols'] = [
+    { wch: 7 },
+    { wch: 26 },
+    { wch: 46 },
+    { wch: 16 },
+    { wch: 18 },
+    { wch: 10 },
+    { wch: 18 },
+    { wch: 16 },
+    { wch: 18 },
+    { wch: 22 }
+  ];
+  wsVoucher['!merges'] = [
+    { s: { r: 0, c: 8 }, e: { r: 0, c: 9 } },
+    { s: { r: 1, c: 8 }, e: { r: 1, c: 9 } },
+    { s: { r: 2, c: 0 }, e: { r: 2, c: 5 } },
+    { s: { r: 3, c: 0 }, e: { r: 3, c: 5 } },
+    { s: { r: 6, c: 0 }, e: { r: 6, c: 9 } },
+    { s: { r: 7, c: 0 }, e: { r: 7, c: 9 } },
+    { s: { r: 9, c: 0 }, e: { r: 9, c: 1 } },
+    { s: { r: 9, c: 2 }, e: { r: 9, c: 6 } },
+    { s: { r: 9, c: 8 }, e: { r: 9, c: 9 } },
+    { s: { r: 10, c: 0 }, e: { r: 10, c: 1 } },
+    { s: { r: 10, c: 2 }, e: { r: 10, c: 9 } },
+    { s: { r: 11, c: 0 }, e: { r: 11, c: 1 } },
+    { s: { r: 11, c: 2 }, e: { r: 11, c: 9 } },
+    { s: { r: 12, c: 0 }, e: { r: 12, c: 1 } },
+    { s: { r: 12, c: 2 }, e: { r: 12, c: 9 } },
+    { s: { r: 13, c: 2 }, e: { r: 13, c: 7 } },
+    { s: { r: wordsRowIdx, c: 0 }, e: { r: wordsRowIdx, c: 9 } },
+    { s: { r: docsRowIdx, c: 0 }, e: { r: docsRowIdx, c: 9 } },
+    { s: { r: noteRowIdx, c: 0 }, e: { r: noteRowIdx, c: 9 } },
+    { s: { r: sigTitleRowIdx, c: 0 }, e: { r: sigTitleRowIdx, c: 1 } },
+    { s: { r: sigTitleRowIdx, c: 2 }, e: { r: sigTitleRowIdx, c: 4 } },
+    { s: { r: sigTitleRowIdx, c: 5 }, e: { r: sigTitleRowIdx, c: 7 } },
+    { s: { r: sigTitleRowIdx, c: 8 }, e: { r: sigTitleRowIdx, c: 9 } },
+    { s: { r: sigSubRowIdx, c: 0 }, e: { r: sigSubRowIdx, c: 1 } },
+    { s: { r: sigSubRowIdx, c: 2 }, e: { r: sigSubRowIdx, c: 4 } },
+    { s: { r: sigSubRowIdx, c: 5 }, e: { r: sigSubRowIdx, c: 7 } },
+    { s: { r: sigSubRowIdx, c: 8 }, e: { r: sigSubRowIdx, c: 9 } }
+  ];
+
+  // Đánh dấu metadata ẩn giúp đối chiếu nhanh dòng dữ liệu nếu cần
+  void firstItemRowIdx;
+  void totalRowIdx;
+
+  // Sheet 2: Bảng dữ liệu phẳng đầy đủ trường Logistics để lọc / Pivot / Import lại dễ dàng
+  const detailRows = items.map((it, idx) => {
+    const qty = roundQty(it.quantity);
+    const uPrice = Number(it.unitPrice) || 0;
+    const tPrice =
+      it.totalPrice !== undefined && Number(it.totalPrice) > 0
+        ? Math.round(Number(it.totalPrice) * 100) / 100
+        : Math.round(qty * uPrice * 100) / 100;
+    return {
+      STT: idx + 1,
+      'Số phiếu (*)': receipt.receiptCode,
+      'Ngày nhập kho': formatExcelDate(receipt.receiptDate) || receipt.receiptDate,
+      'Bộ phận': rawDept,
+      'Kho tiếp nhận (*)': receipt.warehouseName,
+      'Đơn vị giao hàng (*)': delivererDisplay,
+      'Hợp đồng': receipt.contractNo || '',
+      'Đề xuất số': receipt.requestNo || '',
+      'Nội dung': cleanNotes,
+      'Mã vật tư (*)': it.materialCode || '',
+      'Tên vật tư (*)': it.materialName || '',
+      'Mã lô': getExportItemBatch(it),
+      'Số lượng (cây/tấm) (*)': qty,
+      'ĐVT (*)': it.unit || '',
+      'Khối lượng (Kg) (*)': Math.round((Number(it.weightKg) || 0) * 100) / 100,
+      'Đơn giá (VNĐ)': uPrice,
+      'Thành tiền (VNĐ)': tPrice,
+      'Ghi chú': it.note ?? it.conditionNote ?? '',
+      'Số Packing List': it.packingListNo || receipt.packingListNo || '',
+      Shipment: it.shipment || receipt.shipment || '',
+      'Package No.': it.packageNo || '',
+      'Hạng mục': it.category || '',
+      'Bản vẽ kỹ thuật': it.drawingNo || '',
+      'Nhà sản xuất': it.manufacturer || receipt.manufacturer || '',
+      'Nhà cung cấp': it.supplier || receipt.supplier || '',
+      'Vị trí kho': it.storageLocation || ''
+    };
+  });
+
+  const wsDetail = XLSX.utils.json_to_sheet(detailRows, { dense: true } as any);
+  wsDetail['!cols'] = [
+    { wch: 6 }, { wch: 16 }, { wch: 14 }, { wch: 20 }, { wch: 22 },
+    { wch: 24 }, { wch: 16 }, { wch: 16 }, { wch: 30 }, { wch: 28 },
+    { wch: 44 }, { wch: 16 }, { wch: 18 }, { wch: 10 }, { wch: 18 },
+    { wch: 15 }, { wch: 16 }, { wch: 24 }, { wch: 18 }, { wch: 18 },
+    { wch: 16 }, { wch: 20 }, { wch: 20 }, { wch: 20 }, { wch: 22 }, { wch: 18 }
+  ];
+
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, wsVoucher, 'Phieu_Nhap_Kho');
+  XLSX.utils.book_append_sheet(wb, wsDetail, 'Du_Lieu_Chi_Tiet');
+  return wb;
+}
+
+export function exportInboundReceiptToExcel(receipt: InboundReceipt): void {
+  const wb = buildInboundReceiptWorkbook(receipt);
+  const safeCode = sanitizeExcelFileName(receipt.receiptCode || 'PNK');
+  XLSX.writeFile(wb, `${safeCode}_Phieu_Nhap_Kho.xlsx`, { compression: true });
+}
+
+// Xây dựng Workbook Excel cho Phiếu Xuất Kho chuẩn PTSC Quảng Ngãi (Mẫu QN-OPR-PR11-FM06)
+export function buildOutboundReceiptWorkbook(receipt: OutboundReceipt): XLSX.WorkBook {
+  const items = Array.isArray(receipt.items) ? receipt.items : [];
+  const sums = sumOutboundItems(items);
+
+  const rawDept =
+    receipt.departmentName && receipt.departmentName !== 'DỰ ÁN LTIA-4.9'
+      ? receipt.departmentName.trim().toUpperCase()
+      : receipt.projectName &&
+          receipt.projectName !== 'DỰ ÁN LTIA-4.9' &&
+          !receipt.projectName.includes('(Import Excel)')
+        ? receipt.projectName.trim().toUpperCase()
+        : '';
+  const deptDisplay = !rawDept
+    ? 'BỘ PHẬN:'
+    : rawDept.startsWith('BỘ PHẬN:')
+      ? rawDept
+      : `BỘ PHẬN: ${rawDept}`;
+
+  const cleanNotes =
+    receipt.notes && !receipt.notes.startsWith('Import thành công ') ? receipt.notes : '';
+
+  const outboundTypeText =
+    receipt.outboundType === 'transfer'
+      ? '☐ Phiếu xuất kho          ☑ Phiếu xuất điều chuyển'
+      : '☑ Phiếu xuất kho          ☐ Phiếu xuất điều chuyển';
+
+  // Sheet 1: Biểu mẫu QN-OPR-PR11-FM06 (8 cột A..H)
+  const aoa: any[][] = [
+    ['', '', '', '', '', '', 'QN-OPR-PR11-FM06', ''],
+    ['', '', '', '', '', '', 'NHL: 02/08/2024', ''],
+    ['CÔNG TY CỔ PHẦN DỊCH VỤ DẦU KHÍ QUẢNG NGÃI PTSC', '', '', '', '', '', '', ''],
+    [deptDisplay, '', '', '', '', '', '', ''],
+    ['', '', '', '', '', '', 'SỐ PHIẾU:', receipt.issueCode || ''],
+    [],
+    ['PHIẾU XUẤT KHO', '', '', '', '', '', '', ''],
+    [formatVietnameseVoucherDateForExcel(receipt.issueDate), '', '', '', '', '', '', ''],
+    [],
+    ['Người nhận:', '', receipt.recipientName || '', '', '', 'Kho xuất:', receipt.warehouseName || '', ''],
+    ['Đơn vị/Tổ/Nhóm:', '', receipt.recipientDepartment || '', '', '', '', '', ''],
+    ['Số PYC/PĐX:', '', receipt.requestNo || '', '', '', '', '', ''],
+    ['Lý do xuất kho:', '', cleanNotes, '', '', '', '', ''],
+    ['', '', outboundTypeText, '', '', '', '', ''],
+    [],
+    [
+      'STT',
+      'Mã vật tư',
+      'Tên vật tư',
+      'Mã lô',
+      'Số lượng (cây/tấm)',
+      'ĐVT',
+      'Khối lượng (Kg)',
+      'Ghi chú'
+    ]
+  ];
+
+  for (let i = 0; i < items.length; i++) {
+    const it = items[i];
+    const qty = roundQty(it.quantity);
+    const weight = Math.round((Number(it.weightKg) || 0) * 100) / 100;
+    const noteText =
+      it.note !== undefined
+        ? it.note
+        : it.purpose &&
+            it.purpose !== 'Xuất lắp đặt từ file Excel' &&
+            it.purpose !== 'Xuất cấp lắp đặt theo tiến độ công trình'
+          ? it.purpose
+          : '';
+
+    aoa.push([
+      i + 1,
+      it.materialCode || '',
+      it.materialName || '',
+      getExportItemBatch(it),
+      qty > 0 ? qty : '',
+      it.unit || '',
+      weight > 0 ? weight : 0,
+      noteText || ''
+    ]);
+  }
+
+  aoa.push([
+    '',
+    'TỔNG CỘNG',
+    '',
+    '',
+    sums.totalQuantity > 0 ? sums.totalQuantity : '-',
+    '',
+    sums.totalWeightKg,
+    ''
+  ]);
+
+  aoa.push([]);
+  const sigTitleRowIdx = aoa.length;
+  aoa.push(['Người nhận', '', 'Thủ kho', '', 'P.TCKT', '', 'Phê duyệt', '']);
+  const sigSubRowIdx = aoa.length;
+  aoa.push([
+    '(Ký, ghi rõ họ tên)',
+    '',
+    '(Ký, ghi rõ họ tên)',
+    '',
+    '(Ký, ghi rõ họ tên)',
+    '',
+    '(Ký, ghi rõ họ tên)',
+    ''
+  ]);
+
+  const wsVoucher = XLSX.utils.aoa_to_sheet(aoa, { dense: true } as any);
+  wsVoucher['!cols'] = [
+    { wch: 7 },
+    { wch: 28 },
+    { wch: 46 },
+    { wch: 18 },
+    { wch: 18 },
+    { wch: 10 },
+    { wch: 18 },
+    { wch: 24 }
+  ];
+  wsVoucher['!merges'] = [
+    { s: { r: 0, c: 6 }, e: { r: 0, c: 7 } },
+    { s: { r: 1, c: 6 }, e: { r: 1, c: 7 } },
+    { s: { r: 2, c: 0 }, e: { r: 2, c: 4 } },
+    { s: { r: 3, c: 0 }, e: { r: 3, c: 4 } },
+    { s: { r: 6, c: 0 }, e: { r: 6, c: 7 } },
+    { s: { r: 7, c: 0 }, e: { r: 7, c: 7 } },
+    { s: { r: 9, c: 0 }, e: { r: 9, c: 1 } },
+    { s: { r: 9, c: 2 }, e: { r: 9, c: 4 } },
+    { s: { r: 9, c: 6 }, e: { r: 9, c: 7 } },
+    { s: { r: 10, c: 0 }, e: { r: 10, c: 1 } },
+    { s: { r: 10, c: 2 }, e: { r: 10, c: 7 } },
+    { s: { r: 11, c: 0 }, e: { r: 11, c: 1 } },
+    { s: { r: 11, c: 2 }, e: { r: 11, c: 7 } },
+    { s: { r: 12, c: 0 }, e: { r: 12, c: 1 } },
+    { s: { r: 12, c: 2 }, e: { r: 12, c: 7 } },
+    { s: { r: 13, c: 2 }, e: { r: 13, c: 6 } },
+    { s: { r: sigTitleRowIdx, c: 0 }, e: { r: sigTitleRowIdx, c: 1 } },
+    { s: { r: sigTitleRowIdx, c: 2 }, e: { r: sigTitleRowIdx, c: 3 } },
+    { s: { r: sigTitleRowIdx, c: 4 }, e: { r: sigTitleRowIdx, c: 5 } },
+    { s: { r: sigTitleRowIdx, c: 6 }, e: { r: sigTitleRowIdx, c: 7 } },
+    { s: { r: sigSubRowIdx, c: 0 }, e: { r: sigSubRowIdx, c: 1 } },
+    { s: { r: sigSubRowIdx, c: 2 }, e: { r: sigSubRowIdx, c: 3 } },
+    { s: { r: sigSubRowIdx, c: 4 }, e: { r: sigSubRowIdx, c: 5 } },
+    { s: { r: sigSubRowIdx, c: 6 }, e: { r: sigSubRowIdx, c: 7 } }
+  ];
+
+  // Sheet 2: Bảng dữ liệu phẳng đầy đủ trường Logistics
+  const detailRows = items.map((it, idx) => ({
+    STT: idx + 1,
+    'Số phiếu (*)': receipt.issueCode,
+    'Ngày xuất kho': formatExcelDate(receipt.issueDate) || receipt.issueDate,
+    'Bộ phận': rawDept,
+    'Kho xuất (*)': receipt.warehouseName,
+    'Người nhận (*)': receipt.recipientName || '',
+    'Đơn vị/Tổ/Nhóm (*)': receipt.recipientDepartment || '',
+    'Số PYC/PĐX': receipt.requestNo || '',
+    'Lý do xuất kho': cleanNotes,
+    'Mã vật tư (*)': it.materialCode || '',
+    'Tên vật tư (*)': it.materialName || '',
+    'Mã lô': getExportItemBatch(it),
+    'Số lượng (cây/tấm) (*)': roundQty(it.quantity),
+    'ĐVT (*)': it.unit || '',
+    'Khối lượng (Kg) (*)': Math.round((Number(it.weightKg) || 0) * 100) / 100,
+    'Ghi chú': it.note ?? it.purpose ?? '',
+    'Số Packing List': it.packingListNo || '',
+    Shipment: it.shipment || '',
+    'Package No.': it.packageNo || '',
+    'Hạng mục': it.category || '',
+    'Bản vẽ kỹ thuật': it.drawingNo || '',
+    'Nhà sản xuất': it.manufacturer || '',
+    'Nhà cung cấp': it.supplier || ''
+  }));
+
+  const wsDetail = XLSX.utils.json_to_sheet(detailRows, { dense: true } as any);
+  wsDetail['!cols'] = [
+    { wch: 6 }, { wch: 16 }, { wch: 14 }, { wch: 20 }, { wch: 22 },
+    { wch: 22 }, { wch: 20 }, { wch: 16 }, { wch: 32 }, { wch: 28 },
+    { wch: 44 }, { wch: 16 }, { wch: 18 }, { wch: 10 }, { wch: 18 },
+    { wch: 24 }, { wch: 18 }, { wch: 18 }, { wch: 16 }, { wch: 20 },
+    { wch: 20 }, { wch: 20 }, { wch: 22 }
+  ];
+
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, wsVoucher, 'Phieu_Xuat_Kho');
+  XLSX.utils.book_append_sheet(wb, wsDetail, 'Du_Lieu_Chi_Tiet');
+  return wb;
+}
+
+export function exportOutboundReceiptToExcel(receipt: OutboundReceipt): void {
+  const wb = buildOutboundReceiptWorkbook(receipt);
+  const safeCode = sanitizeExcelFileName(receipt.issueCode || 'PXK');
+  XLSX.writeFile(wb, `${safeCode}_Phieu_Xuat_Kho.xlsx`, { compression: true });
 }

@@ -14,10 +14,12 @@ import { ConfirmDeleteModal } from '../common/ConfirmDeleteModal';
 import { PaginationBar } from '../common/PaginationBar';
 import {
   downloadOutboundTemplate,
+  exportOutboundReceiptToExcel,
   formatExcelDate,
   formatVoucherDateVi
 } from '../../services/excelService';
 import {
+  normKey,
   roundQty,
   sumOutboundItems,
   buildDeterministicItemId
@@ -31,11 +33,14 @@ import {
   Calendar,
   Eye,
   Printer,
+  Pencil,
   Trash2,
   CheckCircle2,
   AlertCircle,
   X
 } from 'lucide-react';
+
+const FORM_ITEM_PAGE_SIZE = 100;
 
 function buildPackingListSummary(items: OutboundItemDetail[]): string {
   const seen = new Set<string>();
@@ -92,8 +97,13 @@ export const OutboundManager: React.FC = () => {
   const [recipientDepartment, setRecipientDepartment] = useState('');
   const [formRequestNo, setFormRequestNo] = useState('');
   const [formNotes, setFormNotes] = useState('');
+  // Chế độ chỉnh sửa phiếu xuất kho (chỉ dành cho Admin; null = lập phiếu mới)
+  const [editingReceipt, setEditingReceipt] = useState<OutboundReceipt | null>(null);
+
   const [formOutboundType, setFormOutboundType] = useState<'issue' | 'transfer'>('issue');
   const [formItems, setFormItems] = useState<OutboundItemDetail[]>([]);
+  const [formItemSearch, setFormItemSearch] = useState('');
+  const [formItemPage, setFormItemPage] = useState(1);
   const [formError, setFormError] = useState('');
 
   // Hộp thoại chọn từ tồn kho (lazy-loaded & phân trang)
@@ -145,7 +155,30 @@ export const OutboundManager: React.FC = () => {
   };
 
   const openStockPicker = () => {
-    setStockRecords(StorageService.calculateInventoryRecords());
+    const baseStock = StorageService.calculateInventoryRecords().map((r) => ({ ...r }));
+    // Khi Admin đang sửa một phiếu xuất cũ, cộng hoàn tạm thời số lượng/khối lượng của chính phiếu đó
+    // để mặt hàng đã xuất bởi phiếu này vẫn hiển thị đúng tồn kho khả dụng trước khi xuất
+    if (editingReceipt) {
+      const stockIndexMap = new Map<string, number>();
+      for (let i = 0; i < baseStock.length; i++) {
+        const s = baseStock[i];
+        const key = `${s.warehouseId}__${s.packingListNo}__${s.shipment}__${s.materialCode}__${s.packageNo}__${s.drawingNo}__${s.category}`;
+        stockIndexMap.set(key, i);
+      }
+      for (let j = 0; j < editingReceipt.items.length; j++) {
+        const it = editingReceipt.items[j];
+        const key = `${editingReceipt.warehouseId}__${it.packingListNo || 'N/A'}__${it.shipment || 'N/A'}__${it.materialCode || 'N/A'}__${it.packageNo || 'N/A'}__${it.drawingNo || 'N/A'}__${it.category || 'N/A'}`;
+        const idx = stockIndexMap.get(key);
+        if (idx !== undefined) {
+          baseStock[idx].currentQuantity = roundQty(
+            baseStock[idx].currentQuantity + roundQty(it.quantity)
+          );
+          baseStock[idx].currentWeightKg =
+            Math.round((baseStock[idx].currentWeightKg + (Number(it.weightKg) || 0)) * 100) / 100;
+        }
+      }
+    }
+    setStockRecords(baseStock);
     setStockSearch('');
     setStockPage(1);
     setIsPickStockOpen(true);
@@ -153,6 +186,7 @@ export const OutboundManager: React.FC = () => {
 
   const openCreateModal = () => {
     const currentReceipts = StorageService.getOutboundReceipts();
+    setEditingReceipt(null);
     setMaterials(StorageService.getMaterials());
     setIssueCode(generateNextPxkCode(currentReceipts));
     setIssueDate(new Date().toISOString().slice(0, 10));
@@ -167,33 +201,91 @@ export const OutboundManager: React.FC = () => {
     setFormNotes('');
     setFormOutboundType('issue');
     setFormError('');
+    setFormItemSearch('');
+    setFormItemPage(1);
     setFormItems([]);
     setIsCreateModalOpen(true);
   };
 
+  const openEditModal = (rcp: OutboundReceipt) => {
+    if (!isAdmin) {
+      showToast('Chỉ tài khoản Quản trị viên (Admin) mới có quyền sửa phiếu xuất kho.', 'error');
+      return;
+    }
+
+    const whList = StorageService.getWarehouses();
+    setMaterials(StorageService.getMaterials());
+    setEditingReceipt(rcp);
+    setIssueCode(rcp.issueCode || '');
+    setIssueDate(formatExcelDate(rcp.issueDate) || new Date().toISOString().slice(0, 10));
+    setSelectedWarehouseId(rcp.warehouseId || whList[0]?.id || '');
+
+    const savedDept =
+      rcp.departmentName && rcp.departmentName !== 'DỰ ÁN LTIA-4.9'
+        ? rcp.departmentName
+        : rcp.projectName &&
+            rcp.projectName !== 'DỰ ÁN LTIA-4.9' &&
+            !rcp.projectName.includes('(Import Excel)')
+          ? rcp.projectName
+          : '';
+    setFormDepartmentName(savedDept);
+    setRecipientName(rcp.recipientName || '');
+    setRecipientDepartment(rcp.recipientDepartment || '');
+    setFormRequestNo(rcp.requestNo || '');
+    setFormNotes(rcp.notes && !rcp.notes.startsWith('Import thành công ') ? rcp.notes : '');
+    setFormOutboundType(rcp.outboundType || 'issue');
+    setFormError('');
+    setFormItemSearch('');
+    setFormItemPage(1);
+
+    setFormItems(
+      (rcp.items || []).map((it, idx) => ({
+        ...it,
+        id: it.id || `out-edit-${Date.now()}-${idx}`,
+        note: it.note ?? it.purpose ?? ''
+      }))
+    );
+    setIsCreateModalOpen(true);
+  };
+
+  const handleExportReceiptExcel = (rcp: OutboundReceipt) => {
+    try {
+      exportOutboundReceiptToExcel(rcp);
+      showToast(`Đã xuất file Excel cho phiếu xuất "${rcp.issueCode}"!`);
+    } catch (err) {
+      console.error('Export Outbound Excel error:', err);
+      showToast('Không thể xuất file Excel. Vui lòng thử lại.', 'error');
+    }
+  };
+
   const addManualItemRow = () => {
-    setFormItems((prev) => [
-      ...prev,
-      {
-        id: `out-item-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
-        materialCode: '',
-        materialName: '',
-        unit: 'Ống',
-        batchCode: '',
-        packingListNo: 'N/A',
-        shipment: 'N/A',
-        packageNo: '',
-        packageName: '',
-        category: 'Vật tư dự án',
-        drawingNo: 'N/A',
-        manufacturer: 'N/A',
-        supplier: 'N/A',
-        quantity: 1,
-        weightKg: 0,
-        purpose: '',
-        note: ''
-      }
-    ]);
+    setFormItemSearch('');
+    setFormItems((prev) => {
+      const next: OutboundItemDetail[] = [
+        ...prev,
+        {
+          id: `out-item-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+          materialCode: '',
+          materialName: '',
+          unit: 'Ống',
+          batchCode: '',
+          packingListNo: 'N/A',
+          shipment: 'N/A',
+          packageNo: '',
+          packageName: '',
+          category: 'Vật tư dự án',
+          drawingNo: 'N/A',
+          manufacturer: 'N/A',
+          supplier: 'N/A',
+          quantity: 1,
+          weightKg: 0,
+          purpose: '',
+          note: ''
+        }
+      ];
+      setFormItemPage(Math.max(1, Math.ceil(next.length / FORM_ITEM_PAGE_SIZE)));
+      return next;
+    });
   };
 
   const handleSelectStockItem = (st: InventoryStockRecord) => {
@@ -224,28 +316,33 @@ export const OutboundManager: React.FC = () => {
           ? st.shipment
           : '';
 
-    setFormItems((prev) => [
-      ...prev,
-      {
-        id: `out-item-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
-        materialCode: st.materialCode,
-        materialName: st.materialName,
-        unit: st.unit,
-        batchCode: defaultBatch,
-        packingListNo: st.packingListNo,
-        shipment: st.shipment,
-        packageNo: st.packageNo,
-        packageName: st.packageName,
-        category: st.category,
-        drawingNo: st.drawingNo,
-        manufacturer: st.manufacturer,
-        supplier: st.supplier,
-        quantity: defaultQty,
-        weightKg: Math.round(unitW * defaultQty * 100) / 100,
-        purpose: '',
-        note: ''
-      }
-    ]);
+    setFormItemSearch('');
+    setFormItems((prev) => {
+      const next: OutboundItemDetail[] = [
+        ...prev,
+        {
+          id: `out-item-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+          materialCode: st.materialCode,
+          materialName: st.materialName,
+          unit: st.unit,
+          batchCode: defaultBatch,
+          packingListNo: st.packingListNo,
+          shipment: st.shipment,
+          packageNo: st.packageNo,
+          packageName: st.packageName,
+          category: st.category,
+          drawingNo: st.drawingNo,
+          manufacturer: st.manufacturer,
+          supplier: st.supplier,
+          quantity: defaultQty,
+          weightKg: Math.round(unitW * defaultQty * 100) / 100,
+          purpose: '',
+          note: ''
+        }
+      ];
+      setFormItemPage(Math.max(1, Math.ceil(next.length / FORM_ITEM_PAGE_SIZE)));
+      return next;
+    });
 
     setFormError('');
     setIsPickStockOpen(false);
@@ -512,16 +609,34 @@ export const OutboundManager: React.FC = () => {
 
   const handleSaveCreate = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!issueCode.trim()) {
+    const trimmedCode = issueCode.trim();
+    if (!trimmedCode) {
       setFormError('Số phiếu xuất không được để trống.');
       return;
     }
-    if (!recipientName.trim()) {
+    if (!editingReceipt && !recipientName.trim()) {
       setFormError('Vui lòng nhập họ tên Người nhận.');
       return;
     }
     if (formItems.length === 0) {
       setFormError('Vui lòng chọn từ tồn kho hoặc thêm ít nhất một dòng vật tư xuất.');
+      return;
+    }
+
+    if (editingReceipt && !isAdmin) {
+      setFormError('Chỉ tài khoản Quản trị viên (Admin) mới có quyền sửa phiếu xuất kho.');
+      return;
+    }
+
+    const existingDuplicate = receipts.find(
+      (r) =>
+        (!editingReceipt || r.id !== editingReceipt.id) &&
+        normKey(r.issueCode) === normKey(trimmedCode)
+    );
+    if (existingDuplicate) {
+      setFormError(
+        `Số phiếu "${trimmedCode}" đã tồn tại trong hệ thống. Vui lòng nhập số phiếu khác.`
+      );
       return;
     }
 
@@ -556,6 +671,7 @@ export const OutboundManager: React.FC = () => {
         unit: it.unit.trim() || 'Ống',
         batchCode: batch,
         packageNo: it.packageNo || batch || 'N/A',
+        warehouseName: wh?.name || it.warehouseName || 'Kho Dự Án',
         quantity: Math.max(0, roundQty(it.quantity)),
         weightKg: Math.max(0, Math.round((Number(it.weightKg) || 0) * 100) / 100),
         purpose: noteText,
@@ -565,10 +681,49 @@ export const OutboundManager: React.FC = () => {
 
     const sums = sumOutboundItems(normalizedItems);
     const deptHeader = formDepartmentName.trim();
+    const editorName = currentUser?.fullName || 'Võ Dương Phú';
+
+    if (editingReceipt) {
+      const updatedReceipt: OutboundReceipt = {
+        ...editingReceipt,
+        issueCode: trimmedCode,
+        issueDate,
+        warehouseId: wh?.id || editingReceipt.warehouseId || 'wh-01',
+        warehouseName: wh?.name || editingReceipt.warehouseName || 'Kho Dự Án',
+        departmentName: deptHeader,
+        requestNo: formRequestNo.trim(),
+        outboundType: formOutboundType,
+        projectName: deptHeader || editingReceipt.projectName || '',
+        recipientDepartment:
+          recipientDepartment.trim() || editingReceipt.recipientDepartment || 'Tổ thi công',
+        recipientName: recipientName.trim(),
+        issuerName: editingReceipt.issuerName || editorName,
+        notes: formNotes.trim(),
+        items: normalizedItems,
+        packingListSummary: buildPackingListSummary(normalizedItems),
+        totalQuantity: sums.totalQuantity,
+        totalWeightKg: sums.totalWeightKg,
+        lastEditedBy: editorName,
+        lastEditedAt: new Date().toISOString()
+      };
+
+      StorageService.updateOutboundReceipt(editingReceipt.id, updatedReceipt);
+      loadData();
+      setIsCreateModalOpen(false);
+      setEditingReceipt(null);
+      if (viewingReceipt?.id === editingReceipt.id) {
+        const refreshed = StorageService.getOutboundReceipts().find(
+          (r) => normKey(r.issueCode) === normKey(trimmedCode)
+        );
+        if (refreshed) setViewingReceipt(refreshed);
+      }
+      showToast(`Đã cập nhật phiếu xuất kho "${trimmedCode}" thành công!`);
+      return;
+    }
 
     const newReceipt: OutboundReceipt = {
       id: `out-rcp-${Date.now()}`,
-      issueCode: issueCode.trim(),
+      issueCode: trimmedCode,
       issueDate,
       warehouseId: wh?.id || 'wh-01',
       warehouseName: wh?.name || 'Kho Dự Án',
@@ -578,20 +733,20 @@ export const OutboundManager: React.FC = () => {
       projectName: deptHeader,
       recipientDepartment: recipientDepartment.trim() || 'Tổ thi công',
       recipientName: recipientName.trim(),
-      issuerName: currentUser?.fullName || 'Võ Dương Phú',
+      issuerName: editorName,
       notes: formNotes.trim(),
       items: normalizedItems,
       packingListSummary: buildPackingListSummary(normalizedItems),
       totalQuantity: sums.totalQuantity,
       totalWeightKg: sums.totalWeightKg,
       createdAt: new Date().toISOString(),
-      createdBy: currentUser?.fullName || 'Võ Dương Phú'
+      createdBy: editorName
     };
 
     StorageService.addOutboundReceipt(newReceipt);
     loadData();
     setIsCreateModalOpen(false);
-    showToast(`Đã lập phiếu xuất kho "${issueCode}" thành công!`);
+    showToast(`Đã lập phiếu xuất kho "${trimmedCode}" thành công!`);
   };
 
   const handleDeleteReceipt = (rcp: OutboundReceipt) => {
@@ -739,6 +894,36 @@ export const OutboundManager: React.FC = () => {
         : { totalQuantity: 0, totalWeightKg: 0 },
     [viewingReceipt]
   );
+
+  // Lọc & phân trang các dòng vật tư trong form Lập / Sửa Phiếu Xuất
+  const indexedFormItems = useMemo(() => {
+    const q = formItemSearch.trim().toLowerCase();
+    const out: { item: OutboundItemDetail; realIdx: number }[] = [];
+    for (let i = 0; i < formItems.length; i++) {
+      const it = formItems[i];
+      if (q) {
+        const hit =
+          (it.materialCode || '').toLowerCase().includes(q) ||
+          (it.materialName || '').toLowerCase().includes(q) ||
+          (it.batchCode || '').toLowerCase().includes(q) ||
+          (it.packageNo || '').toLowerCase().includes(q) ||
+          (it.note || '').toLowerCase().includes(q);
+        if (!hit) continue;
+      }
+      out.push({ item: it, realIdx: i });
+    }
+    return out;
+  }, [formItems, formItemSearch]);
+
+  const totalFormItemPages = Math.max(1, Math.ceil(indexedFormItems.length / FORM_ITEM_PAGE_SIZE));
+  const safeFormItemPage = Math.min(formItemPage, totalFormItemPages);
+
+  const visibleFormItems = useMemo(() => {
+    const start = (safeFormItemPage - 1) * FORM_ITEM_PAGE_SIZE;
+    return indexedFormItems.slice(start, start + FORM_ITEM_PAGE_SIZE);
+  }, [indexedFormItems, safeFormItemPage]);
+
+  const formTotals = useMemo(() => sumOutboundItems(formItems), [formItems]);
 
   return (
     <div className="space-y-6">
@@ -967,6 +1152,22 @@ export const OutboundManager: React.FC = () => {
                           >
                             <Printer className="w-4 h-4" />
                           </button>
+                          <button
+                            onClick={() => handleExportReceiptExcel(r)}
+                            className="p-1.5 text-emerald-700 hover:bg-emerald-50 rounded-lg border border-emerald-200 transition"
+                            title="Xuất phiếu xuất kho ra Excel (.xlsx)"
+                          >
+                            <FileSpreadsheet className="w-4 h-4" />
+                          </button>
+                          {isAdmin && (
+                            <button
+                              onClick={() => openEditModal(r)}
+                              className="p-1.5 text-amber-700 hover:bg-amber-50 rounded-lg border border-amber-200 transition"
+                              title="Sửa phiếu xuất kho (Admin)"
+                            >
+                              <Pencil className="w-4 h-4" />
+                            </button>
+                          )}
                           {isAdmin && (
                             <button
                               onClick={() => handleDeleteReceipt(r)}
@@ -997,26 +1198,41 @@ export const OutboundManager: React.FC = () => {
         />
       </div>
 
-      {/* Modal Lập Phiếu Xuất Kho Mới (Chuẩn QN-OPR-PR11-FM06) */}
+      {/* Modal Lập / Chỉnh Sửa Phiếu Xuất Kho (Chuẩn QN-OPR-PR11-FM06) */}
       {isCreateModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-2 sm:p-4">
           <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-6xl max-h-[92dvh] flex flex-col overflow-hidden animate-in zoom-in-95">
             <div className="flex items-center justify-between p-4 sm:p-5 border-b border-slate-100 bg-slate-50 gap-2">
               <div className="flex items-center gap-2.5 min-w-0">
-                <div className="p-2 bg-blue-100 text-blue-800 rounded-xl shrink-0">
-                  <ArrowUpRight className="w-5 h-5" />
+                <div
+                  className={`p-2 rounded-xl shrink-0 ${
+                    editingReceipt ? 'bg-amber-100 text-amber-800' : 'bg-blue-100 text-blue-800'
+                  }`}
+                >
+                  {editingReceipt ? (
+                    <Pencil className="w-5 h-5" />
+                  ) : (
+                    <ArrowUpRight className="w-5 h-5" />
+                  )}
                 </div>
                 <div className="min-w-0">
                   <h3 className="font-bold text-slate-900 text-sm sm:text-base truncate">
-                    Lập Phiếu Xuất Kho (Mẫu QN-OPR-PR11-FM06)
+                    {editingReceipt
+                      ? `Chỉnh Sửa Phiếu Xuất Kho: ${editingReceipt.issueCode} (Mẫu QN-OPR-PR11-FM06)`
+                      : 'Lập Phiếu Xuất Kho (Mẫu QN-OPR-PR11-FM06)'}
                   </h3>
                   <p className="text-xs text-slate-500 line-clamp-1">
-                    CÔNG TY CỔ PHẦN DỊCH VỤ DẦU KHÍ QUẢNG NGÃI PTSC — Chọn từ tồn kho hoặc thêm dòng vật tư xuất
+                    {editingReceipt
+                      ? 'Quyền Quản trị viên (Admin) — Mọi thay đổi số lượng/khối lượng xuất sẽ tự động cập nhật tồn kho & đồng bộ thiết bị'
+                      : 'CÔNG TY CỔ PHẦN DỊCH VỤ DẦU KHÍ QUẢNG NGÃI PTSC — Chọn từ tồn kho hoặc thêm dòng vật tư xuất'}
                   </p>
                 </div>
               </div>
               <button
-                onClick={() => setIsCreateModalOpen(false)}
+                onClick={() => {
+                  setIsCreateModalOpen(false);
+                  setEditingReceipt(null);
+                }}
                 className="p-2 hover:bg-slate-200 rounded-lg text-slate-500 shrink-0"
               >
                 <X className="w-4 h-4" />
@@ -1095,7 +1311,7 @@ export const OutboundManager: React.FC = () => {
                 <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3">
                   <div className="sm:col-span-2">
                     <label className="block font-semibold text-slate-700 uppercase mb-1">
-                      Người nhận (*)
+                      Người nhận {!editingReceipt && '(*)'}
                     </label>
                     <input
                       type="text"
@@ -1103,13 +1319,13 @@ export const OutboundManager: React.FC = () => {
                       onChange={(e) => setRecipientName(e.target.value)}
                       placeholder="Ví dụ: Nguyễn Văn Long"
                       className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded-lg font-semibold outline-none focus:border-blue-500"
-                      required
+                      required={!editingReceipt}
                     />
                   </div>
 
                   <div>
                     <label className="block font-semibold text-slate-700 uppercase mb-1">
-                      Đơn vị/Tổ/Nhóm (*)
+                      Đơn vị/Tổ/Nhóm {!editingReceipt && '(*)'}
                     </label>
                     <input
                       type="text"
@@ -1117,7 +1333,7 @@ export const OutboundManager: React.FC = () => {
                       onChange={(e) => setRecipientDepartment(e.target.value)}
                       placeholder="Ví dụ: Tổ thi công"
                       className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded-lg outline-none focus:border-blue-500"
-                      required
+                      required={!editingReceipt}
                     />
                   </div>
 
@@ -1178,9 +1394,24 @@ export const OutboundManager: React.FC = () => {
               <div className="space-y-3">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <h4 className="font-bold text-sm text-slate-800">
-                    Chi Tiết Vật Tư Xuất Kho ({formItems.length} mục hàng)
+                    Chi Tiết Vật Tư Xuất Kho ({formItems.length.toLocaleString('vi-VN')} mục hàng)
                   </h4>
                   <div className="flex flex-wrap items-center gap-2">
+                    {formItems.length > 15 && (
+                      <div className="relative">
+                        <input
+                          type="text"
+                          value={formItemSearch}
+                          onChange={(e) => {
+                            setFormItemSearch(e.target.value);
+                            setFormItemPage(1);
+                          }}
+                          placeholder="Lọc dòng vật tư..."
+                          className="pl-7 pr-3 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs outline-none focus:bg-white focus:border-blue-500"
+                        />
+                        <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2 top-2" />
+                      </div>
+                    )}
                     <button
                       type="button"
                       onClick={addManualItemRow}
@@ -1223,15 +1454,25 @@ export const OutboundManager: React.FC = () => {
                             <strong>"Thêm Dòng Thủ Công"</strong> để lập phiếu xuất kho.
                           </td>
                         </tr>
+                      ) : visibleFormItems.length === 0 ? (
+                        <tr>
+                          <td colSpan={9} className="p-6 text-center text-slate-400">
+                            Không có dòng vật tư nào khớp từ khóa lọc.
+                          </td>
+                        </tr>
                       ) : (
-                        formItems.map((item, idx) => (
-                          <tr key={item.id} className="hover:bg-slate-50/70">
-                            <td className="p-2 text-center text-slate-500 font-mono">{idx + 1}</td>
+                        visibleFormItems.map(({ item, realIdx }) => (
+                          <tr key={item.id || realIdx} className="hover:bg-slate-50/70">
+                            <td className="p-2 text-center text-slate-500 font-mono">
+                              {realIdx + 1}
+                            </td>
                             <td className="p-2">
                               <input
                                 type="text"
                                 value={item.materialCode}
-                                onChange={(e) => updateItemRow(idx, 'materialCode', e.target.value)}
+                                onChange={(e) =>
+                                  updateItemRow(realIdx, 'materialCode', e.target.value)
+                                }
                                 placeholder="PI-P.AA.S..."
                                 className="w-full px-2 py-1 bg-white border border-slate-200 rounded font-mono outline-none text-xs"
                               />
@@ -1240,17 +1481,20 @@ export const OutboundManager: React.FC = () => {
                               <input
                                 type="text"
                                 value={item.materialName}
-                                onChange={(e) => updateItemRow(idx, 'materialName', e.target.value)}
+                                onChange={(e) =>
+                                  updateItemRow(realIdx, 'materialName', e.target.value)
+                                }
                                 placeholder='20"x12m PIPE, API 5L B...'
                                 className="w-full px-2 py-1 bg-white border border-slate-200 rounded font-medium outline-none text-xs"
-                                required
                               />
                             </td>
                             <td className="p-2">
                               <input
                                 type="text"
                                 value={item.batchCode ?? item.packageNo ?? ''}
-                                onChange={(e) => updateItemRow(idx, 'batchCode', e.target.value)}
+                                onChange={(e) =>
+                                  updateItemRow(realIdx, 'batchCode', e.target.value)
+                                }
                                 placeholder="76C-061.35"
                                 className="w-full px-2 py-1 bg-white border border-slate-200 rounded font-mono outline-none text-xs"
                               />
@@ -1264,19 +1508,19 @@ export const OutboundManager: React.FC = () => {
                                 placeholder="0"
                                 onChange={(e) =>
                                   updateItemRow(
-                                    idx,
+                                    realIdx,
                                     'quantity',
                                     e.target.value === '' ? 0 : roundQty(e.target.value)
                                   )
                                 }
-                                className="w-full px-2 py-1 bg-white border border-slate-200 rounded text-right font-bold outline-none text-xs"
+                                className="w-full px-2 py-1 bg-white border border-slate-200 rounded text-right font-bold outline-none text-xs tabular-nums"
                               />
                             </td>
                             <td className="p-2 text-center">
                               <input
                                 type="text"
                                 value={item.unit}
-                                onChange={(e) => updateItemRow(idx, 'unit', e.target.value)}
+                                onChange={(e) => updateItemRow(realIdx, 'unit', e.target.value)}
                                 placeholder="Ống"
                                 className="w-full px-2 py-1 bg-white border border-slate-200 rounded text-center outline-none text-xs"
                               />
@@ -1290,19 +1534,19 @@ export const OutboundManager: React.FC = () => {
                                 placeholder="0"
                                 onChange={(e) =>
                                   updateItemRow(
-                                    idx,
+                                    realIdx,
                                     'weightKg',
                                     e.target.value === '' ? 0 : Number(e.target.value)
                                   )
                                 }
-                                className="w-full px-2 py-1 bg-white border border-slate-200 rounded text-right font-mono font-medium outline-none text-xs"
+                                className="w-full px-2 py-1 bg-white border border-slate-200 rounded text-right font-mono font-medium outline-none text-xs tabular-nums"
                               />
                             </td>
                             <td className="p-2">
                               <input
                                 type="text"
                                 value={item.note ?? item.purpose ?? ''}
-                                onChange={(e) => updateItemRow(idx, 'note', e.target.value)}
+                                onChange={(e) => updateItemRow(realIdx, 'note', e.target.value)}
                                 placeholder="Ghi chú..."
                                 className="w-full px-2 py-1 bg-white border border-slate-200 rounded outline-none text-xs"
                               />
@@ -1310,8 +1554,9 @@ export const OutboundManager: React.FC = () => {
                             <td className="p-2 text-center">
                               <button
                                 type="button"
-                                onClick={() => removeItemRow(idx)}
+                                onClick={() => removeItemRow(realIdx)}
                                 className="p-1 text-rose-500 hover:bg-rose-50 rounded"
+                                title="Xóa dòng vật tư này"
                               >
                                 <Trash2 className="w-3.5 h-3.5" />
                               </button>
@@ -1321,29 +1566,35 @@ export const OutboundManager: React.FC = () => {
                       )}
                     </tbody>
                   </table>
+
+                  {totalFormItemPages > 1 && (
+                    <PaginationBar
+                      currentPage={safeFormItemPage}
+                      totalItems={indexedFormItems.length}
+                      pageSize={FORM_ITEM_PAGE_SIZE}
+                      onPageChange={setFormItemPage}
+                      itemLabel="dòng vật tư"
+                    />
+                  )}
                 </div>
 
                 {formItems.length > 0 && (
                   <div className="bg-slate-50 p-3 rounded-xl border border-slate-200 flex flex-col sm:flex-row sm:justify-between sm:items-center gap-2 text-xs font-semibold">
-                    <span>TỔNG CỘNG: {formItems.length} mục hàng</span>
+                    <span>TỔNG CỘNG: {formItems.length.toLocaleString('vi-VN')} mục hàng</span>
                     <div className="flex flex-wrap gap-4">
                       <span>
                         Tổng số lượng xuất:{' '}
                         <strong className="text-rose-700 tabular-nums">
-                          {roundQty(
-                            formItems.reduce((s, it) => s + roundQty(it.quantity), 0)
-                          ).toLocaleString('vi-VN')}
+                          {formTotals.totalQuantity.toLocaleString('vi-VN')}
                         </strong>
                       </span>
                       <span>
                         Tổng khối lượng xuất:{' '}
                         <strong className="text-rose-700 tabular-nums">
-                          {formItems
-                            .reduce((s, it) => s + (Number(it.weightKg) || 0), 0)
-                            .toLocaleString('en-US', {
-                              minimumFractionDigits: 2,
-                              maximumFractionDigits: 2
-                            })}{' '}
+                          {formTotals.totalWeightKg.toLocaleString('en-US', {
+                            minimumFractionDigits: 2,
+                            maximumFractionDigits: 2
+                          })}{' '}
                           Kg
                         </strong>
                       </span>
@@ -1355,13 +1606,20 @@ export const OutboundManager: React.FC = () => {
               <div className="pt-3 flex gap-2">
                 <button
                   type="submit"
-                  className="flex-1 py-2.5 bg-blue-600 hover:bg-blue-700 text-white font-semibold text-sm rounded-xl transition shadow-md shadow-blue-500/20"
+                  className={`flex-1 py-2.5 text-white font-semibold text-sm rounded-xl transition shadow-md ${
+                    editingReceipt
+                      ? 'bg-amber-600 hover:bg-amber-700 shadow-amber-600/20'
+                      : 'bg-blue-600 hover:bg-blue-700 shadow-blue-500/20'
+                  }`}
                 >
-                  Lưu Phiếu Xuất Kho
+                  {editingReceipt ? 'Lưu Cập Nhật Phiếu Xuất Kho' : 'Lưu Phiếu Xuất Kho'}
                 </button>
                 <button
                   type="button"
-                  onClick={() => setIsCreateModalOpen(false)}
+                  onClick={() => {
+                    setIsCreateModalOpen(false);
+                    setEditingReceipt(null);
+                  }}
                   className="py-2.5 px-5 bg-slate-100 hover:bg-slate-200 text-slate-700 text-sm font-semibold rounded-xl transition"
                 >
                   Hủy
@@ -1517,7 +1775,15 @@ export const OutboundManager: React.FC = () => {
                   </p>
                 </div>
               </div>
-              <div className="flex items-center gap-2 w-full sm:w-auto justify-end">
+              <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto justify-end">
+                <button
+                  onClick={() => handleExportReceiptExcel(viewingReceipt)}
+                  className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-semibold transition min-h-[36px]"
+                  title="Xuất phiếu xuất kho ra Excel (.xlsx)"
+                >
+                  <FileSpreadsheet className="w-4 h-4" />
+                  <span>Xuất Excel</span>
+                </button>
                 <button
                   onClick={() => {
                     setSelectedReceiptForPrint(viewingReceipt);
@@ -1528,6 +1794,20 @@ export const OutboundManager: React.FC = () => {
                   <Printer className="w-4 h-4" />
                   <span>Xem & In Phiếu (FM06)</span>
                 </button>
+                {isAdmin && (
+                  <button
+                    onClick={() => {
+                      const target = viewingReceipt;
+                      setViewingReceipt(null);
+                      openEditModal(target);
+                    }}
+                    className="flex items-center gap-1.5 px-3 py-1.5 bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 rounded-lg text-xs font-semibold transition min-h-[36px]"
+                    title="Sửa phiếu xuất kho này (Admin)"
+                  >
+                    <Pencil className="w-4 h-4" />
+                    <span>Sửa Phiếu</span>
+                  </button>
+                )}
                 {isAdmin && (
                   <button
                     onClick={() => {

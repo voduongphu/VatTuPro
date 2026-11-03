@@ -112,6 +112,9 @@ export interface InboundReceipt {
   createdAt: string;
   createdBy: string;
   updatedAt?: number;
+  itemsReplacedAt?: number;
+  lastEditedBy?: string;
+  lastEditedAt?: string;
 }
 
 // Chi tiết 1 dòng vật tư trong phiếu Xuất kho (Mẫu QN-OPR-PR11-FM06)
@@ -168,6 +171,9 @@ export interface OutboundReceipt {
   createdAt: string;
   createdBy: string;
   updatedAt?: number;
+  itemsReplacedAt?: number;
+  lastEditedBy?: string;
+  lastEditedAt?: string;
 }
 
 // Tổng hợp tồn kho theo các chiều phân tích
