@@ -577,7 +577,13 @@ export function mergeUsersAdditive(
         undefined;
       const protectAdmin = isProtectedAdmin || isBootstrappedAdminUser(curr);
 
-      if (incTs > currTs) {
+      const currIsAutoGoogle = String(curr.id || '').startsWith('user-g-');
+      const incIsAutoGoogle = String(inc.id || '').startsWith('user-g-');
+      const preferDeclaredInc = currIsAutoGoogle && !incIsAutoGoogle;
+      const preferDeclaredCurr = !currIsAutoGoogle && incIsAutoGoogle;
+
+      if (preferDeclaredInc || (incTs > currTs && !preferDeclaredCurr)) {
+        const targetUpdatedAt = preferDeclaredInc ? Math.max(incTs, currTs + 1) : incTs;
         const mergedEmailVal = protectAdmin
           ? BOOTSTRAPPED_ADMIN_EMAIL
           : inc.email
@@ -589,18 +595,23 @@ export function mergeUsersAdditive(
         const nextUser: User = {
           ...curr,
           ...inc,
-          id: curr.id || inc.id,
-          username: curr.username || inc.username,
+          id: preferDeclaredInc ? inc.id || curr.id : curr.id || inc.id,
+          username: preferDeclaredInc ? inc.username || curr.username : curr.username || inc.username,
+          fullName: inc.fullName || curr.fullName,
           role: protectAdmin ? 'admin' : inc.role || curr.role,
           isActive: protectAdmin ? true : inc.isActive,
           email: mergedEmailVal,
           emailDigest: mergedEmailDigest,
           phone: inc.phone !== undefined && inc.phone !== '' ? inc.phone : curr.phone,
+          department: inc.department || curr.department,
           password: inc.password || curr.password,
+          lastLogin: inc.lastLogin || curr.lastLogin,
           sessionRevokedAt: maxRevokedAt,
-          updatedAt: incTs
+          updatedAt: targetUpdatedAt
         };
         if (
+          nextUser.id !== curr.id ||
+          nextUser.username !== curr.username ||
           nextUser.fullName !== curr.fullName ||
           nextUser.role !== curr.role ||
           nextUser.password !== curr.password ||
@@ -613,6 +624,8 @@ export function mergeUsersAdditive(
           nextUser.updatedAt !== curr.updatedAt
         ) {
           result[existIdx] = nextUser;
+          if (nextUser.username) indexByUsername.set(normUserKey(nextUser.username), existIdx);
+          if (nextUser.id) indexById.set(nextUser.id, existIdx);
           if (nextUser.emailDigest) indexByEmailDigest.set(nextUser.emailDigest, existIdx);
           changed = true;
         }

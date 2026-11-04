@@ -54,11 +54,11 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenMobileMenu }) => {
     return () => clearTimeout(timer);
   }, [remoteLogoutNotice]);
 
-  const handleManualSync = () => {
-    void SyncService.syncNow();
-  };
-
-  const handleConnectCloud = async () => {
+  const handleUnifiedSync = async () => {
+    if (cloudState.status === 'connected' || SyncService.hasAuthenticatedCloudUser()) {
+      await SyncService.syncNow();
+      return;
+    }
     setIsUserMenuOpen(false);
     setIsConnectingCloud(true);
     try {
@@ -143,46 +143,55 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenMobileMenu }) => {
             </div>
           </div>
 
-          {/* Right: Cloud Status + Sync + User Account */}
+          {/* Right: Unified Cloud Sync + User Account */}
           <div className="flex items-center gap-1.5 sm:gap-2 shrink-0 whitespace-nowrap">
-            {cloudState.status === 'connected' ? (
-              <button
-                type="button"
-                onClick={handleManualSync}
-                disabled={isSyncing}
-                title={`Đã đồng bộ Google Cloud (${cloudState.cloudEmail || displayEmail}) — Bấm để đồng bộ ngay`}
-                className="min-h-[40px] flex items-center justify-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-xl text-xs font-semibold text-emerald-200 hover:text-white bg-emerald-950/70 hover:bg-emerald-900/70 border border-emerald-700/60 transition disabled:opacity-70 shrink-0"
-              >
-                <Cloud className="w-4 h-4 text-emerald-400 shrink-0" />
-                <span className="hidden md:inline">Google Cloud</span>
-              </button>
-            ) : (
-              <button
-                type="button"
-                onClick={handleConnectCloud}
-                disabled={isConnectingCloud}
-                title="Bấm để kết nối lại Google Cloud đồng bộ thời gian thực"
-                className="min-h-[40px] flex items-center justify-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-xl text-xs font-bold text-amber-200 hover:text-white bg-amber-950/80 hover:bg-amber-900/80 border border-amber-600/70 transition disabled:opacity-70 shrink-0"
-              >
-                <CloudOff className="w-4 h-4 text-amber-400 shrink-0" />
-                <span className="hidden sm:inline">
-                  {isConnectingCloud ? 'Đang kết nối...' : 'Đồng bộ Cloud'}
-                </span>
-              </button>
-            )}
+            {(() => {
+              const busy = isSyncing || isConnectingCloud || cloudState.status === 'connecting';
+              const connected = cloudState.status === 'connected';
+              const hasGoogleAuth = connected || SyncService.hasAuthenticatedCloudUser();
 
-            <button
-              type="button"
-              onClick={handleManualSync}
-              disabled={isSyncing}
-              title="Đồng bộ cộng gộp dữ liệu mới nhất giữa các thiết bị"
-              className="min-h-[40px] min-w-[40px] flex items-center justify-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-xl text-xs font-semibold text-slate-200 hover:text-white bg-slate-800 hover:bg-slate-700 border border-slate-700 transition disabled:opacity-70 shrink-0"
-            >
-              <RefreshCw
-                className={`w-4 h-4 text-emerald-400 shrink-0 ${isSyncing ? 'animate-spin' : ''}`}
-              />
-              <span className="hidden sm:inline">{isSyncing ? 'Đang đồng bộ...' : 'Đồng Bộ'}</span>
-            </button>
+              return (
+                <button
+                  type="button"
+                  onClick={handleUnifiedSync}
+                  disabled={isSyncing || isConnectingCloud}
+                  title={
+                    connected
+                      ? `Đã kết nối Google Cloud (${cloudState.cloudEmail || displayEmail}) — Bấm để đồng bộ dữ liệu ngay`
+                      : hasGoogleAuth
+                        ? 'Đang kích hoạt kết nối Google Cloud — Bấm để đồng bộ ngay'
+                        : cloudState.errorMessage ||
+                          'Bấm để kết nối lại tài khoản Google Cloud & đồng bộ dữ liệu'
+                  }
+                  className={`min-h-[40px] min-w-[40px] flex items-center justify-center gap-1.5 px-2.5 sm:px-3.5 py-1.5 rounded-xl text-xs font-semibold border transition disabled:opacity-75 shrink-0 ${
+                    connected
+                      ? 'text-emerald-200 hover:text-white bg-emerald-950/75 hover:bg-emerald-900/80 border-emerald-700/60'
+                      : hasGoogleAuth
+                        ? 'text-blue-200 hover:text-white bg-slate-800 hover:bg-slate-700 border-slate-700'
+                        : 'text-amber-200 hover:text-white bg-amber-950/80 hover:bg-amber-900/80 border-amber-600/70'
+                  }`}
+                >
+                  {busy ? (
+                    <RefreshCw className="w-4 h-4 text-emerald-400 animate-spin shrink-0" />
+                  ) : connected ? (
+                    <Cloud className="w-4 h-4 text-emerald-400 shrink-0" />
+                  ) : (
+                    <CloudOff className="w-4 h-4 text-amber-400 shrink-0" />
+                  )}
+                  <span className="hidden sm:inline">
+                    {isSyncing
+                      ? 'Đang đồng bộ...'
+                      : isConnectingCloud
+                        ? 'Đang kết nối...'
+                        : connected
+                          ? 'Đồng Bộ Cloud'
+                          : hasGoogleAuth
+                            ? 'Đồng Bộ'
+                            : 'Kết nối & Đồng bộ'}
+                  </span>
+                </button>
+              );
+            })()}
 
             {currentUser ? (
               <div className="relative">

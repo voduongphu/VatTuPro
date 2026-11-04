@@ -1247,8 +1247,11 @@ async function reconcileInternal(): Promise<void> {
       }
     }
 
-    // 2. Đồng bộ 2 chiều thời gian thực qua Cloud Firestore (chỉ đồng bộ ngược lại local server khi thực sự có dữ liệu mới kéo về từ Cloud)
-    if (authTransitionCount === 0 && FirestoreSyncService.isCloudConnected()) {
+    // 2. Đồng bộ 2 chiều thời gian thực qua Cloud Firestore cho mọi tài khoản Google đã xác thực (Admin & Nhân sự)
+    if (
+      authTransitionCount === 0 &&
+      (FirestoreSyncService.isCloudConnected() || FirestoreSyncService.hasAuthenticatedCloudUser())
+    ) {
       const cloudRes = await FirestoreSyncService.reconcileWithCloudDetailed();
       if (cloudRes.pulledChanges) {
         try {
@@ -1630,6 +1633,10 @@ export const SyncService = {
 
   getCloudState(): CloudSyncSnapshotState {
     return FirestoreSyncService.getState();
+  },
+
+  hasAuthenticatedCloudUser(): boolean {
+    return FirestoreSyncService.hasAuthenticatedCloudUser();
   },
 
   subscribeCloudState(listener: (state: CloudSyncSnapshotState) => void): () => void {

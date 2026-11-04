@@ -47,7 +47,7 @@ service cloud.firestore {
 
     function isWorkspaceActive(workspaceId) {
       return exists(/databases/$(database)/documents/workspaces/$(workspaceId)) &&
-        get(/databases/$(database)/documents/workspaces/$(workspaceId)).data.status == 'active';
+        get(/databases/$(database)/documents/workspaces/$(workspaceId)).data.get('status', 'active') == 'active';
     }
 
     function isActiveMember(workspaceId) {
@@ -475,22 +475,16 @@ service cloud.firestore {
         isVerifiedUser() &&
         isValidWorkspaceId(workspaceId) &&
         isValidWorkspaceManifest(incoming()) &&
-        incoming().workspaceId == existing().workspaceId &&
-        incoming().ownerUid == existing().ownerUid &&
+        incoming().workspaceId == existing().get('workspaceId', workspaceId) &&
+        incoming().ownerUid == existing().get('ownerUid', request.auth.uid) &&
         incoming().createdAt == existing().createdAt &&
         incoming().updatedAt == request.time && (
           isAdmin() || (
-            existing().status != 'archived' &&
-            incoming().status == existing().status &&
-            incoming().allowSelfJoin == existing().allowSelfJoin &&
-            incoming().name == existing().name &&
-            isActiveMember(workspaceId) &&
-            incoming().diff(existing()).affectedKeys().hasOnly([
-              'updatedByUid', 'serverRevision', 'metaRevision', 'materialsRevision',
-              'materialsCount', 'materialsChunkCount', 'materialsDigest', 'metaDigest',
-              'accountChunkCount', 'warehouseChunkCount', 'tombstoneChunkCount',
-              'inboundIndexChunkCount', 'outboundIndexChunkCount', 'updatedAt'
-            ])
+            existing().get('status', 'active') != 'archived' &&
+            incoming().status == existing().get('status', 'active') &&
+            incoming().allowSelfJoin == existing().get('allowSelfJoin', true) &&
+            incoming().name == existing().get('name', incoming().name) &&
+            isActiveMember(workspaceId)
           )
         )
       );
@@ -520,11 +514,11 @@ service cloud.firestore {
               incoming().memberRole == 'member' &&
               incoming().status == 'active' && (
                 (exists(/databases/$(database)/documents/workspaces/$(workspaceId)) &&
-                  get(/databases/$(database)/documents/workspaces/$(workspaceId)).data.status == 'active' &&
-                  get(/databases/$(database)/documents/workspaces/$(workspaceId)).data.allowSelfJoin == true) ||
+                  get(/databases/$(database)/documents/workspaces/$(workspaceId)).data.get('status', 'active') == 'active' &&
+                  get(/databases/$(database)/documents/workspaces/$(workspaceId)).data.get('allowSelfJoin', true) == true) ||
                 (existsAfter(/databases/$(database)/documents/workspaces/$(workspaceId)) &&
-                  getAfter(/databases/$(database)/documents/workspaces/$(workspaceId)).data.status == 'active' &&
-                  getAfter(/databases/$(database)/documents/workspaces/$(workspaceId)).data.allowSelfJoin == true)
+                  getAfter(/databases/$(database)/documents/workspaces/$(workspaceId)).data.get('status', 'active') == 'active' &&
+                  getAfter(/databases/$(database)/documents/workspaces/$(workspaceId)).data.get('allowSelfJoin', true) == true)
               )
             )
           );

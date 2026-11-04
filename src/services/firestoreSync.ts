@@ -803,7 +803,69 @@ async function ensureWorkspaceReady(fbUser: FirebaseUser): Promise<boolean> {
       }
     };
 
-    // Đọc song song memberRef để kiểm tra tư cách thành viên trong 1 vòng mạng duy nhất
+    const hasCompleteManifestSchema = (raw: Record<string, any> | undefined | null): boolean => {
+      if (!raw) return false;
+      const reqKeys = [
+        'workspaceId',
+        'name',
+        'ownerUid',
+        'updatedByUid',
+        'status',
+        'allowSelfJoin',
+        'serverRevision',
+        'metaRevision',
+        'materialsRevision',
+        'materialsCount',
+        'materialsChunkCount',
+        'materialsDigest',
+        'metaDigest',
+        'accountChunkCount',
+        'warehouseChunkCount',
+        'tombstoneChunkCount',
+        'inboundIndexChunkCount',
+        'outboundIndexChunkCount',
+        'createdAt',
+        'updatedAt'
+      ];
+      const actualKeys = Object.keys(raw);
+      return actualKeys.length === reqKeys.length && reqKeys.every((k) => k in raw);
+    };
+
+    const repairWorkspaceManifestIfNeeded = async (raw: Record<string, any>) => {
+      if (hasCompleteManifestSchema(raw) && (!isCloudAdmin(fbUser) || raw.allowSelfJoin === true)) {
+        cachedWsManifest = { data: raw as WorkspaceManifestDoc, atMs: Date.now() };
+        return;
+      }
+      const repaired: WorkspaceManifestDoc = {
+        workspaceId: WORKSPACE_ID,
+        name: cleanStr(raw.name, 200, WORKSPACE_NAME),
+        ownerUid: cleanStr(raw.ownerUid, 128, uid),
+        updatedByUid: uid,
+        status: raw.status === 'archived' && !isCloudAdmin(fbUser) ? 'archived' : 'active',
+        allowSelfJoin: isCloudAdmin(fbUser) ? true : raw.allowSelfJoin !== false,
+        serverRevision: cleanNum(raw.serverRevision, 1),
+        metaRevision: cleanNum(raw.metaRevision, 0),
+        materialsRevision: cleanNum(raw.materialsRevision, 0),
+        materialsCount: cleanNum(raw.materialsCount, 0),
+        materialsChunkCount: cleanNum(raw.materialsChunkCount, 0, 2000),
+        materialsDigest: cleanStr(raw.materialsDigest, 128, '0:0:0:0'),
+        metaDigest: cleanStr(raw.metaDigest, 128, '0.0.0:0:0:0'),
+        accountChunkCount: cleanNum(raw.accountChunkCount, 0, 50),
+        warehouseChunkCount: cleanNum(raw.warehouseChunkCount, 0, 50),
+        tombstoneChunkCount: cleanNum(raw.tombstoneChunkCount, 0, 500),
+        inboundIndexChunkCount: cleanNum(raw.inboundIndexChunkCount, 0, 500),
+        outboundIndexChunkCount: cleanNum(raw.outboundIndexChunkCount, 0, 500)
+      };
+      await setDoc(wsRef, {
+        ...repaired,
+        createdAt: raw.createdAt || serverTimestamp(),
+        updatedAt: serverTimestamp()
+      });
+      knownExistingPaths.add(wsRef.path);
+      cachedWsManifest = { data: repaired, atMs: Date.now() };
+    };
+
+    // Đọc memberRef để kiểm tra tư cách thành viên
     const memberSnap = await safeGetDoc(memberRef, memberPath);
     if (memberSnap.exists()) {
       const mData = memberSnap.data();
@@ -818,7 +880,7 @@ async function ensureWorkspaceReady(fbUser: FirebaseUser): Promise<boolean> {
       if (!wsSnap.exists()) {
         await createInitialBatch(isCloudAdmin(fbUser) ? 'admin' : 'member');
       } else {
-        cachedWsManifest = { data: wsSnap.data() as WorkspaceManifestDoc, atMs: Date.now() };
+        await repairWorkspaceManifestIfNeeded(wsSnap.data());
       }
       verifiedWorkspaceUid = uid;
       return true;
@@ -829,7 +891,7 @@ async function ensureWorkspaceReady(fbUser: FirebaseUser): Promise<boolean> {
       if (!wsSnap.exists()) {
         await createInitialBatch('admin');
       } else {
-        cachedWsManifest = { data: wsSnap.data() as WorkspaceManifestDoc, atMs: Date.now() };
+        await repairWorkspaceManifestIfNeeded(wsSnap.data());
         await setDoc(memberRef, {
           workspaceId: WORKSPACE_ID,
           uid,
@@ -846,7 +908,7 @@ async function ensureWorkspaceReady(fbUser: FirebaseUser): Promise<boolean> {
       return true;
     }
 
-    // Nhân viên kho: thử tham gia workspace hiện hữu ngay trong 1 bước ghi
+    // Nhân viên / Quản lý kho (ngoài Admin gốc): tự động đăng ký thành viên vào workspace hiện hữu
     try {
       await setDoc(memberRef, {
         workspaceId: WORKSPACE_ID,
@@ -859,18 +921,26 @@ async function ensureWorkspaceReady(fbUser: FirebaseUser): Promise<boolean> {
         updatedAt: serverTimestamp()
       });
       knownExistingPaths.add(memberRef.path);
+      const wsSnap = await safeGetDoc(wsRef, wsPath);
+      if (wsSnap.exists()) {
+        await repairWorkspaceManifestIfNeeded(wsSnap.data());
+      }
       verifiedWorkspaceUid = uid;
       return true;
     } catch {
-      const wsSnap = await safeGetDoc(wsRef, wsPath);
-      if (!wsSnap.exists()) {
-        await createInitialBatch('member');
-        verifiedWorkspaceUid = uid;
-        return true;
+      try {
+        const wsSnap = await safeGetDoc(wsRef, wsPath);
+        if (!wsSnap.exists()) {
+          await createInitialBatch('member');
+          verifiedWorkspaceUid = uid;
+          return true;
+        }
+      } catch {
+        // ignore secondary wsRef check error
       }
       emitCloudState({
         status: 'error',
-        errorMessage: 'Không thể tham gia không gian đồng bộ kho (Quản trị viên đã khóa tự động tham gia).'
+        errorMessage: 'Không thể tham gia không gian đồng bộ kho (Vui lòng nhờ Quản trị viên mở ứng dụng đồng bộ trước 1 lần hoặc kiểm tra quyền truy cập).'
       });
       return false;
     }
@@ -1609,10 +1679,14 @@ export const FirestoreSyncService = {
     onAuthStateChanged(auth, async (fbUser) => {
       if (!fbUser) {
         detachAllListeners();
+        knownExistingPaths.clear();
         workspaceReadyPromise = null;
         workspaceReadyUid = null;
         verifiedWorkspaceUid = null;
         cachedWsManifest = null;
+        adminPiiLoadedForMetaRev = -1;
+        lastAppliedCloudServerRev = -1;
+        lastAppliedCloudMetaRev = -1;
         emitCloudState({
           authReady: true,
           status: 'disconnected',
@@ -1622,6 +1696,18 @@ export const FirestoreSyncService = {
           errorMessage: null
         });
         return;
+      }
+
+      if (currentState.cloudUid && currentState.cloudUid !== fbUser.uid) {
+        detachAllListeners();
+        knownExistingPaths.clear();
+        workspaceReadyPromise = null;
+        workspaceReadyUid = null;
+        verifiedWorkspaceUid = null;
+        cachedWsManifest = null;
+        adminPiiLoadedForMetaRev = -1;
+        lastAppliedCloudServerRev = -1;
+        lastAppliedCloudMetaRev = -1;
       }
 
       emitCloudState({
@@ -1663,6 +1749,10 @@ export const FirestoreSyncService = {
 
   isCloudConnected(): boolean {
     return Boolean(auth.currentUser && auth.currentUser.emailVerified && currentState.status === 'connected');
+  },
+
+  hasAuthenticatedCloudUser(): boolean {
+    return Boolean(auth.currentUser && auth.currentUser.emailVerified && !isFirestoreCircuitOpen());
   },
 
   canAttemptCloudAuth(): boolean {
@@ -1827,15 +1917,30 @@ export const FirestoreSyncService = {
     try {
       const wsOk = await Promise.race<boolean>([
         ensureWorkspaceReady(authRes.fbUser),
-        new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 1800))
+        new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 5000))
       ]);
-      if (wsOk) {
-        attachWorkspaceRealtimeListener();
-        emitCloudState({ status: 'connected', errorMessage: null });
-        void this.reconcileWithCloud();
+      if (!wsOk) {
+        return {
+          success: false,
+          email: authRes.email,
+          displayName: authRes.displayName,
+          message:
+            currentState.errorMessage ||
+            'Chưa thể kết nối không gian làm việc Google Cloud Firestore. Vui lòng kiểm tra mạng và thử lại.'
+        };
       }
+      attachWorkspaceRealtimeListener();
+      emitCloudState({ status: 'connected', errorMessage: null });
+      void this.reconcileWithCloud();
     } catch {
-      // background sync will retry automatically
+      return {
+        success: false,
+        email: authRes.email,
+        displayName: authRes.displayName,
+        message:
+          currentState.errorMessage ||
+          'Không thể kết nối không gian làm việc Google Cloud Firestore.'
+      };
     }
     return {
       success: true,
@@ -1847,11 +1952,14 @@ export const FirestoreSyncService = {
 
   async disconnectGoogleAccount(): Promise<void> {
     detachAllListeners();
+    knownExistingPaths.clear();
     workspaceReadyPromise = null;
     workspaceReadyUid = null;
     verifiedWorkspaceUid = null;
     cachedWsManifest = null;
     adminPiiLoadedForMetaRev = -1;
+    lastAppliedCloudServerRev = -1;
+    lastAppliedCloudMetaRev = -1;
     await signOutAndPurgeFirebaseAuth();
     emitCloudState({
       authReady: true,
@@ -1954,26 +2062,6 @@ export const FirestoreSyncService = {
       let nextInboundIndexChunkCount = Number(wsData.inboundIndexChunkCount) || 0;
       let nextOutboundIndexChunkCount = Number(wsData.outboundIndexChunkCount) || 0;
       let manifestMutated = false;
-
-      // Ghi nhớ trước các đường dẫn chunk đã tồn tại theo Manifest để không phải gọi getDoc kiểm tra trước khi writeBatch
-      for (let i = 0; i < nextAccountChunkCount; i++) {
-        knownExistingPaths.add(doc(db, 'workspaces', WORKSPACE_ID, 'metaChunks', `accounts_${i}`).path);
-      }
-      for (let i = 0; i < nextWarehouseChunkCount; i++) {
-        knownExistingPaths.add(doc(db, 'workspaces', WORKSPACE_ID, 'metaChunks', `warehouses_${i}`).path);
-      }
-      for (let i = 0; i < nextTombstoneChunkCount; i++) {
-        knownExistingPaths.add(doc(db, 'workspaces', WORKSPACE_ID, 'tombstoneChunks', `tomb_${i}`).path);
-      }
-      for (let i = 0; i < nextInboundIndexChunkCount; i++) {
-        knownExistingPaths.add(doc(db, 'workspaces', WORKSPACE_ID, 'inboundIndex', `idx_${i}`).path);
-      }
-      for (let i = 0; i < nextOutboundIndexChunkCount; i++) {
-        knownExistingPaths.add(doc(db, 'workspaces', WORKSPACE_ID, 'outboundIndex', `idx_${i}`).path);
-      }
-      for (let i = 0; i < nextMaterialsChunkCount; i++) {
-        knownExistingPaths.add(doc(db, 'workspaces', WORKSPACE_ID, 'materialChunks', `chunk_${i}`).path);
-      }
 
       // Fast-path: Nếu ServerRevision trên Cloud không đổi và máy hiện tại không có thay đổi mới nào sau lần đồng bộ trước -> hoàn tất tức thì
       if (
@@ -2283,6 +2371,12 @@ export const FirestoreSyncService = {
     const ok = await ensureWorkspaceReady(fbUser);
     if (!ok || !isSessionStillValidLocally(session.sessionToken)) return;
 
+    attachWorkspaceRealtimeListener();
+    emitCloudState({
+      status: 'connected',
+      errorMessage: null
+    });
+
     const userKey = normUserKey(session.userKey || session.username);
     const sessionDocId = makeSafeDocId('sess', userKey);
     const sessPath = `workspaces/${WORKSPACE_ID}/sessions/${sessionDocId}`;
@@ -2545,6 +2639,10 @@ export const FirestoreSyncService = {
       return { handled: false, success: false, message: '' };
     }
 
+    let timedOut = false;
+    const effectiveTimeoutMs =
+      verifiedWorkspaceUid === fbUser.uid ? Math.max(timeoutMs, 1100) : Math.max(timeoutMs, 2400);
+
     const executeFastCloudLogin = async (): Promise<{
       handled: boolean;
       success: boolean;
@@ -2563,6 +2661,13 @@ export const FirestoreSyncService = {
           return { handled: false, success: false, message: '' };
         }
 
+        attachWorkspaceRealtimeListener();
+        emitCloudState({ status: 'connected', errorMessage: null });
+
+        if (timedOut) {
+          return { handled: false, success: false, message: '' };
+        }
+
         const emailLower = fbUser.email.trim().toLowerCase();
         const emailDigest = computeEmailAuthDigest(emailLower);
         let localUsers = StorageService.getUsers();
@@ -2570,30 +2675,41 @@ export const FirestoreSyncService = {
           emailLower === BOOTSTRAPPED_ADMIN_EMAIL ||
           localUsers.some(
             (u) =>
-              (u.email && u.email.trim().toLowerCase() === emailLower) ||
-              (emailDigest && u.emailDigest === emailDigest)
+              !String(u.id || '').startsWith('user-g-') &&
+              ((u.email && u.email.trim().toLowerCase() === emailLower) ||
+                (emailDigest && u.emailDigest === emailDigest))
           );
 
-        // Chỉ đọc gói nhẹ accounts_0 nếu tài khoản Gmail nhân sự chưa có trong bộ nhớ cục bộ (không kéo toàn bộ kho/vật tư/PII khi đăng nhập)
+        // Tải danh sách tài khoản đã được Admin khai báo trên Cloud (accounts_0..N) nếu máy cục bộ chưa có bản ghi khai báo
         if (!alreadyKnownLocally) {
-          const acc0Ref = doc(db, 'workspaces', WORKSPACE_ID, 'metaChunks', 'accounts_0');
-          const acc0Snap = await safeGetDoc(
-            acc0Ref,
-            `workspaces/${WORKSPACE_ID}/metaChunks/accounts_0`
+          const chunkTotal = Math.max(1, Number(cachedWsManifest?.data?.accountChunkCount) || 1);
+          const accSnaps = await Promise.all(
+            Array.from({ length: chunkTotal }, (_, idx) => {
+              const cid = `accounts_${idx}`;
+              return safeGetDoc(
+                doc(db, 'workspaces', WORKSPACE_ID, 'metaChunks', cid),
+                `workspaces/${WORKSPACE_ID}/metaChunks/${cid}`
+              );
+            })
           );
-          if (acc0Snap.exists()) {
-            const rawItems = Array.isArray(acc0Snap.data().items) ? acc0Snap.data().items : [];
-            const remoteUsers: User[] = [];
+          const remoteUsers: User[] = [];
+          for (const snap of accSnaps) {
+            if (!snap.exists()) continue;
+            const rawItems = Array.isArray(snap.data().items) ? snap.data().items : [];
             for (const raw of rawItems) {
               if (raw && typeof raw === 'object') {
                 remoteUsers.push(deserializeAccountPublic(raw));
               }
             }
-            if (remoteUsers.length > 0) {
-              StorageService.applyRemoteMeta({ users: remoteUsers });
-              localUsers = StorageService.getUsers();
-            }
           }
+          if (remoteUsers.length > 0) {
+            StorageService.applyRemoteMeta({ users: remoteUsers });
+            localUsers = StorageService.getUsers();
+          }
+        }
+
+        if (timedOut) {
+          return { handled: false, success: false, message: '' };
         }
 
         const nowMs = Date.now();
@@ -2628,6 +2744,10 @@ export const FirestoreSyncService = {
         const sessPath = `workspaces/${WORKSPACE_ID}/sessions/${sessionDocId}`;
         const sessRef = doc(db, 'workspaces', WORKSPACE_ID, 'sessions', sessionDocId);
         const sessSnap = await safeGetDoc(sessRef, sessPath);
+
+        if (timedOut) {
+          return { handled: false, success: false, message: '' };
+        }
 
         let prevActive: ActiveUserSession | undefined;
         let prevIssued = 0;
@@ -2670,6 +2790,10 @@ export const FirestoreSyncService = {
           };
         }
 
+        if (timedOut) {
+          return { handled: false, success: false, message: '' };
+        }
+
         if (prevActive?.sessionToken) {
           rememberRevokedCloudToken(prevActive.sessionToken);
         }
@@ -2706,7 +2830,6 @@ export const FirestoreSyncService = {
           updatedAt: serverTimestamp()
         };
 
-        // Ghi trực tiếp không gọi lại safeGetDoc lần 2 vì đã có sessSnap ngay phía trên
         if (sessSnap.exists()) {
           await updateDoc(sessRef, sessionMutablePayload);
         } else {
@@ -2757,7 +2880,6 @@ export const FirestoreSyncService = {
       }
     };
 
-    // Giới hạn tối đa 950ms cho bước khóa phiên Cloud; nếu mạng Firestore chậm sẽ chuyển ngay sang máy chủ /api (~20ms) và đồng bộ Cloud ngầm sau khi đã vào hệ thống
     return Promise.race([
       executeFastCloudLogin(),
       new Promise<{
@@ -2765,7 +2887,10 @@ export const FirestoreSyncService = {
         success: boolean;
         message: string;
       }>((resolve) =>
-        setTimeout(() => resolve({ handled: false, success: false, message: '' }), timeoutMs)
+        setTimeout(() => {
+          timedOut = true;
+          resolve({ handled: false, success: false, message: '' });
+        }, effectiveTimeoutMs)
       )
     ]);
   },
