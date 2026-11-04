@@ -27,6 +27,17 @@ export function normUserKey(raw: string | undefined | null): string {
   return (raw || '').normalize('NFC').trim().replace(/\s+/g, ' ').toLowerCase();
 }
 
+export function foldVietnameseAscii(raw: string | undefined | null): string {
+  return (raw || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/đ/g, 'd')
+    .replace(/Đ/g, 'd')
+    .trim()
+    .replace(/\s+/g, ' ')
+    .toLowerCase();
+}
+
 // ============================================================================
 // Fast, Order-Independent 64-bit Deterministic Digests (O(N), WeakMap-cached)
 // ============================================================================
@@ -41,6 +52,83 @@ function hashPair(str: string): [number, number] {
     h2 = Math.imul(h2, 0x85ebca6b);
   }
   return [h1 >>> 0, h2 >>> 0];
+}
+
+export function computeEmailAuthDigest(email: string | undefined | null): string {
+  const clean = (email || '').trim().toLowerCase();
+  if (!clean) return '';
+  const [h1, h2] = hashPair(`VTP_EMAIL_AUTH_V1|${clean}`);
+  const [h3, h4] = hashPair(`VTP_EMAIL_SALT_V2|${clean.split('').reverse().join('')}`);
+  return `em_${h1.toString(36)}_${h2.toString(36)}_${h3.toString(36)}_${h4.toString(36)}`;
+}
+
+export function isSessionHeartbeatFresh(
+  nowMs: number,
+  lastSeenAt: number | undefined | null,
+  ttlMs = 90_000
+): boolean {
+  const seen = Number(lastSeenAt) || 0;
+  if (seen <= 0) return false;
+  return Math.abs(nowMs - seen) <= ttlMs;
+}
+
+export function isPasswordMatch(
+  storedPassword: string | undefined | null,
+  inputPassword: string | undefined | null
+): boolean {
+  const stored = String(storedPassword ?? '');
+  const input = String(inputPassword ?? '');
+  if (!input) return false;
+  if (stored === input) return true;
+  const trimmedInput = input.trim();
+  if (!trimmedInput) return false;
+  return stored.trim() === trimmedInput;
+}
+
+export function findMatchingUser(users: User[], rawIdentifier: string | undefined | null): User | undefined {
+  const inputKey = normUserKey(rawIdentifier);
+  if (!inputKey || !Array.isArray(users) || users.length === 0) return undefined;
+
+  // 1. Khớp chính xác theo username chuẩn hóa NFC
+  const exactUsername = users.find((u) => normUserKey(u.username) === inputKey);
+  if (exactUsername) return exactUsername;
+
+  // 2. Khớp chính xác theo họ tên đầy đủ chuẩn hóa NFC
+  const exactFullName = users.find((u) => normUserKey(u.fullName) === inputKey);
+  if (exactFullName) return exactFullName;
+
+  // 3. Khớp theo email hoặc emailDigest (hỗ trợ người dùng nhập email vào ô Tên người sử dụng)
+  if (inputKey.includes('@')) {
+    const targetDigest = computeEmailAuthDigest(inputKey);
+    const byEmail = users.find(
+      (u) =>
+        normUserKey(u.email) === inputKey ||
+        (targetDigest && (u.emailDigest === targetDigest || computeEmailAuthDigest(u.email) === targetDigest))
+    );
+    if (byEmail) return byEmail;
+  }
+
+  // 4. Khớp không dấu / chuẩn hóa vị trí dấu tiếng Việt trên máy tính (Windows/macOS Chrome IME) khi không trùng lặp
+  const foldedInput = foldVietnameseAscii(rawIdentifier);
+  if (!foldedInput) return undefined;
+
+  const foldedUsernameMatches = users.filter((u) => foldVietnameseAscii(u.username) === foldedInput);
+  if (foldedUsernameMatches.length === 1) return foldedUsernameMatches[0];
+
+  const foldedFullNameMatches = users.filter((u) => foldVietnameseAscii(u.fullName) === foldedInput);
+  if (foldedFullNameMatches.length === 1) return foldedFullNameMatches[0];
+
+  const compactInput = foldedInput.replace(/\s+/g, '');
+  if (compactInput.length >= 3) {
+    const compactMatches = users.filter(
+      (u) =>
+        foldVietnameseAscii(u.username).replace(/\s+/g, '') === compactInput ||
+        foldVietnameseAscii(u.fullName).replace(/\s+/g, '') === compactInput
+    );
+    if (compactMatches.length === 1) return compactMatches[0];
+  }
+
+  return undefined;
 }
 
 export function computeMetaDigest(
@@ -281,9 +369,15 @@ export function mergeUsersAdditive(
         Math.max(Number(curr.sessionRevokedAt) || 0, Number(inc.sessionRevokedAt) || 0) ||
         undefined;
       if (incTs > currTs) {
+        const mergedEmailVal = inc.email !== undefined ? inc.email : curr.email;
+        const mergedEmailDigest =
+          computeEmailAuthDigest(mergedEmailVal) || inc.emailDigest || curr.emailDigest || undefined;
         const nextUser: User = {
           ...curr,
           ...inc,
+          email: mergedEmailVal,
+          emailDigest: mergedEmailDigest,
+          phone: inc.phone !== undefined ? inc.phone : curr.phone,
           password: inc.password || curr.password,
           sessionRevokedAt: maxRevokedAt,
           updatedAt: incTs
@@ -295,6 +389,7 @@ export function mergeUsersAdditive(
           nextUser.isActive !== curr.isActive ||
           nextUser.phone !== curr.phone ||
           nextUser.email !== curr.email ||
+          nextUser.emailDigest !== curr.emailDigest ||
           nextUser.department !== curr.department ||
           nextUser.sessionRevokedAt !== curr.sessionRevokedAt ||
           nextUser.updatedAt !== curr.updatedAt
@@ -306,12 +401,15 @@ export function mergeUsersAdditive(
         // Chỉ bổ sung thông tin còn thiếu và mốc thu hồi phiên lớn hơn, không ghi đè lùi
         const mergedFullName = curr.fullName || inc.fullName;
         const mergedEmail = curr.email || inc.email;
+        const mergedEmailDigest =
+          computeEmailAuthDigest(mergedEmail) || curr.emailDigest || inc.emailDigest || undefined;
         const mergedPhone = curr.phone || inc.phone;
         const mergedDept = curr.department || inc.department;
         const mergedPass = curr.password || inc.password;
         if (
           mergedFullName !== curr.fullName ||
           mergedEmail !== curr.email ||
+          mergedEmailDigest !== curr.emailDigest ||
           mergedPhone !== curr.phone ||
           mergedDept !== curr.department ||
           mergedPass !== curr.password ||
@@ -321,6 +419,7 @@ export function mergeUsersAdditive(
             ...curr,
             fullName: mergedFullName,
             email: mergedEmail,
+            emailDigest: mergedEmailDigest,
             phone: mergedPhone,
             department: mergedDept,
             password: mergedPass,

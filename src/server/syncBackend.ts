@@ -16,6 +16,11 @@ import {
   createEmptyTombstones,
   normKey,
   normUserKey,
+  computeEmailAuthDigest,
+  isSessionHeartbeatFresh,
+  isPasswordMatch,
+  findMatchingUser,
+  isRecordDeleted,
   computeMetaDigest,
   computeMaterialsDigest,
   computeInboundReceiptDigest,
@@ -41,6 +46,7 @@ const ROOT_ADMIN_FALLBACK: User = {
   role: 'admin',
   password: '1234567',
   email: 'voduongphu@gmail.com',
+  emailDigest: computeEmailAuthDigest('voduongphu@gmail.com'),
   phone: '0908 123 456',
   department: 'Ban Giám Đốc / QL Dự Án',
   isActive: true,
@@ -251,7 +257,7 @@ export function createSyncBackend(options: SyncBackendOptions = {}): SyncBackend
     if (
       store.revokedTokens[sess.sessionToken] ||
       (revokedBefore > 0 && issued > 0 && issued <= revokedBefore) ||
-      nowMs - (sess.lastSeenAt || 0) > ACTIVE_SESSION_TTL_MS
+      !isSessionHeartbeatFresh(nowMs, sess.lastSeenAt, ACTIVE_SESSION_TTL_MS)
     ) {
       delete store.activeSessions[key];
       return undefined;
@@ -343,7 +349,7 @@ export function createSyncBackend(options: SyncBackendOptions = {}): SyncBackend
                 const sessIssued = getSessionIssuedAtMs(sess);
                 if (
                   (revokedBefore > 0 && sessIssued > 0 && sessIssued <= revokedBefore) ||
-                  nowMs - (sess.lastSeenAt || 0) > ACTIVE_SESSION_TTL_MS
+                  !isSessionHeartbeatFresh(nowMs, sess.lastSeenAt, ACTIVE_SESSION_TTL_MS)
                 ) {
                   continue;
                 }
@@ -613,7 +619,12 @@ export function createSyncBackend(options: SyncBackendOptions = {}): SyncBackend
     const user = store.users.find(
       (u) => normUserKey(u.username) === key || (params.userId && u.id === params.userId)
     );
-    if (!user || !user.isActive) {
+    const deletedInTombstones = isRecordDeleted(
+      store.tombstones.users,
+      [params.userId || '', key],
+      user?.updatedAt
+    );
+    if ((user && !user.isActive) || deletedInTombstones) {
       if (store.activeSessions[key]) {
         delete store.activeSessions[key];
         scheduleSaveMeta();
@@ -661,7 +672,7 @@ export function createSyncBackend(options: SyncBackendOptions = {}): SyncBackend
       if (active) {
         return { valid: false, reason: 'replaced', replacedBy: active };
       }
-      return { valid: false, reason: 'expired' };
+      return { valid: false, reason: user ? 'expired' : 'missing' };
     }
 
     const tokenIssuedAtMs = sigCheck.issuedAtMs;
@@ -682,13 +693,13 @@ export function createSyncBackend(options: SyncBackendOptions = {}): SyncBackend
 
     const activeIssuedAtMs = getSessionIssuedAtMs(active);
     if (!active || tokenIssuedAtMs > activeIssuedAtMs) {
-      // Phiên gửi lên có chữ ký HMAC hợp lệ và mới hơn phiên cũ đang lưu trên instance này -> Nâng cấp phiên thay vì đá nhầm!
+      // Phiên gửi lên có chữ ký HMAC hợp lệ và mới hơn phiên cũ đang lưu trên instance này -> Nâng cấp phiên ngay cả khi instance mới khởi tạo chưa đồng bộ kịp danh sách users!
       if (active && active.sessionToken && active.sessionToken !== token) {
         store.revokedTokens[active.sessionToken] = tokenIssuedAtMs;
       }
       const upgraded: ActiveUserSession = {
-        userId: user.id,
-        username: user.username,
+        userId: user?.id || params.userId || key,
+        username: user?.username || params.username || key,
         userKey: key,
         sessionToken: token,
         issuedAtMs: tokenIssuedAtMs,
@@ -861,10 +872,14 @@ export function createSyncBackend(options: SyncBackendOptions = {}): SyncBackend
       }
     }
 
-    const inputKey = normUserKey(trimmedUser);
-    const matchedIdx = store.users.findIndex(
-      (u) => normUserKey(u.username) === inputKey || normUserKey(u.fullName) === inputKey
-    );
+    const matchedCandidate = findMatchingUser(store.users, trimmedUser);
+    const matchedIdx = matchedCandidate
+      ? store.users.findIndex(
+          (u) =>
+            u.id === matchedCandidate.id ||
+            normUserKey(u.username) === normUserKey(matchedCandidate.username)
+        )
+      : -1;
 
     if (matchedIdx === -1) {
       res.json({
@@ -883,7 +898,7 @@ export function createSyncBackend(options: SyncBackendOptions = {}): SyncBackend
       return;
     }
 
-    if ((user.password || '') !== passStr) {
+    if (!isPasswordMatch(user.password, passStr)) {
       res.json({
         success: false,
         message: 'Mật khẩu đăng nhập không chính xác. Vui lòng kiểm tra lại.'
@@ -1074,12 +1089,7 @@ export function createSyncBackend(options: SyncBackendOptions = {}): SyncBackend
 
       const key = check.session.userKey;
       const userIdx = store.users.findIndex((u) => normUserKey(u.username) === key);
-      if (userIdx === -1) {
-        res.json({ success: false, message: 'Không tìm thấy tài khoản người dùng.' });
-        return;
-      }
-
-      const user = store.users[userIdx];
+      const user = userIdx >= 0 ? store.users[userIdx] : undefined;
       const currIssuedAt = getSessionIssuedAtMs(check.session);
       const prevRevoked = getRevokedBeforeMs(key, user);
       const issuedAtMs = Math.max(nowMs, currIssuedAt + 2, prevRevoked + 2);
@@ -1091,16 +1101,19 @@ export function createSyncBackend(options: SyncBackendOptions = {}): SyncBackend
       store.sessionRevokedBefore[key] = revokedAt;
       store.forceLogoutMeta[key] = { at: nowIso, deviceLabel: cleanDeviceLabel };
 
-      const updatedUser: User = {
-        ...user,
-        sessionRevokedAt: revokedAt,
-        updatedAt: Math.max(issuedAtMs, Number(user.updatedAt || 0) + 1)
-      };
-      store.users[userIdx] = updatedUser;
+      let updatedUser: User | undefined;
+      if (user && userIdx >= 0) {
+        updatedUser = {
+          ...user,
+          sessionRevokedAt: revokedAt,
+          updatedAt: Math.max(issuedAtMs, Number(user.updatedAt || 0) + 1)
+        };
+        store.users[userIdx] = updatedUser;
+      }
 
       const newSession: ActiveUserSession = {
-        userId: updatedUser.id,
-        username: updatedUser.username,
+        userId: updatedUser?.id || check.session.userId,
+        username: updatedUser?.username || check.session.username,
         userKey: key,
         sessionToken: newSessionToken,
         issuedAtMs,
@@ -1152,10 +1165,14 @@ export function createSyncBackend(options: SyncBackendOptions = {}): SyncBackend
       }
     }
 
-    const inputKey = normUserKey(trimmedUser);
-    const matchedIdx = store.users.findIndex(
-      (u) => normUserKey(u.username) === inputKey || normUserKey(u.fullName) === inputKey
-    );
+    const matchedCandidate = findMatchingUser(store.users, trimmedUser);
+    const matchedIdx = matchedCandidate
+      ? store.users.findIndex(
+          (u) =>
+            u.id === matchedCandidate.id ||
+            normUserKey(u.username) === normUserKey(matchedCandidate.username)
+        )
+      : -1;
 
     if (matchedIdx === -1) {
       res.json({
@@ -1174,7 +1191,7 @@ export function createSyncBackend(options: SyncBackendOptions = {}): SyncBackend
       return;
     }
 
-    if ((user.password || '') !== passStr) {
+    if (!isPasswordMatch(user.password, passStr)) {
       res.json({
         success: false,
         message: 'Mật khẩu xác thực không chính xác. Không thể gửi yêu cầu đăng xuất thiết bị kia.'

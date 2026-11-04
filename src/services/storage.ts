@@ -12,6 +12,7 @@ import {
   createEmptyTombstones,
   normKey,
   normUserKey,
+  computeEmailAuthDigest,
   roundQty,
   sumInboundItems,
   sumOutboundItems,
@@ -57,12 +58,22 @@ const ROOT_ADMIN_USER: User = {
   role: 'admin',
   password: '1234567',
   email: 'voduongphu@gmail.com',
+  emailDigest: computeEmailAuthDigest('voduongphu@gmail.com'),
   phone: '0908 123 456',
   department: 'Ban Giám Đốc / QL Dự Án',
   isActive: true,
   createdAt: '2026-01-01T08:00:00Z',
   updatedAt: 1
 };
+
+function safeLocalGetRaw(key: string): string | null {
+  try {
+    if (typeof localStorage === 'undefined') return null;
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
 
 // ============================================================================
 // High-Performance In-Memory Cache + IndexedDB Persistence Engine (100k+ rows)
@@ -213,7 +224,7 @@ function getItem<T>(key: string, defaultValue: T): T {
     return memoryCache.get(key) as T;
   }
   try {
-    const raw = localStorage.getItem(key);
+    const raw = safeLocalGetRaw(key);
     if (raw !== null && raw !== undefined) {
       const parsed = JSON.parse(raw);
       memoryCache.set(key, parsed);
@@ -532,28 +543,28 @@ export const StorageService = {
   },
 
   ensureInitialized(): void {
-    // 1. Users: Chỉ giữ tài khoản Admin gốc làm điểm tựa ban đầu; mọi tài khoản khác đồng bộ từ Server
-    if (!memoryCache.has(STORAGE_KEYS.USERS) && localStorage.getItem(STORAGE_KEYS.USERS) === null) {
+    // 1. Users: Chỉ giữ tài khoản Admin gốc làm điểm tựa ban đầu; mọi tài khoản khác đồng bộ từ Server / Đám mây
+    if (!memoryCache.has(STORAGE_KEYS.USERS) && safeLocalGetRaw(STORAGE_KEYS.USERS) === null) {
       setItem(STORAGE_KEYS.USERS, [ROOT_ADMIN_USER]);
     }
 
     // 2. Warehouses: Khởi tạo mảng rỗng trên thiết bị mới để nhận 100% dữ liệu thực từ Server (không đẩy dữ liệu mẫu ảo)
-    if (!memoryCache.has(STORAGE_KEYS.WAREHOUSES) && localStorage.getItem(STORAGE_KEYS.WAREHOUSES) === null) {
+    if (!memoryCache.has(STORAGE_KEYS.WAREHOUSES) && safeLocalGetRaw(STORAGE_KEYS.WAREHOUSES) === null) {
       setItem(STORAGE_KEYS.WAREHOUSES, []);
     }
 
     // 3. Materials
-    if (!memoryCache.has(STORAGE_KEYS.MATERIALS) && localStorage.getItem(STORAGE_KEYS.MATERIALS) === null) {
+    if (!memoryCache.has(STORAGE_KEYS.MATERIALS) && safeLocalGetRaw(STORAGE_KEYS.MATERIALS) === null) {
       setItem(STORAGE_KEYS.MATERIALS, []);
     }
 
     // 4. Inbound Receipts
-    if (!memoryCache.has(STORAGE_KEYS.INBOUND) && localStorage.getItem(STORAGE_KEYS.INBOUND) === null) {
+    if (!memoryCache.has(STORAGE_KEYS.INBOUND) && safeLocalGetRaw(STORAGE_KEYS.INBOUND) === null) {
       setItem(STORAGE_KEYS.INBOUND, []);
     }
 
     // 5. Outbound Receipts
-    if (!memoryCache.has(STORAGE_KEYS.OUTBOUND) && localStorage.getItem(STORAGE_KEYS.OUTBOUND) === null) {
+    if (!memoryCache.has(STORAGE_KEYS.OUTBOUND) && safeLocalGetRaw(STORAGE_KEYS.OUTBOUND) === null) {
       setItem(STORAGE_KEYS.OUTBOUND, []);
     }
 
@@ -584,15 +595,31 @@ export const StorageService = {
   },
 
   addUser(user: Omit<User, 'id' | 'createdAt'>): User {
+    const existingUsers = this.getUsers();
+    const maxPrevTs = existingUsers.reduce((acc, u) => Math.max(acc, Number(u.updatedAt) || 0), 0);
     const now = Date.now();
+    const monotonicTs = Math.max(now, maxPrevTs + 1);
+    const cleanEmail = (user.email || '').trim();
+    const cleanPassword = (user.password || '').trim() || '123456';
     const newUser: User = {
       ...user,
+      username: user.username.normalize('NFC').trim(),
+      fullName: (user.fullName || user.username).normalize('NFC').trim(),
+      password: cleanPassword,
+      email: cleanEmail,
+      emailDigest: computeEmailAuthDigest(cleanEmail) || user.emailDigest,
       id: `user-${now}-${Math.random().toString(36).slice(2, 6)}`,
       createdAt: new Date(now).toISOString(),
-      updatedAt: now
+      updatedAt: monotonicTs
     };
     const tombstones = this.getTombstones();
-    const merged = mergeUsersAdditive(this.getUsers(), [newUser], tombstones.users);
+    const uKey = normUserKey(newUser.username);
+    // Nếu trước đó từng xóa tài khoản trùng username rồi tạo mới lại, đảm bảo updatedAt vượt tombstone
+    const prevTombTs = Math.max(Number(tombstones.users[uKey]) || 0, Number(tombstones.users[newUser.id]) || 0);
+    if (prevTombTs >= (newUser.updatedAt || 0)) {
+      newUser.updatedAt = prevTombTs + 1;
+    }
+    const merged = mergeUsersAdditive(existingUsers, [newUser], tombstones.users);
     this.saveUsers(merged.list);
     notifySubscribers();
     emitLocalMutation('meta');
@@ -603,7 +630,27 @@ export const StorageService = {
     const users = [...this.getUsers()];
     const index = users.findIndex((u) => u.id === id);
     if (index === -1) return null;
-    users[index] = { ...users[index], ...updates, updatedAt: Date.now() };
+    const prev = users[index];
+    const nextEmail = updates.email !== undefined ? updates.email.trim() : prev.email;
+    const nextEmailDigest =
+      updates.email !== undefined
+        ? computeEmailAuthDigest(nextEmail) || undefined
+        : prev.emailDigest || computeEmailAuthDigest(prev.email) || undefined;
+    const nextUpdatedAt = Math.max(
+      Date.now(),
+      (Number(prev.updatedAt) || 0) + 1,
+      Number(updates.updatedAt) || 0
+    );
+    users[index] = {
+      ...prev,
+      ...updates,
+      username: (updates.username !== undefined ? updates.username : prev.username).normalize('NFC').trim(),
+      fullName: (updates.fullName !== undefined ? updates.fullName : prev.fullName).normalize('NFC').trim(),
+      email: nextEmail,
+      emailDigest: nextEmailDigest,
+      password: updates.password !== undefined ? updates.password.trim() : prev.password,
+      updatedAt: nextUpdatedAt
+    };
     this.saveUsers(users);
     notifySubscribers();
     emitLocalMutation('meta');
@@ -616,11 +663,11 @@ export const StorageService = {
     if (target && (target.username === 'Võ Dương Phú' || target.id === 'user-admin-01')) {
       return false;
     }
-    const now = Date.now();
+    const tombTs = Math.max(Date.now(), (Number(target?.updatedAt) || 0) + 1);
     const tombstones = this.getTombstones();
-    tombstones.users[id] = now;
+    tombstones.users[id] = tombTs;
     if (target) {
-      tombstones.users[normUserKey(target.username)] = now;
+      tombstones.users[normUserKey(target.username)] = tombTs;
     }
     this.saveTombstones(tombstones);
 
@@ -635,7 +682,9 @@ export const StorageService = {
     const users = [...this.getUsers()];
     const idx = users.findIndex((u) => u.id === userId);
     if (idx === -1) return false;
-    users[idx] = { ...users[idx], password: newPass, updatedAt: Date.now() };
+    const prev = users[idx];
+    const nextUpdatedAt = Math.max(Date.now(), (Number(prev.updatedAt) || 0) + 1);
+    users[idx] = { ...prev, password: newPass.trim(), updatedAt: nextUpdatedAt };
     this.saveUsers(users);
     notifySubscribers();
     emitLocalMutation('meta');

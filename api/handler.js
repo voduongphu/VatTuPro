@@ -77,6 +77,17 @@ function normUserKey(raw) {
     .toLowerCase();
 }
 
+function foldVietnameseAscii(raw) {
+  return String(raw || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/đ/g, 'd')
+    .replace(/Đ/g, 'd')
+    .trim()
+    .replace(/\s+/g, ' ')
+    .toLowerCase();
+}
+
 function hashPair(str) {
   let h1 = 0x811c9dc5;
   let h2 = 0x01000193;
@@ -88,6 +99,73 @@ function hashPair(str) {
     h2 = Math.imul(h2, 0x85ebca6b);
   }
   return [h1 >>> 0, h2 >>> 0];
+}
+
+function computeEmailAuthDigest(email) {
+  const clean = String(email || '').trim().toLowerCase();
+  if (!clean) return '';
+  const [h1, h2] = hashPair(`VTP_EMAIL_AUTH_V1|${clean}`);
+  const [h3, h4] = hashPair(`VTP_EMAIL_SALT_V2|${clean.split('').reverse().join('')}`);
+  return `em_${h1.toString(36)}_${h2.toString(36)}_${h3.toString(36)}_${h4.toString(36)}`;
+}
+
+function isSessionHeartbeatFresh(nowMs, lastSeenAt, ttlMs = ACTIVE_SESSION_TTL_MS) {
+  const seen = Number(lastSeenAt) || 0;
+  if (seen <= 0) return false;
+  return Math.abs(nowMs - seen) <= ttlMs;
+}
+
+function isPasswordMatch(storedPassword, inputPassword) {
+  const stored = String(storedPassword ?? '');
+  const input = String(inputPassword ?? '');
+  if (!input) return false;
+  if (stored === input) return true;
+  const trimmedInput = input.trim();
+  if (!trimmedInput) return false;
+  return stored.trim() === trimmedInput;
+}
+
+function findMatchingUser(users, rawIdentifier) {
+  const inputKey = normUserKey(rawIdentifier);
+  if (!inputKey || !Array.isArray(users) || users.length === 0) return undefined;
+
+  const exactUsername = users.find((u) => normUserKey(u.username) === inputKey);
+  if (exactUsername) return exactUsername;
+
+  const exactFullName = users.find((u) => normUserKey(u.fullName) === inputKey);
+  if (exactFullName) return exactFullName;
+
+  if (inputKey.includes('@')) {
+    const targetDigest = computeEmailAuthDigest(inputKey);
+    const byEmail = users.find(
+      (u) =>
+        normUserKey(u.email) === inputKey ||
+        (targetDigest &&
+          (u.emailDigest === targetDigest || computeEmailAuthDigest(u.email) === targetDigest))
+    );
+    if (byEmail) return byEmail;
+  }
+
+  const foldedInput = foldVietnameseAscii(rawIdentifier);
+  if (!foldedInput) return undefined;
+
+  const foldedUsernameMatches = users.filter((u) => foldVietnameseAscii(u.username) === foldedInput);
+  if (foldedUsernameMatches.length === 1) return foldedUsernameMatches[0];
+
+  const foldedFullNameMatches = users.filter((u) => foldVietnameseAscii(u.fullName) === foldedInput);
+  if (foldedFullNameMatches.length === 1) return foldedFullNameMatches[0];
+
+  const compactInput = foldedInput.replace(/\s+/g, '');
+  if (compactInput.length >= 3) {
+    const compactMatches = users.filter(
+      (u) =>
+        foldVietnameseAscii(u.username).replace(/\s+/g, '') === compactInput ||
+        foldVietnameseAscii(u.fullName).replace(/\s+/g, '') === compactInput
+    );
+    if (compactMatches.length === 1) return compactMatches[0];
+  }
+
+  return undefined;
 }
 
 function computeMetaDigest(users, warehouses, tombstones) {
@@ -250,14 +328,20 @@ function mergeUsersAdditive(existing, incoming, tombstones) {
   const indexById = new Map();
 
   for (let i = 0; i < existing.length; i++) {
-    const u = existing[i];
-    const uKey = normUserKey(u.username);
+    const rawU = existing[i];
+    const uKey = normUserKey(rawU.username);
     const isProtectedAdmin =
-      uKey === 'võ dương phú' || uKey === 'vo duong phu' || u.id === 'user-admin-01';
-    if (!isProtectedAdmin && isRecordDeleted(tombstones, [u.id, uKey], u.updatedAt)) {
+      uKey === 'võ dương phú' || uKey === 'vo duong phu' || rawU.id === 'user-admin-01';
+    if (!isProtectedAdmin && isRecordDeleted(tombstones, [rawU.id, uKey], rawU.updatedAt)) {
       changed = true;
       continue;
     }
+    const computedDigest = rawU.email ? computeEmailAuthDigest(rawU.email) : rawU.emailDigest || '';
+    const u =
+      computedDigest && rawU.emailDigest !== computedDigest
+        ? { ...rawU, emailDigest: computedDigest }
+        : rawU;
+    if (u !== rawU) changed = true;
     const idx = result.length;
     result.push(u);
     if (uKey) indexByUsername.set(uKey, idx);
@@ -265,8 +349,13 @@ function mergeUsersAdditive(existing, incoming, tombstones) {
   }
 
   for (let i = 0; i < incoming.length; i++) {
-    const inc = incoming[i];
-    if (!inc || !inc.username) continue;
+    const rawInc = incoming[i];
+    if (!rawInc || !rawInc.username) continue;
+    const incDigest = rawInc.email ? computeEmailAuthDigest(rawInc.email) : rawInc.emailDigest || '';
+    const inc =
+      incDigest && rawInc.emailDigest !== incDigest
+        ? { ...rawInc, emailDigest: incDigest }
+        : rawInc;
     const uKey = normUserKey(inc.username);
     const isProtectedAdmin =
       uKey === 'võ dương phú' || uKey === 'vo duong phu' || inc.id === 'user-admin-01';
@@ -293,9 +382,15 @@ function mergeUsersAdditive(existing, incoming, tombstones) {
         Math.max(Number(curr.sessionRevokedAt) || 0, Number(inc.sessionRevokedAt) || 0) ||
         undefined;
       if (incTs > currTs) {
+        const mergedEmail = inc.email ?? curr.email;
+        const mergedDigest = mergedEmail
+          ? computeEmailAuthDigest(mergedEmail)
+          : inc.emailDigest || curr.emailDigest || undefined;
         const nextUser = {
           ...curr,
           ...inc,
+          email: mergedEmail,
+          emailDigest: mergedDigest,
           password: inc.password || curr.password,
           sessionRevokedAt: maxRevokedAt,
           updatedAt: incTs
@@ -307,6 +402,7 @@ function mergeUsersAdditive(existing, incoming, tombstones) {
           nextUser.isActive !== curr.isActive ||
           nextUser.phone !== curr.phone ||
           nextUser.email !== curr.email ||
+          nextUser.emailDigest !== curr.emailDigest ||
           nextUser.department !== curr.department ||
           nextUser.sessionRevokedAt !== curr.sessionRevokedAt ||
           nextUser.updatedAt !== curr.updatedAt
@@ -317,12 +413,16 @@ function mergeUsersAdditive(existing, incoming, tombstones) {
       } else {
         const mergedFullName = curr.fullName || inc.fullName;
         const mergedEmail = curr.email || inc.email;
+        const mergedDigest = mergedEmail
+          ? computeEmailAuthDigest(mergedEmail)
+          : curr.emailDigest || inc.emailDigest || undefined;
         const mergedPhone = curr.phone || inc.phone;
         const mergedDept = curr.department || inc.department;
         const mergedPass = curr.password || inc.password;
         if (
           mergedFullName !== curr.fullName ||
           mergedEmail !== curr.email ||
+          mergedDigest !== curr.emailDigest ||
           mergedPhone !== curr.phone ||
           mergedDept !== curr.department ||
           mergedPass !== curr.password ||
@@ -332,6 +432,7 @@ function mergeUsersAdditive(existing, incoming, tombstones) {
             ...curr,
             fullName: mergedFullName,
             email: mergedEmail,
+            emailDigest: mergedDigest,
             phone: mergedPhone,
             department: mergedDept,
             password: mergedPass,
@@ -1114,7 +1215,7 @@ function getLiveActiveSession(key, user, nowMs = Date.now()) {
   if (
     store.revokedTokens[sess.sessionToken] ||
     (revokedBefore > 0 && issued > 0 && issued <= revokedBefore) ||
-    nowMs - (sess.lastSeenAt || 0) > ACTIVE_SESSION_TTL_MS
+    !isSessionHeartbeatFresh(nowMs, sess.lastSeenAt, ACTIVE_SESSION_TTL_MS)
   ) {
     delete store.activeSessions[key];
     return undefined;
@@ -1201,7 +1302,7 @@ async function loadDirIntoStore(dirPath, isSeedSource = false) {
               const sessIssued = getSessionIssuedAtMs(sess);
               if (
                 (revokedBefore > 0 && sessIssued > 0 && sessIssued <= revokedBefore) ||
-                nowMs - (sess.lastSeenAt || 0) > ACTIVE_SESSION_TTL_MS
+                !isSessionHeartbeatFresh(nowMs, sess.lastSeenAt, ACTIVE_SESSION_TTL_MS)
               ) {
                 continue;
               }
@@ -1378,7 +1479,12 @@ function validateSession(params) {
   const user = store.users.find(
     (u) => normUserKey(u.username) === key || (params.userId && u.id === params.userId)
   );
-  if (!user || !user.isActive) {
+  const deletedInTombstones = isRecordDeleted(
+    store.tombstones.users,
+    [params.userId || '', key],
+    user?.updatedAt
+  );
+  if ((user && !user.isActive) || deletedInTombstones) {
     if (store.activeSessions[key]) {
       delete store.activeSessions[key];
       void writeMetaNow();
@@ -1426,7 +1532,7 @@ function validateSession(params) {
     if (active) {
       return { valid: false, reason: 'replaced', replacedBy: active };
     }
-    return { valid: false, reason: 'expired' };
+    return { valid: false, reason: user ? 'expired' : 'missing' };
   }
 
   const tokenIssuedAtMs = sigCheck.issuedAtMs;
@@ -1451,8 +1557,8 @@ function validateSession(params) {
       store.revokedTokens[active.sessionToken] = tokenIssuedAtMs;
     }
     const upgraded = {
-      userId: user.id,
-      username: user.username,
+      userId: user?.id || params.userId || key,
+      username: user?.username || params.username || key,
       userKey: key,
       sessionToken: token,
       issuedAtMs: tokenIssuedAtMs,
@@ -1603,10 +1709,14 @@ export default async function handler(req, res) {
         }
       }
 
-      const inputKey = normUserKey(trimmedUser);
-      const matchedIdx = store.users.findIndex(
-        (u) => normUserKey(u.username) === inputKey || normUserKey(u.fullName) === inputKey
-      );
+      const matchedCandidate = findMatchingUser(store.users, trimmedUser);
+      const matchedIdx = matchedCandidate
+        ? store.users.findIndex(
+            (u) =>
+              u.id === matchedCandidate.id ||
+              normUserKey(u.username) === normUserKey(matchedCandidate.username)
+          )
+        : -1;
 
       if (matchedIdx === -1) {
         sendJson(res, 200, {
@@ -1625,7 +1735,7 @@ export default async function handler(req, res) {
         return;
       }
 
-      if ((user.password || '') !== passStr) {
+      if (!isPasswordMatch(user.password, passStr)) {
         sendJson(res, 200, {
           success: false,
           message: 'Mật khẩu đăng nhập không chính xác. Vui lòng kiểm tra lại.'
@@ -1800,15 +1910,7 @@ export default async function handler(req, res) {
 
         const key = check.session.userKey;
         const userIdx = store.users.findIndex((u) => normUserKey(u.username) === key);
-        if (userIdx === -1) {
-          sendJson(res, 200, {
-            success: false,
-            message: 'Không tìm thấy tài khoản người dùng.'
-          });
-          return;
-        }
-
-        const user = store.users[userIdx];
+        const user = userIdx >= 0 ? store.users[userIdx] : undefined;
         const currIssuedAt = getSessionIssuedAtMs(check.session);
         const prevRevoked = getRevokedBeforeMs(key, user);
         const issuedAtMs = Math.max(nowMs, currIssuedAt + 2, prevRevoked + 2);
@@ -1820,16 +1922,19 @@ export default async function handler(req, res) {
         store.sessionRevokedBefore[key] = revokedAt;
         store.forceLogoutMeta[key] = { at: nowIso, deviceLabel: cleanDeviceLabel };
 
-        const updatedUser = {
-          ...user,
-          sessionRevokedAt: revokedAt,
-          updatedAt: Math.max(issuedAtMs, Number(user.updatedAt || 0) + 1)
-        };
-        store.users[userIdx] = updatedUser;
+        let updatedUser;
+        if (user && userIdx >= 0) {
+          updatedUser = {
+            ...user,
+            sessionRevokedAt: revokedAt,
+            updatedAt: Math.max(issuedAtMs, Number(user.updatedAt || 0) + 1)
+          };
+          store.users[userIdx] = updatedUser;
+        }
 
         const newSession = {
-          userId: updatedUser.id,
-          username: updatedUser.username,
+          userId: updatedUser?.id || check.session.userId,
+          username: updatedUser?.username || check.session.username,
           userKey: key,
           sessionToken: newSessionToken,
           issuedAtMs,
@@ -1872,10 +1977,14 @@ export default async function handler(req, res) {
         }
       }
 
-      const inputKey = normUserKey(trimmedUser);
-      const matchedIdx = store.users.findIndex(
-        (u) => normUserKey(u.username) === inputKey || normUserKey(u.fullName) === inputKey
-      );
+      const matchedCandidate = findMatchingUser(store.users, trimmedUser);
+      const matchedIdx = matchedCandidate
+        ? store.users.findIndex(
+            (u) =>
+              u.id === matchedCandidate.id ||
+              normUserKey(u.username) === normUserKey(matchedCandidate.username)
+          )
+        : -1;
 
       if (matchedIdx === -1) {
         sendJson(res, 200, {
@@ -1894,7 +2003,7 @@ export default async function handler(req, res) {
         return;
       }
 
-      if ((user.password || '') !== passStr) {
+      if (!isPasswordMatch(user.password, passStr)) {
         sendJson(res, 200, {
           success: false,
           message: 'Mật khẩu xác thực không chính xác. Không thể gửi yêu cầu đăng xuất thiết bị kia.'

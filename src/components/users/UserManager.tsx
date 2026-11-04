@@ -16,9 +16,12 @@ import {
   Building2, 
   Phone, 
   Mail,
-  Lock
+  Lock,
+  Eye,
+  EyeOff
 } from 'lucide-react';
 import { ConfirmDeleteModal } from '../common/ConfirmDeleteModal';
+import { normUserKey } from '../../utils/additiveMerge';
 
 export const UserManager: React.FC = () => {
   const { users, isAdmin, addUser, updateUser, deleteUser, resetUserPassword } = useAuth();
@@ -31,6 +34,7 @@ export const UserManager: React.FC = () => {
   const [resetPassUser, setResetPassUser] = useState<User | null>(null);
   const [userToDelete, setUserToDelete] = useState<User | null>(null);
   const [newPasswordValue, setNewPasswordValue] = useState('123456');
+  const [visiblePasswords, setVisiblePasswords] = useState<Record<string, boolean>>({});
 
   // Form states for Add/Edit
   const [formUsername, setFormUsername] = useState('');
@@ -66,6 +70,7 @@ export const UserManager: React.FC = () => {
     setEditingUser(u);
     setFormUsername(u.username);
     setFormFullName(u.fullName);
+    setFormPassword(u.password || '');
     setFormRole(u.role);
     setFormEmail(u.email || '');
     setFormPhone(u.phone || '');
@@ -76,30 +81,34 @@ export const UserManager: React.FC = () => {
 
   const handleSaveAdd = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!formUsername.trim() || !formFullName.trim()) {
+    const cleanUsername = formUsername.normalize('NFC').trim();
+    const cleanFullName = formFullName.normalize('NFC').trim();
+    const cleanPass = formPassword.trim() || '123456';
+
+    if (!cleanUsername || !cleanFullName) {
       setFormError('Vui lòng điền tên đăng nhập và họ tên người dùng');
       return;
     }
 
-    // Check trùng username
-    if (users.some(u => u.username.toLowerCase() === formUsername.trim().toLowerCase())) {
-      setFormError(`Tên đăng nhập "${formUsername}" đã tồn tại trên hệ thống.`);
+    // Check trùng username chuẩn hóa NFC
+    if (users.some((u) => normUserKey(u.username) === normUserKey(cleanUsername))) {
+      setFormError(`Tên đăng nhập "${cleanUsername}" đã tồn tại trên hệ thống.`);
       return;
     }
 
     try {
       addUser({
-        username: formUsername.trim(),
-        fullName: formFullName.trim(),
+        username: cleanUsername,
+        fullName: cleanFullName,
         role: formRole,
-        password: formPassword || '123456',
+        password: cleanPass,
         email: formEmail.trim(),
         phone: formPhone.trim(),
         department: formDepartment.trim(),
         isActive: formIsActive
       });
       setIsAddModalOpen(false);
-      showNotify('success', `Đã tạo người sử dụng "${formFullName}" thành công với mật khẩu: ${formPassword}`);
+      showNotify('success', `Đã tạo người sử dụng "${cleanFullName}" thành công với mật khẩu: ${cleanPass}`);
     } catch (err: any) {
       setFormError(err.message || 'Lỗi khi tạo người dùng');
     }
@@ -108,13 +117,30 @@ export const UserManager: React.FC = () => {
   const handleSaveEdit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!editingUser) return;
-    if (!formFullName.trim()) {
-      setFormError('Họ tên không được để trống');
+    const cleanUsername = formUsername.normalize('NFC').trim();
+    const cleanFullName = formFullName.normalize('NFC').trim();
+    const cleanPass = formPassword.trim();
+    const isMainAdmin = editingUser.username === 'Võ Dương Phú' || editingUser.id === 'user-admin-01';
+
+    if (!cleanFullName || !cleanUsername) {
+      setFormError('Tên đăng nhập và họ tên không được để trống');
+      return;
+    }
+
+    if (
+      !isMainAdmin &&
+      users.some(
+        (u) => u.id !== editingUser.id && normUserKey(u.username) === normUserKey(cleanUsername)
+      )
+    ) {
+      setFormError(`Tên đăng nhập "${cleanUsername}" đã được sử dụng bởi tài khoản khác.`);
       return;
     }
 
     updateUser(editingUser.id, {
-      fullName: formFullName.trim(),
+      username: isMainAdmin ? editingUser.username : cleanUsername,
+      fullName: cleanFullName,
+      ...(cleanPass ? { password: cleanPass } : {}),
       role: formRole,
       email: formEmail.trim(),
       phone: formPhone.trim(),
@@ -123,7 +149,7 @@ export const UserManager: React.FC = () => {
     });
 
     setEditingUser(null);
-    showNotify('success', `Đã cập nhật thông tin người dùng "${formFullName}".`);
+    showNotify('success', `Đã cập nhật thông tin người dùng "${cleanFullName}".`);
   };
 
   const handleDelete = (u: User) => {
@@ -148,20 +174,22 @@ export const UserManager: React.FC = () => {
   const handleResetPasswordSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!resetPassUser) return;
-    if (!newPasswordValue.trim()) {
+    const cleanPass = newPasswordValue.trim();
+    if (!cleanPass) {
       showNotify('error', 'Vui lòng nhập mật khẩu mới.');
       return;
     }
-    resetUserPassword(resetPassUser.id, newPasswordValue.trim());
-    showNotify('success', `Đã cấp mật khẩu mới "${newPasswordValue}" cho người dùng ${resetPassUser.fullName}.`);
+    resetUserPassword(resetPassUser.id, cleanPass);
+    showNotify('success', `Đã cấp mật khẩu mới "${cleanPass}" cho người dùng ${resetPassUser.fullName}.`);
     setResetPassUser(null);
   };
 
-  const filteredUsers = users.filter(u => {
-    const matchesSearch = 
-      u.fullName.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      u.username.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      (u.department && u.department.toLowerCase().includes(searchTerm.toLowerCase()));
+  const normalizedSearch = searchTerm.normalize('NFC').toLowerCase();
+  const filteredUsers = users.filter((u) => {
+    const matchesSearch =
+      u.fullName.normalize('NFC').toLowerCase().includes(normalizedSearch) ||
+      u.username.normalize('NFC').toLowerCase().includes(normalizedSearch) ||
+      (u.department && u.department.normalize('NFC').toLowerCase().includes(normalizedSearch));
     const matchesRole = selectedRole === 'all' || u.role === selectedRole;
     return matchesSearch && matchesRole;
   });
@@ -302,9 +330,38 @@ export const UserManager: React.FC = () => {
                       </td>
 
                       <td className="px-5 py-4 font-mono font-medium text-slate-700">
-                        <span className="bg-slate-100 px-2 py-1 rounded-md text-xs border border-slate-200">
-                          {u.username}
-                        </span>
+                        <div className="space-y-1">
+                          <div>
+                            <span className="bg-slate-100 px-2 py-1 rounded-md text-xs border border-slate-200">
+                              {u.username}
+                            </span>
+                          </div>
+                          {isAdmin && (
+                            <div className="flex items-center gap-1.5 text-[11px] text-slate-500">
+                              <span>MK:</span>
+                              <span className="font-semibold text-slate-700">
+                                {visiblePasswords[u.id] ? u.password || '—' : '••••••'}
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setVisiblePasswords((prev) => ({
+                                    ...prev,
+                                    [u.id]: !prev[u.id]
+                                  }))
+                                }
+                                title={visiblePasswords[u.id] ? 'Ẩn mật khẩu' : 'Xem mật khẩu đăng nhập'}
+                                className="p-0.5 text-slate-400 hover:text-blue-600 rounded transition"
+                              >
+                                {visiblePasswords[u.id] ? (
+                                  <EyeOff className="w-3.5 h-3.5" />
+                                ) : (
+                                  <Eye className="w-3.5 h-3.5" />
+                                )}
+                              </button>
+                            </div>
+                          )}
+                        </div>
                       </td>
 
                       <td className="px-5 py-4">
@@ -571,6 +628,42 @@ export const UserManager: React.FC = () => {
             </div>
 
             <form onSubmit={handleSaveEdit} className="p-4 sm:p-6 space-y-4 overflow-y-auto flex-1">
+              {formError && (
+                <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-rose-700 text-xs flex items-center gap-2">
+                  <ShieldAlert className="w-4 h-4 shrink-0" />
+                  <span>{formError}</span>
+                </div>
+              )}
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 uppercase mb-1">
+                    Tên đăng nhập (*)
+                  </label>
+                  <input
+                    type="text"
+                    value={formUsername}
+                    disabled={editingUser.username === 'Võ Dương Phú' || editingUser.id === 'user-admin-01'}
+                    onChange={(e) => setFormUsername(e.target.value)}
+                    className="w-full px-3 py-2 text-sm bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none disabled:bg-slate-200"
+                    required
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 uppercase mb-1">
+                    Mật khẩu đăng nhập
+                  </label>
+                  <input
+                    type="text"
+                    value={formPassword}
+                    onChange={(e) => setFormPassword(e.target.value)}
+                    placeholder="Nhập để đổi mật khẩu..."
+                    className="w-full px-3 py-2 text-sm font-mono bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none"
+                  />
+                </div>
+              </div>
+
               <div>
                 <label className="block text-xs font-semibold text-slate-700 uppercase mb-1">
                   Họ và tên đầy đủ (*)

@@ -12,6 +12,10 @@ import type {
 import {
   normKey,
   normUserKey,
+  computeEmailAuthDigest,
+  findMatchingUser,
+  isPasswordMatch,
+  isSessionHeartbeatFresh,
   computeMetaDigest,
   computeMaterialsDigest,
   computeInboundReceiptDigest,
@@ -61,6 +65,7 @@ export interface LoginServerResult {
   message: string;
   conflict?: boolean;
   cloudConnectedOnly?: boolean;
+  needsCloudConnect?: boolean;
   activeSession?: ActiveUserSession;
   user?: User;
   replacedSession?: ActiveUserSession;
@@ -173,18 +178,31 @@ function notifySessionInvalidated(info: SessionInvalidationInfo): void {
   });
 }
 
+let memoryDeviceId: string | null = null;
+let memoryUnifiedSession: UnifiedAuthSession | null = null;
+let memoryKickNotice: SessionInvalidationInfo | null = null;
+let memoryStaticSessions: Record<string, ActiveUserSession> = {};
+
 export function getDeviceId(): string {
+  if (memoryDeviceId) return memoryDeviceId;
   try {
     const existing = localStorage.getItem(DEVICE_ID_STORAGE_KEY);
-    if (existing) return existing;
+    if (existing) {
+      memoryDeviceId = existing;
+      return existing;
+    }
     const created =
       typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
         ? `dev-${crypto.randomUUID()}`
         : `dev-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    memoryDeviceId = created;
     localStorage.setItem(DEVICE_ID_STORAGE_KEY, created);
     return created;
   } catch {
-    return CLIENT_ID;
+    if (!memoryDeviceId) {
+      memoryDeviceId = CLIENT_ID;
+    }
+    return memoryDeviceId;
   }
 }
 
@@ -211,39 +229,47 @@ export function getDeviceLabel(): string {
   return `${browser} trên ${os}`;
 }
 
-function getStoredUnifiedSession(): UnifiedAuthSession | null {
-  try {
-    const raw = sessionStorage.getItem(UNIFIED_SESSION_STORAGE_KEY);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as UnifiedAuthSession;
-    if (
-      parsed &&
+function isValidUnifiedSession(parsed: UnifiedAuthSession | null | undefined): parsed is UnifiedAuthSession {
+  return Boolean(
+    parsed &&
       parsed.user &&
       parsed.user.id &&
       parsed.session &&
       parsed.session.userKey &&
       parsed.session.sessionToken &&
       !parsed.session.sessionToken.startsWith('offline-')
-    ) {
-      return parsed;
+  );
+}
+
+function getStoredUnifiedSession(): UnifiedAuthSession | null {
+  try {
+    const raw = sessionStorage.getItem(UNIFIED_SESSION_STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw) as UnifiedAuthSession;
+      if (isValidUnifiedSession(parsed)) {
+        memoryUnifiedSession = parsed;
+        return parsed;
+      }
+      sessionStorage.removeItem(UNIFIED_SESSION_STORAGE_KEY);
     }
-    sessionStorage.removeItem(UNIFIED_SESSION_STORAGE_KEY);
-    return null;
   } catch {
-    return null;
+    // Trình duyệt Chrome chặn sessionStorage trong iframe / chế độ nghiêm ngặt -> dùng bộ nhớ RAM an toàn
   }
+  return isValidUnifiedSession(memoryUnifiedSession) ? memoryUnifiedSession : null;
 }
 
 function saveStoredUnifiedSession(unified: UnifiedAuthSession): void {
+  memoryUnifiedSession = unified;
   purgeLegacySessionKeys();
   try {
     sessionStorage.setItem(UNIFIED_SESSION_STORAGE_KEY, JSON.stringify(unified));
   } catch {
-    // ignore
+    // ignore when Web Storage is restricted by Chrome privacy settings
   }
 }
 
 function clearStoredUnifiedSession(): void {
+  memoryUnifiedSession = null;
   purgeLegacySessionKeys();
   try {
     sessionStorage.removeItem(UNIFIED_SESSION_STORAGE_KEY);
@@ -253,6 +279,7 @@ function clearStoredUnifiedSession(): void {
 }
 
 function savePersistedKickNotice(info: SessionInvalidationInfo): void {
+  memoryKickNotice = info;
   if (typeof window === 'undefined') return;
   try {
     sessionStorage.setItem(KICK_NOTICE_STORAGE_KEY, JSON.stringify(info));
@@ -262,21 +289,24 @@ function savePersistedKickNotice(info: SessionInvalidationInfo): void {
 }
 
 function readPersistedKickNotice(): SessionInvalidationInfo | null {
-  if (typeof window === 'undefined') return null;
+  if (typeof window === 'undefined') return memoryKickNotice;
   try {
     const raw = sessionStorage.getItem(KICK_NOTICE_STORAGE_KEY);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as SessionInvalidationInfo;
-    if (parsed && parsed.reason) {
-      return parsed;
+    if (raw) {
+      const parsed = JSON.parse(raw) as SessionInvalidationInfo;
+      if (parsed && parsed.reason) {
+        memoryKickNotice = parsed;
+        return parsed;
+      }
     }
-    return null;
   } catch {
-    return null;
+    // ignore
   }
+  return memoryKickNotice;
 }
 
 function clearPersistedKickNotice(): void {
+  memoryKickNotice = null;
   if (typeof window === 'undefined') return;
   try {
     sessionStorage.removeItem(KICK_NOTICE_STORAGE_KEY);
@@ -310,22 +340,28 @@ class ApiRouteMissingError extends Error {
 function getStaticSessionsMap(): Record<string, ActiveUserSession> {
   try {
     const raw = localStorage.getItem(STATIC_SESSIONS_STORAGE_KEY);
-    if (!raw) return {};
-    const parsed = JSON.parse(raw);
-    return parsed && typeof parsed === 'object' ? parsed : {};
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object') {
+        memoryStaticSessions = { ...memoryStaticSessions, ...parsed };
+        return memoryStaticSessions;
+      }
+    }
   } catch {
-    return {};
+    // ignore
   }
+  return { ...memoryStaticSessions };
 }
 
 function saveStaticSessionEntry(userKey: string, session: ActiveUserSession | null): void {
+  const map = getStaticSessionsMap();
+  if (session) {
+    map[userKey] = session;
+  } else {
+    delete map[userKey];
+  }
+  memoryStaticSessions = map;
   try {
-    const map = getStaticSessionsMap();
-    if (session) {
-      map[userKey] = session;
-    } else {
-      delete map[userKey];
-    }
     localStorage.setItem(STATIC_SESSIONS_STORAGE_KEY, JSON.stringify(map));
   } catch {
     // ignore
@@ -1429,18 +1465,20 @@ export const SyncService = {
 
       const users = StorageService.getUsers();
       const emailLower = (cloudEmail || '').trim().toLowerCase();
-      const nameKey = normUserKey(cloudName);
-      const matched = users.find(
-        (u) =>
-          (emailLower && (u.email || '').trim().toLowerCase() === emailLower) ||
-          (nameKey && (normUserKey(u.username) === nameKey || normUserKey(u.fullName) === nameKey))
-      );
+      const emailDigest = computeEmailAuthDigest(emailLower);
+      const matched =
+        users.find(
+          (u) =>
+            (emailLower && (u.email || '').trim().toLowerCase() === emailLower) ||
+            (emailDigest &&
+              (u.emailDigest === emailDigest || computeEmailAuthDigest(u.email) === emailDigest))
+        ) || (cloudName ? findMatchingUser(users, cloudName) : undefined);
 
       if (!matched) {
         return {
           success: false,
           cloudConnectedOnly: true,
-          message: `Đã kết nối Đám mây (${cloudEmail || 'Google'}) và đồng bộ dữ liệu kho mới nhất về thiết bị này! Vui lòng nhập Tên người sử dụng và Mật khẩu kho bên dưới để đăng nhập.`
+          message: `Đã kết nối Đám mây (${cloudEmail || 'Google'}) và đồng bộ đầy đủ danh sách tài khoản về máy tính này! Vui lòng nhập Tên người sử dụng và Mật khẩu bên dưới để đăng nhập.`
         };
       }
 
@@ -1527,8 +1565,12 @@ export const SyncService = {
     const forceLogoutOtherDevice = Boolean(options?.forceLogoutOtherDevice);
 
     try {
-      // Ưu tiên tuyệt đối Cloud Firestore nếu thiết bị đã kết nối Đám mây (hoạt động xuyên suốt Điện thoại, Máy tính, Vercel, AI Studio)
-      if (FirestoreSyncService.isCloudConnected()) {
+      // Đảm bảo IndexedDB cục bộ và phiên Google Cloud trên trình duyệt Chrome đã sẵn sàng trước khi xác thực
+      await StorageService.init();
+      await FirestoreSyncService.ensureReadyForAuth(2500);
+
+      // Ưu tiên tuyệt đối Cloud Firestore nếu thiết bị có phiên Google Đám mây hợp lệ
+      if (FirestoreSyncService.canAttemptCloudAuth()) {
         const cloudRes = await FirestoreSyncService.loginWithCloud(
           username,
           password,
@@ -1616,6 +1658,20 @@ export const SyncService = {
       }
 
       if (!res.success || !res.user || !res.session) {
+        const isNotFoundErr =
+          !res.conflict &&
+          Boolean(res.message) &&
+          res.message.toLowerCase().includes('không tồn tại');
+        const cloudDisconnected = !FirestoreSyncService.isCloudConnected();
+
+        if (isNotFoundErr && cloudDisconnected) {
+          return {
+            success: false,
+            needsCloudConnect: true,
+            message: `Tài khoản "${username}" chưa được đồng bộ về trình duyệt Chrome này. Hãy nhấn nút "Kết nối Đám mây & Đăng nhập ngay" bên dưới (chỉ cần 1 lần trên máy tính này) để tải danh sách tài khoản mới nhất từ đám mây và tự động đăng nhập!`
+          };
+        }
+
         return {
           success: false,
           conflict: Boolean(res.conflict),
@@ -1633,6 +1689,8 @@ export const SyncService = {
 
       if (Array.isArray(res.users) && res.users.length > 0) {
         StorageService.applyRemoteMeta({ users: res.users });
+      } else {
+        StorageService.applyRemoteMeta({ users: [res.user] });
       }
 
       try {
@@ -1663,14 +1721,12 @@ export const SyncService = {
     } catch {
       // Fallback xác thực an toàn trên dữ liệu cục bộ nếu máy chủ /api chưa phản hồi (vd: môi trường tĩnh hoặc mạng chập chờn)
       const localUsers = StorageService.getUsers();
-      const inputKey = normUserKey(username);
-      const matched = localUsers.find(
-        (u) => normUserKey(u.username) === inputKey || normUserKey(u.fullName) === inputKey
-      );
+      const matched = findMatchingUser(localUsers, username);
       if (!matched) {
         return {
           success: false,
-          message: `Tài khoản "${username}" chưa có trên thiết bị này. Hãy bấm "Kết nối Đám mây Google" phía trên để tải danh sách tài khoản từ đám mây về máy!`
+          needsCloudConnect: !FirestoreSyncService.isCloudConnected(),
+          message: `Tài khoản "${username}" chưa có trên trình duyệt Chrome này. Hãy nhấn "Kết nối Đám mây & Đăng nhập ngay" bên dưới để tải danh sách tài khoản từ đám mây về máy tính!`
         };
       }
       if (!matched.isActive) {
@@ -1679,7 +1735,7 @@ export const SyncService = {
           message: 'Tài khoản này hiện đang bị khóa hoặc ngừng kích hoạt. Vui lòng liên hệ Admin.'
         };
       }
-      if ((matched.password || '') !== password) {
+      if (!isPasswordMatch(matched.password, password)) {
         return {
           success: false,
           message: 'Mật khẩu đăng nhập không chính xác. Vui lòng kiểm tra lại.'
@@ -1687,7 +1743,6 @@ export const SyncService = {
       }
 
       const nowMs = Date.now();
-      const nowIso = new Date(nowMs).toISOString();
       const userKey = normUserKey(matched.username);
       const staticMap = getStaticSessionsMap();
       const prevStatic = staticMap[userKey];
@@ -1695,7 +1750,7 @@ export const SyncService = {
       if (
         prevStatic &&
         prevStatic.deviceId !== deviceId &&
-        nowMs - (prevStatic.lastSeenAt || 0) <= STATIC_TTL_MS &&
+        isSessionHeartbeatFresh(nowMs, prevStatic.lastSeenAt, STATIC_TTL_MS) &&
         !forceLogoutOtherDevice
       ) {
         return {
@@ -1706,12 +1761,19 @@ export const SyncService = {
         };
       }
 
+      const issuedAtMs = Math.max(
+        nowMs,
+        (Number(matched.sessionRevokedAt) || 0) + 2,
+        (Number(prevStatic?.issuedAtMs) || 0) + 2
+      );
+      const nowIso = new Date(issuedAtMs).toISOString();
+
       const staticSession: ActiveUserSession = {
         userId: matched.id,
         username: matched.username,
         userKey,
-        sessionToken: `static-${nowMs}-${Math.random().toString(36).slice(2, 10)}`,
-        issuedAtMs: nowMs,
+        sessionToken: `static-${issuedAtMs}-${Math.random().toString(36).slice(2, 10)}`,
+        issuedAtMs,
         deviceId,
         deviceLabel,
         loginAt: nowIso,
@@ -1731,7 +1793,7 @@ export const SyncService = {
           type: 'auth:session_replaced',
           userKey,
           activeSessionToken: staticSession.sessionToken,
-          issuedAtMs: nowMs,
+          issuedAtMs,
           deviceLabel,
           loginAt: nowIso
         });
@@ -1759,7 +1821,10 @@ export const SyncService = {
     const deviceLabel = getDeviceLabel();
 
     try {
-      if (FirestoreSyncService.isCloudConnected()) {
+      await StorageService.init();
+      await FirestoreSyncService.ensureReadyForAuth(2500);
+
+      if (FirestoreSyncService.canAttemptCloudAuth()) {
         const cloudRes = await FirestoreSyncService.requestLogoutOtherDeviceWithCloud(
           username,
           password,
@@ -1767,7 +1832,8 @@ export const SyncService = {
         );
         if (cloudRes.handled) {
           if (cloudRes.success) {
-            const targetKey = normUserKey(username);
+            const matchedCloud = findMatchingUser(StorageService.getUsers(), username);
+            const targetKey = normUserKey(matchedCloud?.username || username);
             const current = getStoredUnifiedSession();
             if (current && normUserKey(current.session.userKey) === targetKey) {
               clearStoredUnifiedSession();
@@ -1837,17 +1903,14 @@ export const SyncService = {
       };
     } catch {
       const localUsers = StorageService.getUsers();
-      const inputKey = normUserKey(username);
-      const matched = localUsers.find(
-        (u) => normUserKey(u.username) === inputKey || normUserKey(u.fullName) === inputKey
-      );
+      const matched = findMatchingUser(localUsers, username);
       if (!matched) {
         return {
           success: false,
           message: `Tài khoản "${username}" không tồn tại trong hệ thống.`
         };
       }
-      if ((matched.password || '') !== password) {
+      if (!isPasswordMatch(matched.password, password)) {
         return {
           success: false,
           message: 'Mật khẩu xác thực không chính xác.'

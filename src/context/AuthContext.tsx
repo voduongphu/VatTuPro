@@ -3,7 +3,7 @@ import { User, ActiveUserSession } from '../types/inventory';
 import { StorageService } from '../services/storage';
 import { SyncService, SessionInvalidationInfo } from '../services/syncService';
 import type { CloudSyncSnapshotState } from '../services/firestoreSync';
-import { normUserKey } from '../utils/additiveMerge';
+import { normUserKey, isPasswordMatch, isRecordDeleted } from '../utils/additiveMerge';
 
 export interface SessionKickAlert extends SessionInvalidationInfo {
   title: string;
@@ -20,6 +20,7 @@ export interface LoginActionResult {
   success: boolean;
   message: string;
   conflict?: boolean;
+  needsCloudConnect?: boolean;
   cloudConnectedOnly?: boolean;
   matchedUsername?: string;
   activeSession?: ActiveUserSession;
@@ -106,10 +107,20 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const list = StorageService.getUsers();
     const match = list.find(
       (u) =>
-        (u.id === unified.user.id || normUserKey(u.username) === normUserKey(unified.user.username)) &&
-        u.isActive
+        u.id === unified.user.id || normUserKey(u.username) === normUserKey(unified.user.username)
     );
-    return match || null;
+    if (match) {
+      return match.isActive ? match : null;
+    }
+    const deleted = isRecordDeleted(
+      StorageService.getTombstones().users,
+      [unified.user.id, normUserKey(unified.user.username)],
+      unified.user.updatedAt
+    );
+    if (deleted || unified.user.isActive === false) {
+      return null;
+    }
+    return unified.user;
   });
 
   const [sessionKickAlert, setSessionKickAlert] = useState<SessionKickAlert | null>(() => {
@@ -175,12 +186,25 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         const found = latestUsers.find(
           (u) => u.id === prev.id || normUserKey(u.username) === normUserKey(prev.username)
         );
-        if (!found || !found.isActive) {
+        if (found) {
+          if (!found.isActive) {
+            void SyncService.logoutFromServer();
+            return null;
+          }
+          SyncService.updateUnifiedSessionUser(found);
+          return found;
+        }
+
+        const deleted = isRecordDeleted(
+          StorageService.getTombstones().users,
+          [prev.id, normUserKey(prev.username)],
+          prev.updatedAt
+        );
+        if (deleted) {
           void SyncService.logoutFromServer();
           return null;
         }
-        SyncService.updateUnifiedSessionUser(found);
-        return found;
+        return prev;
       });
     });
   }, []);
@@ -250,6 +274,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return {
         success: false,
         conflict: res.conflict,
+        needsCloudConnect: res.needsCloudConnect,
         activeSession: res.activeSession,
         message: res.message
       };
@@ -332,12 +357,19 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (!currentUser) {
       return { success: false, message: 'Chưa đăng nhập' };
     }
-    if (currentUser.password !== oldPass) {
+    if (!isPasswordMatch(currentUser.password, oldPass)) {
       return { success: false, message: 'Mật khẩu hiện tại không đúng' };
     }
-    const success = StorageService.resetPassword(currentUser.id, newPass);
+    const cleanNewPass = newPass.trim();
+    if (!cleanNewPass) {
+      return { success: false, message: 'Mật khẩu mới không được để trống' };
+    }
+    const success = StorageService.resetPassword(currentUser.id, cleanNewPass);
     if (success) {
-      const updated = { ...currentUser, password: newPass };
+      const updated = StorageService.getUsers().find((u) => u.id === currentUser.id) || {
+        ...currentUser,
+        password: cleanNewPass
+      };
       setCurrentUser(updated);
       SyncService.updateUnifiedSessionUser(updated);
       refreshUsers();

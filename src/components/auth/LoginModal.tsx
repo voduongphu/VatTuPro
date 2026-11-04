@@ -10,7 +10,9 @@ import {
   CheckCircle2,
   Cloud,
   CloudOff,
-  LogOut
+  LogOut,
+  Eye,
+  EyeOff
 } from 'lucide-react';
 
 interface LoginModalProps {
@@ -22,7 +24,9 @@ export const LoginModal: React.FC<LoginModalProps> = ({ isOpen, onClose }) => {
   const { login, connectCloudSync, cloudState, requestLogoutOtherDevice } = useAuth();
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
+  const [needsCloudConnect, setNeedsCloudConnect] = useState(false);
   const [successMessage, setSuccessMessage] = useState('');
   const [conflictSession, setConflictSession] = useState<ActiveUserSession | null>(null);
   const [conflictMessage, setConflictMessage] = useState('');
@@ -34,6 +38,7 @@ export const LoginModal: React.FC<LoginModalProps> = ({ isOpen, onClose }) => {
 
   const handleConnectCloud = async () => {
     setErrorMessage('');
+    setNeedsCloudConnect(false);
     setSuccessMessage('');
     setIsConnectingCloud(true);
     try {
@@ -48,9 +53,48 @@ export const LoginModal: React.FC<LoginModalProps> = ({ isOpen, onClose }) => {
     }
   };
 
+  const handleConnectCloudAndAutoLogin = async () => {
+    setErrorMessage('');
+    setNeedsCloudConnect(false);
+    setSuccessMessage('');
+    setConflictSession(null);
+    setConflictMessage('');
+    setIsConnectingCloud(true);
+    try {
+      const cloudRes = await connectCloudSync();
+      if (!cloudRes.success) {
+        setErrorMessage(cloudRes.message);
+        return;
+      }
+      if (username.trim() && password) {
+        const loginRes = await login(username.trim(), password, false);
+        if (loginRes.success) {
+          setSuccessMessage(loginRes.message);
+          setTimeout(() => {
+            onClose();
+            setSuccessMessage('');
+          }, 600);
+          return;
+        }
+        if (loginRes.conflict) {
+          setConflictSession(loginRes.activeSession || null);
+          setConflictMessage(loginRes.message);
+          return;
+        }
+        setNeedsCloudConnect(Boolean(loginRes.needsCloudConnect));
+        setErrorMessage(loginRes.message);
+      } else {
+        setSuccessMessage(cloudRes.message);
+      }
+    } finally {
+      setIsConnectingCloud(false);
+    }
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMessage('');
+    setNeedsCloudConnect(false);
     setSuccessMessage('');
     setConflictSession(null);
     setConflictMessage('');
@@ -73,6 +117,7 @@ export const LoginModal: React.FC<LoginModalProps> = ({ isOpen, onClose }) => {
         setConflictSession(res.activeSession || null);
         setConflictMessage(res.message);
       } else {
+        setNeedsCloudConnect(Boolean(res.needsCloudConnect));
         setErrorMessage(res.message);
       }
     } finally {
@@ -196,9 +241,26 @@ export const LoginModal: React.FC<LoginModalProps> = ({ isOpen, onClose }) => {
           )}
 
           {errorMessage && (
-            <div className="mb-4 p-3 bg-rose-50 border border-rose-200 rounded-xl text-rose-700 text-xs flex items-center gap-2">
-              <AlertCircle className="w-4 h-4 shrink-0" />
-              <span>{errorMessage}</span>
+            <div className="mb-4 p-3 bg-rose-50 border border-rose-200 rounded-xl text-rose-700 text-xs space-y-2">
+              <div className="flex items-start gap-2">
+                <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                <span className="leading-relaxed">{errorMessage}</span>
+              </div>
+              {needsCloudConnect && (
+                <button
+                  type="button"
+                  onClick={handleConnectCloudAndAutoLogin}
+                  disabled={isConnectingCloud || isSubmitting}
+                  className="w-full min-h-[38px] px-3 py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-lg transition flex items-center justify-center gap-1.5 disabled:opacity-70"
+                >
+                  <Cloud className="w-3.5 h-3.5 shrink-0" />
+                  <span>
+                    {isConnectingCloud
+                      ? 'Đang kết nối & tự động đăng nhập...'
+                      : 'Kết nối Đám mây & Đăng nhập ngay'}
+                  </span>
+                </button>
+              )}
             </div>
           )}
 
@@ -219,8 +281,10 @@ export const LoginModal: React.FC<LoginModalProps> = ({ isOpen, onClose }) => {
                   type="text"
                   value={username}
                   onChange={(e) => setUsername(e.target.value)}
-                  placeholder="Nhập tên tài khoản..."
+                  placeholder="Nhập tên tài khoản hoặc họ tên..."
                   autoComplete="username"
+                  autoCapitalize="none"
+                  spellCheck={false}
                   className="w-full min-h-[44px] px-3.5 py-2.5 pl-10 text-base sm:text-sm bg-slate-50 border border-slate-300 rounded-xl focus:bg-white focus:ring-2 focus:ring-blue-600 focus:border-blue-600 transition outline-none"
                   required
                 />
@@ -234,15 +298,23 @@ export const LoginModal: React.FC<LoginModalProps> = ({ isOpen, onClose }) => {
               </label>
               <div className="relative">
                 <input
-                  type="password"
+                  type={showPassword ? 'text' : 'password'}
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   placeholder="Nhập mật khẩu..."
                   autoComplete="current-password"
-                  className="w-full min-h-[44px] px-3.5 py-2.5 pl-10 text-base sm:text-sm bg-slate-50 border border-slate-300 rounded-xl focus:bg-white focus:ring-2 focus:ring-blue-600 focus:border-blue-600 transition outline-none"
+                  className="w-full min-h-[44px] px-3.5 py-2.5 pl-10 pr-11 text-base sm:text-sm bg-slate-50 border border-slate-300 rounded-xl focus:bg-white focus:ring-2 focus:ring-blue-600 focus:border-blue-600 transition outline-none"
                   required
                 />
                 <Lock className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                <button
+                  type="button"
+                  onClick={() => setShowPassword(!showPassword)}
+                  aria-label={showPassword ? 'Ẩn mật khẩu' : 'Hiện mật khẩu'}
+                  className="min-w-[40px] min-h-[40px] absolute right-1 top-1/2 -translate-y-1/2 flex items-center justify-center text-slate-400 hover:text-slate-700 rounded-lg transition"
+                >
+                  {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                </button>
               </div>
             </div>
 

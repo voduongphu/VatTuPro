@@ -36,6 +36,10 @@ import type {
 import {
   normKey,
   normUserKey,
+  computeEmailAuthDigest,
+  findMatchingUser,
+  isPasswordMatch,
+  isSessionHeartbeatFresh,
   createEmptyTombstones,
   isRecordDeleted,
   computeMaterialsDigest,
@@ -131,8 +135,25 @@ let cloudMaterialsDirty = false;
 let externalOnRemoteWorkspaceChange: (() => void) | null = null;
 let externalOnRemoteSessionSnapshot: ((remoteData: Record<string, any>) => void) | null = null;
 
+const authReadyWaiters = new Set<() => void>();
+
+function resolveAuthReadyWaiters(): void {
+  if (authReadyWaiters.size === 0) return;
+  authReadyWaiters.forEach((resolve) => {
+    try {
+      resolve();
+    } catch {
+      // ignore
+    }
+  });
+  authReadyWaiters.clear();
+}
+
 function emitCloudState(patch: Partial<CloudSyncSnapshotState>): void {
   currentState = { ...currentState, ...patch };
+  if (currentState.authReady) {
+    resolveAuthReadyWaiters();
+  }
   stateListeners.forEach((cb) => {
     try {
       cb(currentState);
@@ -224,8 +245,9 @@ function computeCloudSharedMetaDigest(
 
   for (let i = 0; i < users.length; i++) {
     const u = users[i];
+    const emDigest = u.emailDigest || computeEmailAuthDigest(u.email) || '';
     const [h1, h2] = hash32Pair(
-      `CU|${normUserKey(u.username)}|${u.id}|${u.fullName}|${u.role}|${u.password || ''}|${u.isActive ? 1 : 0}|${u.department || ''}|${Number(u.updatedAt) || 0}|${Number(u.sessionRevokedAt) || 0}`
+      `CU|${normUserKey(u.username)}|${u.id}|${u.fullName}|${u.role}|${u.password || ''}|${emDigest}|${u.isActive ? 1 : 0}|${u.department || ''}|${Number(u.updatedAt) || 0}|${Number(u.sessionRevokedAt) || 0}`
     );
     sum1 = (sum1 + h1) >>> 0;
     sum2 = (sum2 + h2) >>> 0;
@@ -400,12 +422,14 @@ async function commitStagedWrites(writes: StagedDocWrite[]): Promise<void> {
 // Entity Serializers & Deserializers (Native Maps Only, Zero JSON.stringify)
 // ============================================================================
 function serializeAccountPublic(u: User): Record<string, any> {
+  const emailDigest = cleanStr(u.emailDigest || computeEmailAuthDigest(u.email), 64, '');
   return {
     id: cleanStr(u.id, 120, `user-${Date.now()}`),
     username: cleanStr(u.username, 120, 'user'),
     fullName: cleanStr(u.fullName || u.username, 160, 'Người dùng'),
     role: ['admin', 'manager', 'staff', 'viewer'].includes(u.role) ? u.role : 'staff',
     credential: cleanStr(u.password, 120, ''),
+    emailDigest,
     department: cleanStr(u.department, 160, ''),
     isActive: Boolean(u.isActive),
     createdAt: cleanStr(u.createdAt, 64, new Date().toISOString()),
@@ -416,12 +440,14 @@ function serializeAccountPublic(u: User): Record<string, any> {
 }
 
 function deserializeAccountPublic(m: Record<string, any>): User {
+  const emailDigest = cleanStr(m.emailDigest, 64, '');
   return {
     id: cleanStr(m.id, 120, 'user-unknown'),
     username: cleanStr(m.username, 120, 'user'),
     fullName: cleanStr(m.fullName, 160, cleanStr(m.username, 120, 'Người dùng')),
     role: ['admin', 'manager', 'staff', 'viewer'].includes(m.role) ? m.role : 'staff',
     password: cleanStr(m.credential, 120, ''),
+    emailDigest: emailDigest || undefined,
     department: cleanStr(m.department, 160, ''),
     isActive: m.isActive !== false,
     createdAt: cleanStr(m.createdAt, 64, '2026-01-01T00:00:00Z'),
@@ -901,7 +927,10 @@ async function pullMetaFromCloud(wsData: WorkspaceManifestDoc, fbUser: FirebaseU
           );
           if (snap.exists()) {
             const d = snap.data();
-            if (d.email) u.email = String(d.email);
+            if (d.email) {
+              u.email = String(d.email);
+              u.emailDigest = computeEmailAuthDigest(u.email) || u.emailDigest;
+            }
             if (d.phone) u.phone = String(d.phone);
           }
         })
@@ -1535,6 +1564,42 @@ export const FirestoreSyncService = {
     return Boolean(auth.currentUser && auth.currentUser.emailVerified && currentState.status === 'connected');
   },
 
+  canAttemptCloudAuth(): boolean {
+    return Boolean(auth.currentUser && auth.currentUser.emailVerified);
+  },
+
+  async ensureReadyForAuth(timeoutMs = 2500): Promise<boolean> {
+    if (!currentState.authReady) {
+      await Promise.race([
+        new Promise<void>((resolve) => {
+          if (currentState.authReady) {
+            resolve();
+            return;
+          }
+          authReadyWaiters.add(resolve);
+        }),
+        new Promise<void>((resolve) => setTimeout(resolve, timeoutMs))
+      ]);
+    }
+    const fbUser = auth.currentUser;
+    if (!fbUser || !fbUser.emailVerified) {
+      return false;
+    }
+    if (currentState.status !== 'connected') {
+      try {
+        const ok = await ensureWorkspaceReady(fbUser);
+        if (ok) {
+          attachWorkspaceRealtimeListener();
+          emitCloudState({ status: 'connected', errorMessage: null });
+          return true;
+        }
+      } catch {
+        // fall through
+      }
+    }
+    return Boolean(auth.currentUser && auth.currentUser.emailVerified);
+  },
+
   subscribeState(listener: (state: CloudSyncSnapshotState) => void): () => void {
     stateListeners.add(listener);
     listener(currentState);
@@ -2004,16 +2069,13 @@ export const FirestoreSyncService = {
     }
 
     const users = StorageService.getUsers();
-    const inputKey = normUserKey(username);
-    const matched = users.find(
-      (u) => normUserKey(u.username) === inputKey || normUserKey(u.fullName) === inputKey
-    );
+    const matched = findMatchingUser(users, username);
 
     if (!matched) {
       return {
         handled: true,
         success: false,
-        message: `Tài khoản "${username}" không tồn tại trong hệ thống. Vui lòng kiểm tra lại!`
+        message: `Tài khoản "${username}" không tồn tại trong hệ thống. Vui lòng kiểm tra lại tên đăng nhập!`
       };
     }
 
@@ -2025,7 +2087,7 @@ export const FirestoreSyncService = {
       };
     }
 
-    if ((matched.password || '') !== password) {
+    if (!isPasswordMatch(matched.password, password)) {
       return {
         handled: true,
         success: false,
@@ -2043,14 +2105,14 @@ export const FirestoreSyncService = {
 
     let prevActive: ActiveUserSession | undefined;
     let prevIssued = 0;
-    let prevRevoked = 0;
+    let prevRevoked = Number(matched.sessionRevokedAt) || 0;
 
     if (sessSnap.exists()) {
       const d = sessSnap.data();
       prevIssued = Number(d.issuedAtMs) || 0;
-      prevRevoked = Number(d.revokedBeforeMs) || 0;
+      prevRevoked = Math.max(prevRevoked, Number(d.revokedBeforeMs) || 0);
       const hasToken = Boolean(d.sessionToken);
-      const isFresh = nowMs - (Number(d.lastSeenAt) || 0) <= ACTIVE_SESSION_TTL_MS;
+      const isFresh = isSessionHeartbeatFresh(nowMs, Number(d.lastSeenAt) || 0, ACTIVE_SESSION_TTL_MS);
       if (hasToken && isFresh) {
         prevActive = {
           userId: String(d.userId || matched.id),
@@ -2115,25 +2177,27 @@ export const FirestoreSyncService = {
       }
     );
 
-    const updatedUser: User = {
-      ...matched,
-      lastLogin: nowIso,
-      sessionRevokedAt: forceLogoutOtherDevice
-        ? Math.max(Number(matched.sessionRevokedAt) || 0, nextRevokedBefore)
-        : matched.sessionRevokedAt,
-      updatedAt: nowMs
-    };
-    StorageService.updateUser(matched.id, {
-      lastLogin: updatedUser.lastLogin,
-      sessionRevokedAt: updatedUser.sessionRevokedAt
-    });
+    const nextUserUpdatedAt = Math.max(nowMs, (Number(matched.updatedAt) || 0) + 1);
+    const updatedFromStore =
+      StorageService.updateUser(matched.id, {
+        lastLogin: nowIso,
+        sessionRevokedAt: forceLogoutOtherDevice
+          ? Math.max(Number(matched.sessionRevokedAt) || 0, nextRevokedBefore)
+          : matched.sessionRevokedAt,
+        updatedAt: nextUserUpdatedAt
+      }) || {
+        ...matched,
+        lastLogin: nowIso,
+        updatedAt: nextUserUpdatedAt
+      };
 
+    emitCloudState({ status: 'connected', errorMessage: null });
     this.watchActiveSession(userKey);
 
     return {
       handled: true,
       success: true,
-      user: updatedUser,
+      user: updatedFromStore,
       session: newSession,
       replacedSession: prevActive && prevActive.deviceId !== deviceId ? prevActive : undefined,
       message: 'Đăng nhập & đồng bộ đám mây thành công!'
@@ -2178,9 +2242,9 @@ export const FirestoreSyncService = {
     const myIssued = Number(mySession.issuedAtMs) || 0;
 
     if (remoteToken === mySession.sessionToken) {
-      // Gia hạn nhịp tim nếu đã quá 20 giây để tiết kiệm hạn mức ghi Firestore
+      // Gia hạn nhịp tim nếu đã quá 20 giây (hoặc lệch đồng hồ giữa các thiết bị) để tiết kiệm hạn mức ghi Firestore
       const nowMs = Date.now();
-      if (nowMs - (Number(d.lastSeenAt) || 0) >= 20_000) {
+      if (Math.abs(nowMs - (Number(d.lastSeenAt) || 0)) >= 20_000) {
         await writeSingleProtectedDoc(
           sessRef,
           sessPath,
@@ -2267,10 +2331,7 @@ export const FirestoreSyncService = {
       await pullMetaFromCloud(wsSnap.data() as WorkspaceManifestDoc, fbUser);
     }
 
-    const inputKey = normUserKey(username);
-    const matched = StorageService.getUsers().find(
-      (u) => normUserKey(u.username) === inputKey || normUserKey(u.fullName) === inputKey
-    );
+    const matched = findMatchingUser(StorageService.getUsers(), username);
     if (!matched) {
       return {
         handled: true,
@@ -2278,7 +2339,7 @@ export const FirestoreSyncService = {
         message: `Tài khoản "${username}" không tồn tại trong hệ thống.`
       };
     }
-    if ((matched.password || '') !== password) {
+    if (!isPasswordMatch(matched.password, password)) {
       return {
         handled: true,
         success: false,
@@ -2296,6 +2357,7 @@ export const FirestoreSyncService = {
     const nowIso = new Date(nowMs).toISOString();
     const revokeMark = Math.max(
       nowMs,
+      Number(matched.sessionRevokedAt) || 0,
       Number(prev?.issuedAtMs) || 0,
       Number(prev?.revokedBeforeMs) || 0
     );

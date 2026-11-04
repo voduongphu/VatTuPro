@@ -8,6 +8,7 @@ export interface User {
   password?: string;
   phone?: string;
   email?: string;
+  emailDigest?: string;
   department?: string;
   isActive: boolean;
   createdAt: string;

@@ -59,6 +59,7 @@ export const LoginScreen: React.FC = () => {
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
+  const [needsCloudConnect, setNeedsCloudConnect] = useState(false);
   const [successMessage, setSuccessMessage] = useState('');
   const [conflictSession, setConflictSession] = useState<ActiveUserSession | null>(null);
   const [conflictMessage, setConflictMessage] = useState('');
@@ -88,6 +89,7 @@ export const LoginScreen: React.FC = () => {
 
   const handleConnectCloudOnly = async () => {
     setErrorMessage('');
+    setNeedsCloudConnect(false);
     setSuccessMessage('');
     clearSessionKickNotice();
     setIsCloudConnecting(true);
@@ -103,8 +105,48 @@ export const LoginScreen: React.FC = () => {
     }
   };
 
+  const handleConnectCloudAndAutoLogin = async () => {
+    setErrorMessage('');
+    setNeedsCloudConnect(false);
+    setSuccessMessage('');
+    setConflictSession(null);
+    setConflictMessage('');
+    setConflictViaGoogle(false);
+    clearSessionKickNotice();
+    setIsCloudConnecting(true);
+    try {
+      const cloudRes = await connectCloudSync();
+      if (!cloudRes.success) {
+        setErrorMessage(cloudRes.message);
+        return;
+      }
+      if (username.trim() && password) {
+        const loginRes = await login(username.trim(), password, false);
+        if (loginRes.success) {
+          setSuccessMessage(
+            'Đã đồng bộ Đám mây và đăng nhập thành công! Đang chuyển vào hệ thống...'
+          );
+          return;
+        }
+        if (loginRes.conflict) {
+          setConflictViaGoogle(false);
+          setConflictSession(loginRes.activeSession || null);
+          setConflictMessage(loginRes.message);
+          return;
+        }
+        setNeedsCloudConnect(Boolean(loginRes.needsCloudConnect));
+        setErrorMessage(loginRes.message);
+      } else {
+        setSuccessMessage(cloudRes.message);
+      }
+    } finally {
+      setIsCloudConnecting(false);
+    }
+  };
+
   const handleGoogleLogin = async (forceLogoutOtherDevice = false) => {
     setErrorMessage('');
+    setNeedsCloudConnect(false);
     setSuccessMessage('');
     if (!forceLogoutOtherDevice) {
       setConflictSession(null);
@@ -139,6 +181,7 @@ export const LoginScreen: React.FC = () => {
 
   const handleSwitchGoogleAccount = async () => {
     setErrorMessage('');
+    setNeedsCloudConnect(false);
     setSuccessMessage('');
     setIsCloudConnecting(true);
     try {
@@ -157,6 +200,7 @@ export const LoginScreen: React.FC = () => {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMessage('');
+    setNeedsCloudConnect(false);
     setSuccessMessage('');
     setConflictSession(null);
     setConflictMessage('');
@@ -175,6 +219,7 @@ export const LoginScreen: React.FC = () => {
         setConflictSession(res.activeSession || null);
         setConflictMessage(res.message);
       } else {
+        setNeedsCloudConnect(Boolean(res.needsCloudConnect));
         setErrorMessage(res.message);
       }
     } finally {
@@ -314,6 +359,10 @@ export const LoginScreen: React.FC = () => {
                       </>
                     )}
                   </button>
+
+                  <div className="text-[11px] text-emerald-100/80 leading-relaxed pt-0.5 border-t border-emerald-800/50">
+                    Mọi tài khoản nhân sự (Admin, Quản lý kho, Thủ kho...) đều có thể đăng nhập bằng <strong>Tên người sử dụng &amp; Mật khẩu</strong> bên dưới.
+                  </div>
                 </div>
               ) : (
                 <div className="p-3.5 bg-blue-950/50 border border-blue-700/50 rounded-2xl text-xs space-y-2.5">
@@ -447,9 +496,26 @@ export const LoginScreen: React.FC = () => {
 
               {/* Alert messages */}
               {errorMessage && (
-                <div className="p-3.5 bg-rose-950/75 border border-rose-800 rounded-2xl text-rose-200 text-xs flex items-center gap-2.5">
-                  <AlertCircle className="w-4 h-4 shrink-0 text-rose-400" />
-                  <span className="font-medium leading-relaxed">{errorMessage}</span>
+                <div className="p-3.5 bg-rose-950/75 border border-rose-800 rounded-2xl text-rose-200 text-xs space-y-2.5">
+                  <div className="flex items-start gap-2.5">
+                    <AlertCircle className="w-4 h-4 shrink-0 text-rose-400 mt-0.5" />
+                    <span className="font-medium leading-relaxed">{errorMessage}</span>
+                  </div>
+                  {needsCloudConnect && (
+                    <button
+                      type="button"
+                      onClick={handleConnectCloudAndAutoLogin}
+                      disabled={isCloudConnecting || isLoading}
+                      className="w-full min-h-[40px] px-3 py-2 bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs rounded-xl shadow-md transition flex items-center justify-center gap-2 disabled:opacity-60"
+                    >
+                      <Cloud className="w-4 h-4 shrink-0" />
+                      <span>
+                        {isCloudConnecting
+                          ? 'Đang kết nối Đám mây & tự động đăng nhập...'
+                          : 'Kết nối Đám mây & Đăng nhập ngay'}
+                      </span>
+                    </button>
+                  )}
                 </div>
               )}
 
@@ -471,8 +537,10 @@ export const LoginScreen: React.FC = () => {
                       type="text"
                       value={username}
                       onChange={(e) => setUsername(e.target.value)}
-                      placeholder="Nhập tên người sử dụng..."
+                      placeholder="Nhập tên đăng nhập hoặc họ tên (có dấu / không dấu)..."
                       autoComplete="username"
+                      autoCapitalize="none"
+                      spellCheck={false}
                       className="w-full min-h-[48px] px-4 py-3 pl-11 text-base sm:text-sm bg-slate-950 border border-slate-700 rounded-xl text-white placeholder-slate-500 focus:bg-slate-900 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition outline-none"
                       required
                     />
