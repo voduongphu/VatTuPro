@@ -1407,3 +1407,311 @@ export function buildLatestMaterialsFromReceipts(
 
   return map;
 }
+
+// ============================================================================
+// Smart Sequential Voucher Numbering (PNK / PXK Auto-Increment)
+// ============================================================================
+
+export interface VoucherCodeSeed {
+  code: string;
+  date?: string;
+  createdAt?: string;
+  lastEditedAt?: string;
+  updatedAt?: number;
+  isExcelFallbackCandidate?: boolean;
+}
+
+interface ParsedVoucherCode {
+  mode: 'trailing' | 'leading';
+  affix: string;
+  affixKey: string;
+  num: number;
+  padLen: number;
+  prefixYear: number;
+  createdTs: number;
+  voucherDateKey: string;
+  index: number;
+  isExcelFallback: boolean;
+}
+
+function extractVoucherPrefixYear(affix: string): number {
+  const m = /^(?:PNK|PXK|NK|XK)[-_/\s.]?(\d{2}|\d{4})[-_/\s.]$/i.exec(affix.trim());
+  if (!m) return 0;
+  const rawYear = parseInt(m[1], 10);
+  if (isNaN(rawYear)) return 0;
+  if (m[1].length === 2) {
+    return rawYear >= 70 ? 1900 + rawYear : 2000 + rawYear;
+  }
+  return rawYear;
+}
+
+function normalizeIsoDateForSort(rawDate: string | undefined): string {
+  const s = (rawDate || '').trim();
+  if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
+  const dmy = /^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$/.exec(s);
+  if (dmy) {
+    return `${dmy[3]}-${dmy[2].padStart(2, '0')}-${dmy[1].padStart(2, '0')}`;
+  }
+  return '';
+}
+
+function parseSingleVoucherCode(
+  seed: VoucherCodeSeed,
+  index: number
+): ParsedVoucherCode | null {
+  const raw = (seed.code || '').trim();
+  if (!raw) return null;
+
+  const upper = raw.toUpperCase();
+  // Bỏ qua các mã phiếu lấy theo Packing List (VD: PNK-PL-01, PXK-PL...) hoặc định dạng ngày YYYY-MM-DD
+  if (
+    upper.startsWith('PNK-PL') ||
+    upper.startsWith('PXK-PL') ||
+    upper.startsWith('PL-') ||
+    /^\d{4}[-/]\d{1,2}[-/]\d{1,2}$/.test(raw)
+  ) {
+    return null;
+  }
+
+  const createdTs = Date.parse(seed.createdAt || '') || 0;
+  const voucherDateKey = normalizeIsoDateForSort(seed.date);
+  const isExcelFallback = Boolean(seed.isExcelFallbackCandidate);
+
+  // Dạng 1 (phổ biến nhất): Tiền tố + Số thứ tự ở cuối (VD: PNK25-0019, PNK26-0001, PXK25-0005, PNK-012)
+  const trailingMatch = /^(.*?)(\d{1,8})$/.exec(raw);
+  if (trailingMatch && trailingMatch[1].trim().length > 0) {
+    const rawPrefix = trailingMatch[1].toUpperCase();
+    const digits = trailingMatch[2];
+    const num = parseInt(digits, 10);
+    if (!isNaN(num) && num >= 0) {
+      return {
+        mode: 'trailing',
+        affix: rawPrefix,
+        affixKey: `T:${rawPrefix}`,
+        num,
+        padLen: digits.length,
+        prefixYear: extractVoucherPrefixYear(rawPrefix),
+        createdTs,
+        voucherDateKey,
+        index,
+        isExcelFallback
+      };
+    }
+  }
+
+  // Dạng 2: Số thứ tự ở đầu + Hậu tố (VD: 0019/PNK, 005/PXK-2026)
+  const leadingMatch = /^(\d{1,6})(\/[A-Za-z0-9_.-]+)$/.exec(raw);
+  if (leadingMatch) {
+    const digits = leadingMatch[1];
+    const rawSuffix = leadingMatch[2].toUpperCase();
+    const num = parseInt(digits, 10);
+    if (!isNaN(num) && num >= 0) {
+      return {
+        mode: 'leading',
+        affix: rawSuffix,
+        affixKey: `L:${rawSuffix}`,
+        num,
+        padLen: digits.length,
+        prefixYear: 0,
+        createdTs,
+        voucherDateKey,
+        index,
+        isExcelFallback
+      };
+    }
+  }
+
+  return null;
+}
+
+export function generateNextSequentialVoucherCode(
+  seeds: VoucherCodeSeed[],
+  defaultType: 'PNK' | 'PXK',
+  fallbackDateStr?: string
+): string {
+  const occupiedCodes = new Set<string>();
+  const allParsed: ParsedVoucherCode[] = [];
+
+  for (let i = 0; i < seeds.length; i++) {
+    const k = normKey(seeds[i].code);
+    if (k) occupiedCodes.add(k);
+    const parsed = parseSingleVoucherCode(seeds[i], i);
+    if (parsed) {
+      allParsed.push(parsed);
+    }
+  }
+
+  // Loại trừ các mã ngẫu nhiên 4 chữ số cũ do import Excel tự sinh (nếu có) để không làm nhảy vọt số thứ tự
+  const nonFallbackParsed = allParsed.filter((p) => !p.isExcelFallback);
+  const candidates = nonFallbackParsed;
+
+  if (candidates.length === 0) {
+    const normDate = normalizeIsoDateForSort(fallbackDateStr);
+    const yy = normDate
+      ? normDate.slice(2, 4)
+      : String(new Date().getFullYear()).slice(-2);
+    const prefix = `${defaultType}${yy}-`;
+    let seq = 1;
+    let candidate = `${prefix}${String(seq).padStart(4, '0')}`;
+    while (occupiedCodes.has(normKey(candidate))) {
+      seq++;
+      candidate = `${prefix}${String(seq).padStart(4, '0')}`;
+    }
+    return candidate;
+  }
+
+  // Gom nhóm theo bộ tiền tố/hậu tố (series) và chọn bộ số đang được sử dụng gần nhất
+  interface SeriesStats {
+    mode: 'trailing' | 'leading';
+    affix: string;
+    maxSeq: number;
+    padLen: number;
+    latestCreatedTs: number;
+    prefixYear: number;
+    latestVoucherDate: string;
+    minIndex: number;
+  }
+
+  const seriesMap = new Map<string, SeriesStats>();
+  for (let i = 0; i < candidates.length; i++) {
+    const c = candidates[i];
+    const existing = seriesMap.get(c.affixKey);
+    if (!existing) {
+      seriesMap.set(c.affixKey, {
+        mode: c.mode,
+        affix: c.affix,
+        maxSeq: c.num,
+        padLen: c.padLen,
+        latestCreatedTs: c.createdTs,
+        prefixYear: c.prefixYear,
+        latestVoucherDate: c.voucherDateKey,
+        minIndex: c.index
+      });
+    } else {
+      if (c.num > existing.maxSeq) {
+        existing.maxSeq = c.num;
+      }
+      if (c.padLen > existing.padLen) {
+        existing.padLen = c.padLen;
+      }
+      if (c.createdTs > existing.latestCreatedTs) {
+        existing.latestCreatedTs = c.createdTs;
+      }
+      if (c.voucherDateKey > existing.latestVoucherDate) {
+        existing.latestVoucherDate = c.voucherDateKey;
+      }
+      if (c.index < existing.minIndex) {
+        existing.minIndex = c.index;
+      }
+    }
+  }
+
+  let chosenSeries: SeriesStats | null = null;
+  seriesMap.forEach((stats) => {
+    if (!chosenSeries) {
+      chosenSeries = stats;
+      return;
+    }
+    if (stats.latestCreatedTs !== chosenSeries.latestCreatedTs) {
+      if (stats.latestCreatedTs > chosenSeries.latestCreatedTs) chosenSeries = stats;
+      return;
+    }
+    if (stats.prefixYear !== chosenSeries.prefixYear) {
+      if (stats.prefixYear > chosenSeries.prefixYear) chosenSeries = stats;
+      return;
+    }
+    if (stats.latestVoucherDate !== chosenSeries.latestVoucherDate) {
+      if (stats.latestVoucherDate > chosenSeries.latestVoucherDate) chosenSeries = stats;
+      return;
+    }
+    if (stats.minIndex < chosenSeries.minIndex) {
+      chosenSeries = stats;
+    }
+  });
+
+  const active = chosenSeries!;
+  const targetPad = Math.max(active.padLen, 1);
+  let nextSeq = active.maxSeq + 1;
+  const formatCandidate = (n: number) => {
+    const numStr = String(n).padStart(targetPad, '0');
+    return active.mode === 'trailing' ? `${active.affix}${numStr}` : `${numStr}${active.affix}`;
+  };
+
+  let nextCode = formatCandidate(nextSeq);
+  while (occupiedCodes.has(normKey(nextCode))) {
+    nextSeq++;
+    nextCode = formatCandidate(nextSeq);
+  }
+  return nextCode;
+}
+
+export function generateNextInboundVoucherCode(
+  receipts: InboundReceipt[],
+  fallbackDateStr?: string
+): string {
+  // Kiểm tra các số xuất hiện để nhận diện mã ngẫu nhiên cũ từ Excel (PL-EXCEL + SHP-EXCEL + 4 chữ số ngẫu nhiên >= 1000)
+  const numSet = new Set<number>();
+  for (let i = 0; i < receipts.length; i++) {
+    const m = /^PNK\d{2}-(\d+)$/i.exec((receipts[i].receiptCode || '').trim());
+    if (m) numSet.add(parseInt(m[1], 10));
+  }
+
+  const seeds: VoucherCodeSeed[] = receipts.map((r) => {
+    const rawCode = (r.receiptCode || '').trim();
+    const m = /^PNK\d{2}-([1-9]\d{3})$/i.exec(rawCode);
+    const num = m ? parseInt(m[1], 10) : 0;
+    const isIsolatedRandomExcel =
+      Boolean(m) &&
+      r.packingListNo === 'PL-EXCEL' &&
+      r.shipment === 'SHP-EXCEL' &&
+      !numSet.has(num - 1) &&
+      !numSet.has(1);
+
+    return {
+      code: rawCode,
+      date: r.receiptDate,
+      createdAt: r.createdAt,
+      lastEditedAt: r.lastEditedAt,
+      updatedAt: r.updatedAt,
+      isExcelFallbackCandidate: isIsolatedRandomExcel
+    };
+  });
+
+  return generateNextSequentialVoucherCode(seeds, 'PNK', fallbackDateStr);
+}
+
+export function generateNextOutboundVoucherCode(
+  receipts: OutboundReceipt[],
+  fallbackDateStr?: string
+): string {
+  const numSet = new Set<number>();
+  for (let i = 0; i < receipts.length; i++) {
+    const m = /^PXK\d{2}-(\d+)$/i.exec((receipts[i].issueCode || '').trim());
+    if (m) numSet.add(parseInt(m[1], 10));
+  }
+
+  const seeds: VoucherCodeSeed[] = receipts.map((r) => {
+    const rawCode = (r.issueCode || '').trim();
+    const m = /^PXK\d{2}-([1-9]\d{3})$/i.exec(rawCode);
+    const num = m ? parseInt(m[1], 10) : 0;
+    const firstItem = r.items?.[0];
+    const isIsolatedRandomExcel =
+      Boolean(m) &&
+      firstItem?.packingListNo === 'PL-EXCEL-01' &&
+      firstItem?.shipment === 'SHP-EXCEL' &&
+      !numSet.has(num - 1) &&
+      !numSet.has(1);
+
+    return {
+      code: rawCode,
+      date: r.issueDate,
+      createdAt: r.createdAt,
+      lastEditedAt: r.lastEditedAt,
+      updatedAt: r.updatedAt,
+      isExcelFallbackCandidate: isIsolatedRandomExcel
+    };
+  });
+
+  return generateNextSequentialVoucherCode(seeds, 'PXK', fallbackDateStr);
+}
+

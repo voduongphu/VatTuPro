@@ -14,9 +14,11 @@ import {
 } from '../../services/excelService';
 import {
   normKey,
+  foldVietnameseAscii,
   roundQty,
   sumInboundItems,
-  buildDeterministicItemId
+  buildDeterministicItemId,
+  generateNextInboundVoucherCode
 } from '../../utils/additiveMerge';
 import {
   ArrowDownLeft,
@@ -31,6 +33,9 @@ import {
   Trash2,
   CheckCircle2,
   AlertCircle,
+  RefreshCw,
+  PackageSearch,
+  ChevronDown,
   X
 } from 'lucide-react';
 
@@ -70,6 +75,7 @@ export const InboundManager: React.FC = () => {
 
   // Form New Inbound State (Theo mẫu QN-OPR-PR11-FM05.01 + Logistics)
   const [receiptCode, setReceiptCode] = useState('');
+  const [isCodeManuallyEdited, setIsCodeManuallyEdited] = useState(false);
   const [receiptDate, setReceiptDate] = useState(new Date().toISOString().slice(0, 10));
   const [selectedWarehouseId, setSelectedWarehouseId] = useState('');
   const [formDepartmentName, setFormDepartmentName] = useState('');
@@ -97,6 +103,17 @@ export const InboundManager: React.FC = () => {
   const [formItemPage, setFormItemPage] = useState(1);
   const [formError, setFormError] = useState('');
 
+  // Trường chọn nhanh & hộp thoại chọn nhiều từ Danh mục vật tư có sẵn
+  const [quickCatalogQuery, setQuickCatalogQuery] = useState('');
+  const [isQuickCatalogOpen, setIsQuickCatalogOpen] = useState(false);
+  const [isCatalogModalOpen, setIsCatalogModalOpen] = useState(false);
+  const [catalogTargetRowIdx, setCatalogTargetRowIdx] = useState<number | null>(null);
+  const [catalogSearch, setCatalogSearch] = useState('');
+  const deferredCatalogSearch = useDeferredValue(catalogSearch);
+  const [catalogCategoryFilter, setCatalogCategoryFilter] = useState('all');
+  const [catalogPage, setCatalogPage] = useState(1);
+  const [catalogPageSize, setCatalogPageSize] = useState(50);
+
   const showToast = (message: string, type: 'success' | 'error' = 'success') => {
     setToast({ message, type });
     setTimeout(() => setToast(null), 3500);
@@ -105,6 +122,7 @@ export const InboundManager: React.FC = () => {
   const loadData = () => {
     setReceipts(StorageService.getInboundReceipts());
     setWarehouses(StorageService.getWarehouses());
+    setMaterials(StorageService.getMaterials());
   };
 
   useEffect(() => {
@@ -147,27 +165,200 @@ export const InboundManager: React.FC = () => {
     return map;
   }, [materials]);
 
-  const generateNextPnkCode = (existingList: InboundReceipt[]): string => {
-    const yy = String(new Date().getFullYear()).slice(-2);
-    const prefix = `PNK${yy}-`;
-    let maxSeq = 0;
-    for (let i = 0; i < existingList.length; i++) {
-      const c = (existingList[i].receiptCode || '').toUpperCase();
-      if (c.startsWith(prefix)) {
-        const num = parseInt(c.slice(prefix.length), 10);
-        if (!isNaN(num) && num > maxSeq) maxSeq = num;
-      }
-    }
-    return `${prefix}${String(maxSeq + 1).padStart(4, '0')}`;
+  const createBlankInboundItem = (idxOffset = 0): InboundItemDetail => ({
+    id: `item-${Date.now()}-${idxOffset}-${Math.random().toString(36).substring(2, 6)}`,
+    materialCode: '',
+    materialName: '',
+    unit: 'Ống',
+    batchCode: '',
+    packingListNo: formPackingListNo || '',
+    shipment: formShipment || '',
+    packageNo: '',
+    packageName: '',
+    category: '',
+    drawingNo: '',
+    manufacturer: formManufacturer || '',
+    supplier: formSupplier || '',
+    weightKg: 0,
+    quantity: 1,
+    unitPrice: 0,
+    totalPrice: 0,
+    storageLocation: '',
+    conditionNote: '',
+    note: ''
+  });
+
+  const buildInboundItemFromMaterial = (
+    mat: MaterialItem,
+    idxOffset = 0
+  ): InboundItemDetail => {
+    const defaultQty = 1;
+    const unitW = Number(mat.unitWeightKg) || 0;
+    const defaultWeight = unitW > 0 ? Math.round(unitW * defaultQty * 100) / 100 : 0;
+    const batch = (mat.packageNo && mat.packageNo !== 'N/A' ? mat.packageNo : '').trim();
+
+    return {
+      id: `item-${Date.now()}-${idxOffset}-${Math.random().toString(36).substring(2, 6)}`,
+      materialCode: mat.code || '',
+      materialName: mat.name || '',
+      unit: mat.unit || 'Ống',
+      batchCode: batch,
+      packingListNo: formPackingListNo || '',
+      shipment: formShipment || '',
+      packageNo: batch,
+      packageName: batch ? `Kiện ${batch}` : '',
+      category: mat.category && mat.category !== 'Chung' ? mat.category : '',
+      drawingNo: mat.drawingNo && mat.drawingNo !== 'N/A' ? mat.drawingNo : '',
+      manufacturer:
+        (mat.manufacturer && mat.manufacturer !== 'N/A' ? mat.manufacturer : '') ||
+        formManufacturer ||
+        '',
+      supplier:
+        (mat.supplier && mat.supplier !== 'N/A' ? mat.supplier : '') ||
+        formSupplier ||
+        '',
+      weightKg: defaultWeight,
+      quantity: defaultQty,
+      unitPrice: 0,
+      totalPrice: 0,
+      storageLocation: '',
+      conditionNote: '',
+      note: ''
+    };
   };
 
+  const applyMaterialToRow = (targetIdx: number, mat: MaterialItem) => {
+    setFormItems((prev) => {
+      if (targetIdx < 0 || targetIdx >= prev.length) return prev;
+      const copy = [...prev];
+      const existing = copy[targetIdx];
+      const qty = existing.quantity > 0 ? roundQty(existing.quantity) : 1;
+      const uPrice = Math.max(0, Number(existing.unitPrice) || 0);
+      const unitW = Number(mat.unitWeightKg) || 0;
+      const batch =
+        (existing.batchCode || '').trim() ||
+        (mat.packageNo && mat.packageNo !== 'N/A' ? mat.packageNo.trim() : '');
+
+      copy[targetIdx] = {
+        ...existing,
+        materialCode: mat.code || '',
+        materialName: mat.name || '',
+        unit: mat.unit || existing.unit || 'Ống',
+        batchCode: batch,
+        packageNo: batch || existing.packageNo || '',
+        category:
+          (mat.category && mat.category !== 'Chung' ? mat.category : '') ||
+          existing.category ||
+          '',
+        drawingNo:
+          (mat.drawingNo && mat.drawingNo !== 'N/A' ? mat.drawingNo : '') ||
+          existing.drawingNo ||
+          '',
+        manufacturer:
+          (mat.manufacturer && mat.manufacturer !== 'N/A' ? mat.manufacturer : '') ||
+          existing.manufacturer ||
+          formManufacturer ||
+          '',
+        supplier:
+          (mat.supplier && mat.supplier !== 'N/A' ? mat.supplier : '') ||
+          existing.supplier ||
+          formSupplier ||
+          '',
+        quantity: qty,
+        weightKg:
+          unitW > 0
+            ? Math.round(unitW * qty * 100) / 100
+            : Number(existing.weightKg) || 0,
+        totalPrice: Math.round(qty * uPrice * 100) / 100
+      };
+      return copy;
+    });
+    setFormError('');
+  };
+
+  const handleQuickPickMaterial = (mat: MaterialItem) => {
+    setFormItemSearch('');
+    setFormItems((prev) => {
+      const blankIdx = prev.findIndex(
+        (it) => !it.materialCode.trim() && !it.materialName.trim()
+      );
+      if (blankIdx !== -1) {
+        const copy = [...prev];
+        copy[blankIdx] = buildInboundItemFromMaterial(mat, blankIdx);
+        setFormItemPage(Math.max(1, Math.ceil((blankIdx + 1) / FORM_ITEM_PAGE_SIZE)));
+        return copy;
+      }
+      const next = [...prev, buildInboundItemFromMaterial(mat, prev.length)];
+      setFormItemPage(Math.max(1, Math.ceil(next.length / FORM_ITEM_PAGE_SIZE)));
+      return next;
+    });
+    setQuickCatalogQuery('');
+    setIsQuickCatalogOpen(false);
+    setFormError('');
+  };
+
+  const openCatalogPicker = (rowIdx: number | null = null) => {
+    StorageService.syncMaterialsFromReceipts();
+    setMaterials(StorageService.getMaterials());
+    setCatalogTargetRowIdx(rowIdx);
+    setCatalogSearch('');
+    setCatalogCategoryFilter('all');
+    setCatalogPage(1);
+    setIsQuickCatalogOpen(false);
+    setIsCatalogModalOpen(true);
+  };
+
+  const toggleCatalogMaterialSelection = (mat: MaterialItem) => {
+    if (catalogTargetRowIdx !== null) {
+      applyMaterialToRow(catalogTargetRowIdx, mat);
+      setIsCatalogModalOpen(false);
+      setCatalogTargetRowIdx(null);
+      return;
+    }
+
+    const codeKey = normKey(mat.code);
+    setFormItemSearch('');
+    setFormItems((prev) => {
+      const exists = prev.some((it) => normKey(it.materialCode) === codeKey);
+      if (exists) {
+        const filtered = prev.filter((it) => normKey(it.materialCode) !== codeKey);
+        return filtered.length > 0 ? filtered : [createBlankInboundItem(0)];
+      }
+      const nonBlank = prev.filter(
+        (it) => it.materialCode.trim() || it.materialName.trim()
+      );
+      const next = [...nonBlank, buildInboundItemFromMaterial(mat, nonBlank.length)];
+      setFormItemPage(Math.max(1, Math.ceil(next.length / FORM_ITEM_PAGE_SIZE)));
+      return next;
+    });
+    setFormError('');
+  };
+
+  const generateNextPnkCode = (
+    existingList: InboundReceipt[],
+    targetDateStr?: string
+  ): string => {
+    return generateNextInboundVoucherCode(existingList, targetDateStr);
+  };
+
+  // Tự động nhảy sang số phiếu kế tiếp nếu có phiếu mới đồng bộ về khi đang mở form lập mới (chưa sửa tay số phiếu)
+  useEffect(() => {
+    if (!isCreateModalOpen || editingReceipt || isCodeManuallyEdited) return;
+    const nextCode = generateNextPnkCode(receipts, receiptDate);
+    setReceiptCode((prev) => (prev !== nextCode ? nextCode : prev));
+  }, [receipts, isCreateModalOpen, editingReceipt, isCodeManuallyEdited, receiptDate]);
+
   const openCreateModal = () => {
+    StorageService.syncMaterialsFromReceipts();
     const mats = StorageService.getMaterials();
     const currentReceipts = StorageService.getInboundReceipts();
+    const todayDate = new Date().toISOString().slice(0, 10);
+    setReceipts(currentReceipts);
     setEditingReceipt(null);
     setMaterials(mats);
-    setReceiptCode(generateNextPnkCode(currentReceipts));
-    setReceiptDate(new Date().toISOString().slice(0, 10));
+    setIsCodeManuallyEdited(false);
+    setReceiptDate(todayDate);
+    setReceiptCode(generateNextPnkCode(currentReceipts, todayDate));
     const whList = StorageService.getWarehouses();
     setSelectedWarehouseId(whList[0]?.id || '');
 
@@ -188,6 +379,8 @@ export const InboundManager: React.FC = () => {
     setFormError('');
     setFormItemSearch('');
     setFormItemPage(1);
+    setQuickCatalogQuery('');
+    setIsQuickCatalogOpen(false);
 
     setFormItems([
       {
@@ -223,10 +416,12 @@ export const InboundManager: React.FC = () => {
       return;
     }
 
+    StorageService.syncMaterialsFromReceipts();
     const mats = StorageService.getMaterials();
     const whList = StorageService.getWarehouses();
     setMaterials(mats);
     setEditingReceipt(rcp);
+    setIsCodeManuallyEdited(true);
     setReceiptCode(rcp.receiptCode || '');
     setReceiptDate(formatExcelDate(rcp.receiptDate) || new Date().toISOString().slice(0, 10));
     setSelectedWarehouseId(rcp.warehouseId || whList[0]?.id || '');
@@ -267,6 +462,8 @@ export const InboundManager: React.FC = () => {
     setFormError('');
     setFormItemSearch('');
     setFormItemPage(1);
+    setQuickCatalogQuery('');
+    setIsQuickCatalogOpen(false);
 
     const clonedItems: InboundItemDetail[] = (rcp.items || []).map((it, idx) => ({
       ...it,
@@ -318,31 +515,7 @@ export const InboundManager: React.FC = () => {
   const addNewItemRow = () => {
     setFormItemSearch('');
     setFormItems((prev) => {
-      const next: InboundItemDetail[] = [
-        ...prev,
-        {
-          id: `item-${Date.now()}-${Math.random().toString(36).substring(2, 5)}`,
-          materialCode: '',
-          materialName: '',
-          unit: 'Ống',
-          batchCode: '',
-          packingListNo: formPackingListNo || '',
-          shipment: formShipment || '',
-          packageNo: '',
-          packageName: '',
-          category: '',
-          drawingNo: '',
-          manufacturer: formManufacturer || '',
-          supplier: formSupplier || '',
-          weightKg: 0,
-          quantity: 1,
-          unitPrice: 0,
-          totalPrice: 0,
-          storageLocation: '',
-          conditionNote: '',
-          note: ''
-        }
-      ];
+      const next: InboundItemDetail[] = [...prev, createBlankInboundItem(prev.length)];
       setFormItemPage(Math.max(1, Math.ceil(next.length / FORM_ITEM_PAGE_SIZE)));
       return next;
     });
@@ -505,11 +678,11 @@ export const InboundManager: React.FC = () => {
 
     const todayIso = new Date().toISOString();
     const todayDate = todayIso.slice(0, 10);
-    const yy = todayDate.slice(2, 4);
     const baseTs = Date.now();
     const batchSalt = Math.random().toString(36).slice(2, 6);
     const userFullName = currentUser?.fullName || 'Võ Dương Phú';
     let createdCount = 0;
+    const existingForAutoNumber = StorageService.getInboundReceipts();
     const newReceipts: InboundReceipt[] = [];
 
     groups.forEach(
@@ -526,10 +699,13 @@ export const InboundManager: React.FC = () => {
         items: whItems
       }) => {
         const first = whItems[0] as any;
-        const randomNum = Math.floor(1000 + Math.random() * 9000);
+        const normalizedGroupDate = formatExcelDate(customRcpDate) || todayDate;
         const generatedCode = customRcpCode?.trim()
           ? customRcpCode.trim()
-          : `PNK${yy}-${randomNum + createdCount}`;
+          : generateNextInboundVoucherCode(
+              [...newReceipts, ...existingForAutoNumber],
+              normalizedGroupDate
+            );
 
         const len = whItems.length;
         const fullItems: InboundItemDetail[] = new Array(len);
@@ -1065,6 +1241,167 @@ export const InboundManager: React.FC = () => {
 
   const formTotals = useMemo(() => sumInboundItems(formItems), [formItems]);
 
+  // Danh sách vật tư gợi ý cho trường Chọn nhanh từ Danh mục vật tư có sẵn (tối đa 40 kết quả tức thì)
+  const quickCatalogMatches = useMemo(() => {
+    if (materials.length === 0) return [];
+    const q = quickCatalogQuery.trim().toLowerCase();
+    const qFolded = foldVietnameseAscii(quickCatalogQuery);
+    const out: MaterialItem[] = [];
+    for (let i = 0; i < materials.length; i++) {
+      const m = materials[i];
+      if (q) {
+        const hit =
+          m.code.toLowerCase().includes(q) ||
+          m.name.toLowerCase().includes(q) ||
+          (m.category && m.category.toLowerCase().includes(q)) ||
+          (m.packageNo && m.packageNo.toLowerCase().includes(q)) ||
+          (m.drawingNo && m.drawingNo.toLowerCase().includes(q)) ||
+          (m.supplier && m.supplier.toLowerCase().includes(q)) ||
+          (qFolded &&
+            (foldVietnameseAscii(m.name).includes(qFolded) ||
+              foldVietnameseAscii(m.category).includes(qFolded)));
+        if (!hit) continue;
+      }
+      out.push(m);
+      if (out.length >= 40) break;
+    }
+    return out;
+  }, [materials, quickCatalogQuery]);
+
+  // Bộ lọc & phân trang cho Hộp thoại Chọn từ Danh mục vật tư có sẵn
+  const catalogCategories = useMemo(() => {
+    const set = new Set<string>();
+    for (let i = 0; i < materials.length; i++) {
+      const c = (materials[i].category || '').trim();
+      if (c) set.add(c);
+    }
+    return Array.from(set).sort((a, b) => a.localeCompare(b, 'vi'));
+  }, [materials]);
+
+  const filteredCatalogMaterials = useMemo(() => {
+    const q = deferredCatalogSearch.trim().toLowerCase();
+    const qFolded = foldVietnameseAscii(deferredCatalogSearch);
+    const checkCat = catalogCategoryFilter !== 'all';
+    if (!q && !checkCat) return materials;
+
+    return materials.filter((m) => {
+      if (checkCat && (m.category || '').trim() !== catalogCategoryFilter) return false;
+      if (q) {
+        return (
+          m.code.toLowerCase().includes(q) ||
+          m.name.toLowerCase().includes(q) ||
+          (m.category && m.category.toLowerCase().includes(q)) ||
+          (m.packageNo && m.packageNo.toLowerCase().includes(q)) ||
+          (m.drawingNo && m.drawingNo.toLowerCase().includes(q)) ||
+          (m.supplier && m.supplier.toLowerCase().includes(q)) ||
+          (m.manufacturer && m.manufacturer.toLowerCase().includes(q)) ||
+          (qFolded &&
+            (foldVietnameseAscii(m.name).includes(qFolded) ||
+              foldVietnameseAscii(m.category).includes(qFolded)))
+        );
+      }
+      return true;
+    });
+  }, [materials, deferredCatalogSearch, catalogCategoryFilter]);
+
+  const pagedCatalogMaterials = useMemo(() => {
+    const start = (catalogPage - 1) * catalogPageSize;
+    return filteredCatalogMaterials.slice(start, start + catalogPageSize);
+  }, [filteredCatalogMaterials, catalogPage, catalogPageSize]);
+
+  const selectedFormCodeSet = useMemo(() => {
+    const set = new Set<string>();
+    for (let i = 0; i < formItems.length; i++) {
+      const k = normKey(formItems[i].materialCode);
+      if (k) set.add(k);
+    }
+    return set;
+  }, [formItems]);
+
+  const isAllCatalogPageSelected =
+    catalogTargetRowIdx === null &&
+    pagedCatalogMaterials.length > 0 &&
+    pagedCatalogMaterials.every((m) => selectedFormCodeSet.has(normKey(m.code)));
+
+  const isSomeCatalogPageSelected =
+    catalogTargetRowIdx === null &&
+    pagedCatalogMaterials.some((m) => selectedFormCodeSet.has(normKey(m.code))) &&
+    !isAllCatalogPageSelected;
+
+  const selectedFilteredCatalogCount = useMemo(() => {
+    if (catalogTargetRowIdx !== null) return 0;
+    let count = 0;
+    for (let i = 0; i < filteredCatalogMaterials.length; i++) {
+      if (selectedFormCodeSet.has(normKey(filteredCatalogMaterials[i].code))) {
+        count++;
+      }
+    }
+    return count;
+  }, [filteredCatalogMaterials, selectedFormCodeSet, catalogTargetRowIdx]);
+
+  const toggleSelectCatalogPage = () => {
+    if (catalogTargetRowIdx !== null || pagedCatalogMaterials.length === 0) return;
+    setFormItemSearch('');
+    if (isAllCatalogPageSelected) {
+      const pageKeys = new Set(pagedCatalogMaterials.map((m) => normKey(m.code)));
+      setFormItems((prev) => {
+        const next = prev.filter((it) => !pageKeys.has(normKey(it.materialCode)));
+        return next.length > 0 ? next : [createBlankInboundItem(0)];
+      });
+    } else {
+      setFormItems((prev) => {
+        const nonBlank = prev.filter(
+          (it) => it.materialCode.trim() || it.materialName.trim()
+        );
+        const existingKeys = new Set(nonBlank.map((it) => normKey(it.materialCode)));
+        const added: InboundItemDetail[] = [];
+        for (let i = 0; i < pagedCatalogMaterials.length; i++) {
+          const mat = pagedCatalogMaterials[i];
+          const k = normKey(mat.code);
+          if (!existingKeys.has(k)) {
+            existingKeys.add(k);
+            added.push(buildInboundItemFromMaterial(mat, nonBlank.length + added.length));
+          }
+        }
+        const next = [...nonBlank, ...added];
+        setFormItemPage(Math.max(1, Math.ceil(next.length / FORM_ITEM_PAGE_SIZE)));
+        return next.length > 0 ? next : [createBlankInboundItem(0)];
+      });
+    }
+  };
+
+  const selectAllFilteredCatalog = () => {
+    if (catalogTargetRowIdx !== null || filteredCatalogMaterials.length === 0) return;
+    setFormItemSearch('');
+    setFormItems((prev) => {
+      const nonBlank = prev.filter(
+        (it) => it.materialCode.trim() || it.materialName.trim()
+      );
+      const existingKeys = new Set(nonBlank.map((it) => normKey(it.materialCode)));
+      const added: InboundItemDetail[] = [];
+      for (let i = 0; i < filteredCatalogMaterials.length; i++) {
+        const mat = filteredCatalogMaterials[i];
+        const k = normKey(mat.code);
+        if (!existingKeys.has(k)) {
+          existingKeys.add(k);
+          added.push(buildInboundItemFromMaterial(mat, nonBlank.length + added.length));
+        }
+      }
+      const next = [...nonBlank, ...added];
+      setFormItemPage(Math.max(1, Math.ceil(next.length / FORM_ITEM_PAGE_SIZE)));
+      return next.length > 0 ? next : [createBlankInboundItem(0)];
+    });
+  };
+
+  const clearSelectedFilteredCatalog = () => {
+    if (catalogTargetRowIdx !== null || filteredCatalogMaterials.length === 0) return;
+    const targetKeys = new Set(filteredCatalogMaterials.map((m) => normKey(m.code)));
+    setFormItems((prev) => {
+      const next = prev.filter((it) => !targetKeys.has(normKey(it.materialCode)));
+      return next.length > 0 ? next : [createBlankInboundItem(0)];
+    });
+  };
+
   return (
     <div className="space-y-6">
       {/* Toast */}
@@ -1506,13 +1843,33 @@ export const InboundManager: React.FC = () => {
               <div className="bg-slate-50 p-4 rounded-xl border border-slate-200/80 space-y-3 text-xs">
                 <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3">
                   <div>
-                    <label className="block font-semibold text-slate-700 uppercase mb-1">
-                      Số phiếu (*)
-                    </label>
+                    <div className="flex items-center justify-between gap-1 mb-1">
+                      <label className="block font-semibold text-slate-700 uppercase">
+                        Số phiếu (*)
+                      </label>
+                      {!editingReceipt && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const latest = StorageService.getInboundReceipts();
+                            setIsCodeManuallyEdited(false);
+                            setReceiptCode(generateNextPnkCode(latest, receiptDate));
+                          }}
+                          className="inline-flex items-center gap-1 text-[11px] font-medium text-blue-600 hover:text-blue-800 transition"
+                          title="Tự động lấy số phiếu nhập kế tiếp"
+                        >
+                          <RefreshCw className="w-3 h-3" />
+                          <span>Số kế tiếp</span>
+                        </button>
+                      )}
+                    </div>
                     <input
                       type="text"
                       value={receiptCode}
-                      onChange={(e) => setReceiptCode(e.target.value)}
+                      onChange={(e) => {
+                        setIsCodeManuallyEdited(true);
+                        setReceiptCode(e.target.value);
+                      }}
                       placeholder="PNK25-0019"
                       className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded-lg font-mono font-bold text-blue-700 outline-none focus:border-blue-500"
                       required
@@ -1724,11 +2081,115 @@ export const InboundManager: React.FC = () => {
                     <button
                       type="button"
                       onClick={addNewItemRow}
-                      className="flex items-center gap-1 px-3 py-1.5 bg-blue-50 text-blue-700 hover:bg-blue-100 rounded-lg text-xs font-semibold border border-blue-200 transition"
+                      className="flex items-center gap-1 px-3 py-2 sm:py-1.5 bg-slate-100 text-slate-700 hover:bg-slate-200 rounded-lg text-xs font-semibold border border-slate-200 transition min-h-[38px]"
                     >
                       <Plus className="w-3.5 h-3.5" />
-                      <span>Thêm Dòng Vật Tư</span>
+                      <span>Thêm Dòng Thủ Công</span>
                     </button>
+                    <button
+                      type="button"
+                      onClick={() => openCatalogPicker(null)}
+                      className="flex items-center gap-1.5 px-3.5 py-2 sm:py-1.5 bg-blue-600 text-white hover:bg-blue-700 rounded-lg text-xs font-semibold shadow-sm transition min-h-[38px]"
+                    >
+                      <PackageSearch className="w-3.5 h-3.5" />
+                      <span>Chọn Nhiều Từ Danh Mục ({materials.length.toLocaleString('vi-VN')})</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* Trường chọn nhanh từ Danh mục vật tư có sẵn */}
+                <div className="bg-blue-50/50 border border-blue-200/80 rounded-xl p-3 space-y-1.5 relative z-20">
+                  <div className="flex flex-wrap items-center justify-between gap-1 text-xs">
+                    <label className="font-semibold text-slate-800 flex items-center gap-1.5">
+                      <PackageSearch className="w-4 h-4 text-blue-600 shrink-0" />
+                      <span>Chọn vật tư từ Danh mục vật tư có sẵn</span>
+                    </label>
+                    <span className="text-slate-500">
+                      Có sẵn {materials.length.toLocaleString('vi-VN')} vật tư · Chọn để tự điền Mã VT, Tên VT, ĐVT, Mã lô & Khối lượng
+                    </span>
+                  </div>
+
+                  <div className="relative">
+                    <input
+                      type="text"
+                      value={quickCatalogQuery}
+                      onFocus={() => setIsQuickCatalogOpen(true)}
+                      onBlur={() => {
+                        setTimeout(() => setIsQuickCatalogOpen(false), 180);
+                      }}
+                      onChange={(e) => {
+                        setQuickCatalogQuery(e.target.value);
+                        setIsQuickCatalogOpen(true);
+                      }}
+                      placeholder={
+                        materials.length > 0
+                          ? 'Gõ Mã vật tư, Tên vật tư, Quy cách hoặc nhấp vào đây để chọn từ Danh mục vật tư có sẵn...'
+                          : 'Danh mục vật tư hiện đang trống — bạn có thể nhập dòng vật tư mới trực tiếp bên dưới...'
+                      }
+                      className="w-full pl-8 pr-9 py-2 bg-white border border-blue-200 rounded-lg text-xs font-medium text-slate-800 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
+                    />
+                    <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-2.5 pointer-events-none" />
+                    <button
+                      type="button"
+                      onMouseDown={(e) => {
+                        e.preventDefault();
+                        setIsQuickCatalogOpen((prev) => !prev);
+                      }}
+                      className="absolute right-2 top-1.5 p-1 text-slate-400 hover:text-slate-700 rounded"
+                      title="Mở danh sách vật tư có sẵn"
+                    >
+                      <ChevronDown className="w-4 h-4" />
+                    </button>
+
+                    {isQuickCatalogOpen && (
+                      <div className="absolute left-0 right-0 top-full mt-1 bg-white border border-slate-200 rounded-xl shadow-xl max-h-64 overflow-y-auto divide-y divide-slate-100 z-30">
+                        {materials.length === 0 ? (
+                          <div className="p-4 text-center text-xs text-slate-500">
+                            Chưa có vật tư nào trong Danh mục. Khi bạn lưu phiếu nhập mới, vật tư sẽ tự động đồng bộ vào Danh mục.
+                          </div>
+                        ) : quickCatalogMatches.length === 0 ? (
+                          <div className="p-4 text-center text-xs text-slate-500">
+                            Không tìm thấy vật tư khớp từ khóa "{quickCatalogQuery}". Bạn có thể nhập thủ công ở bảng dưới.
+                          </div>
+                        ) : (
+                          quickCatalogMatches.map((mat) => (
+                            <button
+                              key={mat.id || mat.code}
+                              type="button"
+                              onMouseDown={(e) => {
+                                e.preventDefault();
+                                handleQuickPickMaterial(mat);
+                              }}
+                              className="w-full text-left px-3 py-2 hover:bg-blue-50/80 transition flex items-start justify-between gap-3 text-xs"
+                            >
+                              <div className="min-w-0 flex-1">
+                                <div className="flex items-center gap-2">
+                                  <span className="font-mono font-bold text-blue-700 shrink-0">
+                                    {mat.code}
+                                  </span>
+                                  <span className="font-semibold text-slate-900 truncate">
+                                    {mat.name}
+                                  </span>
+                                </div>
+                                <div className="text-[11px] text-slate-500 mt-0.5 truncate">
+                                  ĐVT: {mat.unit || 'Ống'}
+                                  {mat.category ? ` · ${mat.category}` : ''}
+                                  {mat.packageNo && mat.packageNo !== 'N/A'
+                                    ? ` · Kiện/Lô: ${mat.packageNo}`
+                                    : ''}
+                                  {Number(mat.unitWeightKg) > 0
+                                    ? ` · KL đơn vị: ${Number(mat.unitWeightKg).toLocaleString('en-US')} Kg`
+                                    : ''}
+                                </div>
+                              </div>
+                              <span className="text-[11px] font-semibold text-blue-600 shrink-0 pt-0.5">
+                                + Chọn
+                              </span>
+                            </button>
+                          ))
+                        )}
+                      </div>
+                    )}
                   </div>
                 </div>
 
@@ -1737,7 +2198,7 @@ export const InboundManager: React.FC = () => {
                     <thead className="bg-slate-100 text-slate-700 font-semibold border-b border-slate-200">
                       <tr>
                         <th className="p-2 w-10 text-center">STT</th>
-                        <th className="p-2 w-36">Mã vật tư</th>
+                        <th className="p-2 w-44">Mã vật tư</th>
                         <th className="p-2 min-w-[220px]">Tên vật tư (*)</th>
                         <th className="p-2 w-32">Mã lô</th>
                         <th className="p-2 w-24 text-right">Số lượng (cây/tấm)</th>
@@ -1763,15 +2224,27 @@ export const InboundManager: React.FC = () => {
                               {realIdx + 1}
                             </td>
                             <td className="p-2">
-                              <input
-                                type="text"
-                                value={item.materialCode}
-                                onChange={(e) =>
-                                  updateItemRow(realIdx, 'materialCode', e.target.value)
-                                }
-                                placeholder="PI-P.AA.S..."
-                                className="w-full px-2 py-1 bg-white border border-slate-200 rounded font-mono outline-none text-xs"
-                              />
+                              <div className="flex items-center gap-1">
+                                <input
+                                  type="text"
+                                  value={item.materialCode}
+                                  onChange={(e) =>
+                                    updateItemRow(realIdx, 'materialCode', e.target.value)
+                                  }
+                                  placeholder="PI-P.AA.S..."
+                                  className="w-full px-2 py-1 bg-white border border-slate-200 rounded font-mono outline-none text-xs focus:border-blue-500"
+                                />
+                                {materials.length > 0 && (
+                                  <button
+                                    type="button"
+                                    onClick={() => openCatalogPicker(realIdx)}
+                                    className="p-1.5 bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 rounded transition shrink-0"
+                                    title={`Chọn vật tư từ Danh mục cho dòng ${realIdx + 1}`}
+                                  >
+                                    <PackageSearch className="w-3.5 h-3.5" />
+                                  </button>
+                                )}
+                              </div>
                             </td>
                             <td className="p-2">
                               <input
@@ -1781,7 +2254,7 @@ export const InboundManager: React.FC = () => {
                                   updateItemRow(realIdx, 'materialName', e.target.value)
                                 }
                                 placeholder='20"x12m PIPE, API 5L B...'
-                                className="w-full px-2 py-1 bg-white border border-slate-200 rounded font-medium outline-none text-xs"
+                                className="w-full px-2 py-1 bg-white border border-slate-200 rounded font-medium outline-none text-xs focus:border-blue-500"
                               />
                             </td>
                             <td className="p-2">
@@ -1941,6 +2414,286 @@ export const InboundManager: React.FC = () => {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Modal Chọn Vật Tư Từ Danh Mục Có Sẵn (Hỗ trợ cả chọn cho 1 dòng & chọn checkbox nhiều mục) */}
+      {isCatalogModalOpen && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-2 sm:p-4">
+          <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-5xl max-h-[90dvh] flex flex-col overflow-hidden animate-in zoom-in-95">
+            <div className="flex items-center justify-between gap-3 p-4 sm:p-5 border-b border-slate-100 bg-slate-50">
+              <div className="flex items-center gap-2.5 min-w-0">
+                <div className="p-2 bg-blue-100 text-blue-700 rounded-xl shrink-0">
+                  <PackageSearch className="w-5 h-5" />
+                </div>
+                <div className="min-w-0">
+                  <h3 className="font-bold text-slate-900 text-sm sm:text-base truncate">
+                    {catalogTargetRowIdx !== null
+                      ? `Chọn Vật Tư Từ Danh Mục Cho Dòng Số ${catalogTargetRowIdx + 1}`
+                      : 'Chọn Vật Tư Từ Danh Mục Vật Tư Có Sẵn'}
+                  </h3>
+                  <p className="text-xs text-slate-500 line-clamp-1">
+                    {catalogTargetRowIdx !== null
+                      ? 'Nhấp vào một vật tư bên dưới để điền tự động thông tin vào dòng đang chọn'
+                      : `Tích chọn nhanh một hoặc nhiều vật tư từ ${materials.length.toLocaleString('vi-VN')} danh mục có sẵn để đưa vào phiếu nhập kho`}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setIsCatalogModalOpen(false);
+                  setCatalogTargetRowIdx(null);
+                }}
+                className="p-2 hover:bg-slate-200 rounded-lg text-slate-500 shrink-0"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-4 border-b border-slate-100 flex flex-col sm:flex-row gap-2.5 bg-white">
+              <div className="relative flex-1">
+                <input
+                  type="text"
+                  value={catalogSearch}
+                  onChange={(e) => {
+                    setCatalogSearch(e.target.value);
+                    setCatalogPage(1);
+                  }}
+                  placeholder="Tìm nhanh theo Mã vật tư, Tên vật tư, Hạng mục, Mã kiện, Bản vẽ, Nhà cung cấp..."
+                  className="w-full pl-9 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs sm:text-sm outline-none focus:bg-white focus:border-blue-500"
+                  autoFocus
+                />
+                <Search className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
+              </div>
+
+              <select
+                value={catalogCategoryFilter}
+                onChange={(e) => {
+                  setCatalogCategoryFilter(e.target.value);
+                  setCatalogPage(1);
+                }}
+                className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs sm:text-sm outline-none focus:bg-white focus:border-blue-500 sm:w-56"
+              >
+                <option value="all">Tất cả hạng mục ({materials.length.toLocaleString('vi-VN')})</option>
+                {catalogCategories.map((cat) => (
+                  <option key={cat} value={cat}>
+                    {cat}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-3 sm:p-4">
+              <div className="border border-slate-200 rounded-xl overflow-hidden">
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-xs min-w-[760px]">
+                    <thead className="bg-slate-100 text-slate-700 font-semibold border-b border-slate-200">
+                      <tr>
+                        <th className="p-2.5 w-40">Mã vật tư</th>
+                        <th className="p-2.5 min-w-[240px]">Tên vật tư & Quy cách</th>
+                        <th className="p-2.5 w-20 text-center">ĐVT</th>
+                        <th className="p-2.5 w-36">Hạng mục</th>
+                        <th className="p-2.5 w-32">Kiện / Lô</th>
+                        <th className="p-2.5 w-28 text-right">KL đơn vị (Kg)</th>
+                        <th className="p-2.5 w-20 text-center">
+                          {catalogTargetRowIdx !== null ? (
+                            'Chọn'
+                          ) : (
+                            <input
+                              type="checkbox"
+                              checked={isAllCatalogPageSelected}
+                              ref={(el) => {
+                                if (el) el.indeterminate = isSomeCatalogPageSelected;
+                              }}
+                              onChange={toggleSelectCatalogPage}
+                              className="w-4 h-4 rounded text-blue-600 focus:ring-blue-500 border-slate-300 cursor-pointer"
+                              title="Chọn / Bỏ chọn tất cả vật tư trên trang hiện tại"
+                            />
+                          )}
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {pagedCatalogMaterials.length === 0 ? (
+                        <tr>
+                          <td colSpan={7} className="p-8 text-center text-slate-400">
+                            Không tìm thấy vật tư nào phù hợp trong Danh mục.
+                          </td>
+                        </tr>
+                      ) : (
+                        pagedCatalogMaterials.map((mat) => {
+                          const isChecked =
+                            catalogTargetRowIdx === null &&
+                            selectedFormCodeSet.has(normKey(mat.code));
+                          return (
+                            <tr
+                              key={mat.id || mat.code}
+                              onClick={() => toggleCatalogMaterialSelection(mat)}
+                              className={`cursor-pointer select-none transition-colors ${
+                                isChecked
+                                  ? 'bg-blue-50/70 hover:bg-blue-100/60'
+                                  : 'hover:bg-slate-50'
+                              }`}
+                            >
+                              <td className="p-2.5 font-mono font-bold text-blue-700">
+                                {mat.code}
+                              </td>
+                              <td className="p-2.5">
+                                <span className="font-semibold text-slate-900 block">
+                                  {mat.name}
+                                </span>
+                                {(mat.drawingNo && mat.drawingNo !== 'N/A') ||
+                                (mat.supplier && mat.supplier !== 'N/A') ? (
+                                  <span className="text-[11px] text-slate-500">
+                                    {mat.drawingNo && mat.drawingNo !== 'N/A'
+                                      ? `Bản vẽ: ${mat.drawingNo}`
+                                      : ''}
+                                    {mat.drawingNo &&
+                                    mat.drawingNo !== 'N/A' &&
+                                    mat.supplier &&
+                                    mat.supplier !== 'N/A'
+                                      ? ' · '
+                                      : ''}
+                                    {mat.supplier && mat.supplier !== 'N/A'
+                                      ? `NCC: ${mat.supplier}`
+                                      : ''}
+                                  </span>
+                                ) : null}
+                              </td>
+                              <td className="p-2.5 text-center font-medium text-slate-700">
+                                {mat.unit || 'Ống'}
+                              </td>
+                              <td className="p-2.5 text-slate-700">
+                                {mat.category || '-'}
+                              </td>
+                              <td className="p-2.5 font-mono text-slate-700">
+                                {mat.packageNo && mat.packageNo !== 'N/A' ? mat.packageNo : '-'}
+                              </td>
+                              <td className="p-2.5 text-right font-mono font-medium text-emerald-700 tabular-nums">
+                                {Number(mat.unitWeightKg) > 0
+                                  ? Number(mat.unitWeightKg).toLocaleString('en-US', {
+                                      minimumFractionDigits: 2,
+                                      maximumFractionDigits: 2
+                                    })
+                                  : '-'}
+                              </td>
+                              <td
+                                className="p-2.5 text-center"
+                                onClick={(e) => e.stopPropagation()}
+                              >
+                                {catalogTargetRowIdx !== null ? (
+                                  <button
+                                    type="button"
+                                    onClick={() => toggleCatalogMaterialSelection(mat)}
+                                    className="px-2.5 py-1 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-semibold transition"
+                                  >
+                                    Chọn
+                                  </button>
+                                ) : (
+                                  <input
+                                    type="checkbox"
+                                    checked={isChecked}
+                                    onChange={() => toggleCatalogMaterialSelection(mat)}
+                                    className="w-4 h-4 rounded text-blue-600 focus:ring-blue-500 border-slate-300 cursor-pointer"
+                                    title={
+                                      isChecked
+                                        ? `Bỏ chọn vật tư ${mat.code}`
+                                        : `Chọn nhập kho vật tư ${mat.code}`
+                                    }
+                                  />
+                                )}
+                              </td>
+                            </tr>
+                          );
+                        })
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+
+                <PaginationBar
+                  currentPage={catalogPage}
+                  totalItems={filteredCatalogMaterials.length}
+                  pageSize={catalogPageSize}
+                  onPageChange={setCatalogPage}
+                  onPageSizeChange={setCatalogPageSize}
+                  pageSizeOptions={[50, 100, 200]}
+                  itemLabel="vật tư trong danh mục"
+                />
+              </div>
+            </div>
+
+            <div className="p-3.5 sm:p-4 border-t border-slate-200 bg-slate-50 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+              <div className="text-xs text-slate-600 flex flex-wrap items-center gap-1.5">
+                {catalogTargetRowIdx !== null ? (
+                  <span>
+                    Đang chọn vật tư cho{' '}
+                    <strong className="text-blue-700">Dòng số {catalogTargetRowIdx + 1}</strong>
+                  </span>
+                ) : (
+                  <>
+                    <span>
+                      Đã có trong phiếu nhập:{' '}
+                      <strong className="text-blue-700 font-bold tabular-nums">
+                        {
+                          formItems.filter(
+                            (it) => it.materialCode.trim() || it.materialName.trim()
+                          ).length.toLocaleString('vi-VN')
+                        }
+                      </strong>{' '}
+                      mục hàng
+                    </span>
+                    {filteredCatalogMaterials.length > 0 && (
+                      <span className="text-slate-400">
+                        ({selectedFilteredCatalogCount.toLocaleString('vi-VN')}/
+                        {filteredCatalogMaterials.length.toLocaleString('vi-VN')} danh mục đang hiển thị)
+                      </span>
+                    )}
+                  </>
+                )}
+              </div>
+
+              <div className="flex flex-wrap items-center justify-end gap-2">
+                {catalogTargetRowIdx === null &&
+                  filteredCatalogMaterials.length > pagedCatalogMaterials.length &&
+                  selectedFilteredCatalogCount < filteredCatalogMaterials.length && (
+                    <button
+                      type="button"
+                      onClick={selectAllFilteredCatalog}
+                      className="px-3 py-2 bg-white hover:bg-blue-50 text-blue-700 border border-blue-200 rounded-xl text-xs font-semibold transition min-h-[38px]"
+                    >
+                      Chọn hết {filteredCatalogMaterials.length.toLocaleString('vi-VN')} kết quả lọc
+                    </button>
+                  )}
+
+                {catalogTargetRowIdx === null && selectedFilteredCatalogCount > 0 && (
+                  <button
+                    type="button"
+                    onClick={clearSelectedFilteredCatalog}
+                    className="px-3 py-2 bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 rounded-xl text-xs font-semibold transition min-h-[38px]"
+                  >
+                    Bỏ chọn ({selectedFilteredCatalogCount.toLocaleString('vi-VN')})
+                  </button>
+                )}
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsCatalogModalOpen(false);
+                    setCatalogTargetRowIdx(null);
+                  }}
+                  className="px-5 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold shadow-sm shadow-blue-500/20 transition active:scale-95 min-h-[38px]"
+                >
+                  {catalogTargetRowIdx !== null
+                    ? 'Đóng'
+                    : `Xong (${formItems
+                        .filter((it) => it.materialCode.trim() || it.materialName.trim())
+                        .length.toLocaleString('vi-VN')} mục)`}
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       )}

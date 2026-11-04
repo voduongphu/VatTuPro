@@ -22,7 +22,8 @@ import {
   normKey,
   roundQty,
   sumOutboundItems,
-  buildDeterministicItemId
+  buildDeterministicItemId,
+  generateNextOutboundVoucherCode
 } from '../../utils/additiveMerge';
 import {
   ArrowUpRight,
@@ -37,6 +38,7 @@ import {
   Trash2,
   CheckCircle2,
   AlertCircle,
+  RefreshCw,
   X
 } from 'lucide-react';
 
@@ -138,6 +140,7 @@ export const OutboundManager: React.FC = () => {
 
   // Form New Outbound (Theo mẫu QN-OPR-PR11-FM06)
   const [issueCode, setIssueCode] = useState('');
+  const [isCodeManuallyEdited, setIsCodeManuallyEdited] = useState(false);
   const [issueDate, setIssueDate] = useState(new Date().toISOString().slice(0, 10));
   const [selectedWarehouseId, setSelectedWarehouseId] = useState('');
   const [formDepartmentName, setFormDepartmentName] = useState('');
@@ -169,6 +172,7 @@ export const OutboundManager: React.FC = () => {
   const loadData = () => {
     setReceipts(StorageService.getOutboundReceipts());
     setWarehouses(StorageService.getWarehouses());
+    setMaterials(StorageService.getMaterials());
   };
 
   useEffect(() => {
@@ -210,19 +214,19 @@ export const OutboundManager: React.FC = () => {
     return map;
   }, [materials]);
 
-  const generateNextPxkCode = (existingList: OutboundReceipt[]): string => {
-    const yy = String(new Date().getFullYear()).slice(-2);
-    const prefix = `PXK${yy}-`;
-    let maxSeq = 0;
-    for (let i = 0; i < existingList.length; i++) {
-      const c = (existingList[i].issueCode || '').toUpperCase();
-      if (c.startsWith(prefix)) {
-        const num = parseInt(c.slice(prefix.length), 10);
-        if (!isNaN(num) && num > maxSeq) maxSeq = num;
-      }
-    }
-    return `${prefix}${String(maxSeq + 1).padStart(4, '0')}`;
+  const generateNextPxkCode = (
+    existingList: OutboundReceipt[],
+    targetDateStr?: string
+  ): string => {
+    return generateNextOutboundVoucherCode(existingList, targetDateStr);
   };
+
+  // Tự động nhảy sang số phiếu kế tiếp nếu có phiếu mới đồng bộ về khi đang mở form lập mới (chưa sửa tay số phiếu)
+  useEffect(() => {
+    if (!isCreateModalOpen || editingReceipt || isCodeManuallyEdited) return;
+    const nextCode = generateNextPxkCode(receipts, issueDate);
+    setIssueCode((prev) => (prev !== nextCode ? nextCode : prev));
+  }, [receipts, isCreateModalOpen, editingReceipt, isCodeManuallyEdited, issueDate]);
 
   const openStockPicker = () => {
     const baseStock = StorageService.calculateInventoryRecords().map((r) => ({ ...r }));
@@ -256,10 +260,13 @@ export const OutboundManager: React.FC = () => {
 
   const openCreateModal = () => {
     const currentReceipts = StorageService.getOutboundReceipts();
+    const todayDate = new Date().toISOString().slice(0, 10);
+    setReceipts(currentReceipts);
     setEditingReceipt(null);
     setMaterials(StorageService.getMaterials());
-    setIssueCode(generateNextPxkCode(currentReceipts));
-    setIssueDate(new Date().toISOString().slice(0, 10));
+    setIsCodeManuallyEdited(false);
+    setIssueDate(todayDate);
+    setIssueCode(generateNextPxkCode(currentReceipts, todayDate));
     const whList = StorageService.getWarehouses();
     const defaultWh = whList[0]?.id || '';
     setSelectedWarehouseId(defaultWh);
@@ -286,6 +293,7 @@ export const OutboundManager: React.FC = () => {
     const whList = StorageService.getWarehouses();
     setMaterials(StorageService.getMaterials());
     setEditingReceipt(rcp);
+    setIsCodeManuallyEdited(true);
     setIssueCode(rcp.issueCode || '');
     setIssueDate(formatExcelDate(rcp.issueDate) || new Date().toISOString().slice(0, 10));
     setSelectedWarehouseId(rcp.warehouseId || whList[0]?.id || '');
@@ -537,11 +545,11 @@ export const OutboundManager: React.FC = () => {
 
     const todayIso = new Date().toISOString();
     const todayDate = todayIso.slice(0, 10);
-    const yy = todayDate.slice(2, 4);
     const baseTs = Date.now();
     const batchSalt = Math.random().toString(36).slice(2, 6);
     const userFullName = currentUser?.fullName || 'Võ Dương Phú';
     let createdCount = 0;
+    const existingForAutoNumber = StorageService.getOutboundReceipts();
     const newReceipts: OutboundReceipt[] = [];
 
     groups.forEach(
@@ -557,11 +565,14 @@ export const OutboundManager: React.FC = () => {
         notes: customNotes,
         items: whItems
       }) => {
-        const randomNum = Math.floor(1000 + Math.random() * 9000);
         const first = whItems[0] as any;
+        const normalizedGroupDate = formatExcelDate(customDate) || todayDate;
         const generatedCode = customCode?.trim()
           ? customCode.trim()
-          : `PXK${yy}-${randomNum + createdCount}`;
+          : generateNextOutboundVoucherCode(
+              [...newReceipts, ...existingForAutoNumber],
+              normalizedGroupDate
+            );
 
         const len = whItems.length;
         const fullItems: OutboundItemDetail[] = new Array(len);
@@ -1605,13 +1616,33 @@ export const OutboundManager: React.FC = () => {
               <div className="bg-slate-50 p-4 rounded-xl border border-slate-200/80 space-y-3 text-xs">
                 <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3">
                   <div>
-                    <label className="block font-semibold text-slate-700 uppercase mb-1">
-                      Số phiếu (*)
-                    </label>
+                    <div className="flex items-center justify-between gap-1 mb-1">
+                      <label className="block font-semibold text-slate-700 uppercase">
+                        Số phiếu (*)
+                      </label>
+                      {!editingReceipt && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const latest = StorageService.getOutboundReceipts();
+                            setIsCodeManuallyEdited(false);
+                            setIssueCode(generateNextPxkCode(latest, issueDate));
+                          }}
+                          className="inline-flex items-center gap-1 text-[11px] font-medium text-blue-600 hover:text-blue-800 transition"
+                          title="Tự động lấy số phiếu xuất kế tiếp"
+                        >
+                          <RefreshCw className="w-3 h-3" />
+                          <span>Số kế tiếp</span>
+                        </button>
+                      )}
+                    </div>
                     <input
                       type="text"
                       value={issueCode}
-                      onChange={(e) => setIssueCode(e.target.value)}
+                      onChange={(e) => {
+                        setIsCodeManuallyEdited(true);
+                        setIssueCode(e.target.value);
+                      }}
                       placeholder="PXK25-0001"
                       className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded-lg font-mono font-bold text-rose-700 outline-none focus:border-blue-500"
                       required
