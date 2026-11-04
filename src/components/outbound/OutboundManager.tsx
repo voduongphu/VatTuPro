@@ -57,6 +57,52 @@ function buildPackingListSummary(items: OutboundItemDetail[]): string {
   return `${sample.join(', ')} (+${(seen.size - sample.length).toLocaleString('vi-VN')} lô)`;
 }
 
+function getStockItemMatchKey(item: {
+  packingListNo?: string;
+  shipment?: string;
+  materialCode?: string;
+  packageNo?: string;
+  drawingNo?: string;
+  category?: string;
+}): string {
+  const norm = (v?: string) => {
+    const trimmed = (v || '').trim();
+    return !trimmed || trimmed.toUpperCase() === 'N/A' ? 'N/A' : trimmed.toUpperCase();
+  };
+  return `${norm(item.packingListNo)}__${norm(item.shipment)}__${norm(item.materialCode)}__${norm(item.packageNo)}__${norm(item.drawingNo)}__${norm(item.category)}`;
+}
+
+function buildOutboundItemFromStock(st: InventoryStockRecord, idxOffset = 0): OutboundItemDetail {
+  const defaultQty = st.currentQuantity > 0 ? roundQty(st.currentQuantity) : 0;
+  const defaultWeight = Math.max(0, Math.round((Number(st.currentWeightKg) || 0) * 100) / 100);
+  const defaultBatch =
+    st.packageNo && st.packageNo !== 'N/A'
+      ? st.packageNo
+      : st.shipment && st.shipment !== 'N/A'
+        ? st.shipment
+        : '';
+
+  return {
+    id: `out-item-${Date.now()}-${idxOffset}-${Math.random().toString(36).substring(2, 6)}`,
+    materialCode: st.materialCode,
+    materialName: st.materialName,
+    unit: st.unit,
+    batchCode: defaultBatch,
+    packingListNo: st.packingListNo,
+    shipment: st.shipment,
+    packageNo: st.packageNo,
+    packageName: st.packageName,
+    category: st.category,
+    drawingNo: st.drawingNo,
+    manufacturer: st.manufacturer,
+    supplier: st.supplier,
+    quantity: defaultQty,
+    weightKg: defaultWeight,
+    purpose: '',
+    note: ''
+  };
+}
+
 export const OutboundManager: React.FC = () => {
   const { currentUser, isAdmin } = useAuth();
   const [receipts, setReceipts] = useState<OutboundReceipt[]>([]);
@@ -312,64 +358,28 @@ export const OutboundManager: React.FC = () => {
     });
   };
 
-  const handleSelectStockItem = (st: InventoryStockRecord) => {
+  const toggleStockItemSelection = (st: InventoryStockRecord) => {
+    const targetKey = getStockItemMatchKey(st);
+    const alreadySelected = formItems.some((it) => getStockItemMatchKey(it) === targetKey);
+
+    if (alreadySelected) {
+      setFormItems((prev) => prev.filter((it) => getStockItemMatchKey(it) !== targetKey));
+      return;
+    }
+
     if (st.currentQuantity <= 0 && st.currentWeightKg <= 0) {
       setFormError('Mặt hàng này hiện không còn tồn kho khả dụng!');
       return;
     }
 
-    const exists = formItems.some(
-      (it) =>
-        it.packingListNo === st.packingListNo &&
-        it.packageNo === st.packageNo &&
-        it.materialCode === st.materialCode
-    );
-
-    if (exists) {
-      setFormError('Mặt hàng này đã có trong danh sách xuất.');
-      setIsPickStockOpen(false);
-      return;
-    }
-
-    const unitW = st.currentQuantity > 0 ? st.currentWeightKg / st.currentQuantity : st.currentWeightKg;
-    const defaultQty = st.currentQuantity > 0 ? Math.min(1, st.currentQuantity) : 0;
-    const defaultBatch =
-      st.packageNo && st.packageNo !== 'N/A'
-        ? st.packageNo
-        : st.shipment && st.shipment !== 'N/A'
-          ? st.shipment
-          : '';
-
     setFormItemSearch('');
     setFormItems((prev) => {
-      const next: OutboundItemDetail[] = [
-        ...prev,
-        {
-          id: `out-item-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
-          materialCode: st.materialCode,
-          materialName: st.materialName,
-          unit: st.unit,
-          batchCode: defaultBatch,
-          packingListNo: st.packingListNo,
-          shipment: st.shipment,
-          packageNo: st.packageNo,
-          packageName: st.packageName,
-          category: st.category,
-          drawingNo: st.drawingNo,
-          manufacturer: st.manufacturer,
-          supplier: st.supplier,
-          quantity: defaultQty,
-          weightKg: Math.round(unitW * defaultQty * 100) / 100,
-          purpose: '',
-          note: ''
-        }
-      ];
+      if (prev.some((it) => getStockItemMatchKey(it) === targetKey)) return prev;
+      const next: OutboundItemDetail[] = [...prev, buildOutboundItemFromStock(st, prev.length)];
       setFormItemPage(Math.max(1, Math.ceil(next.length / FORM_ITEM_PAGE_SIZE)));
       return next;
     });
-
     setFormError('');
-    setIsPickStockOpen(false);
   };
 
   const removeItemRow = (idx: number) => {
@@ -400,13 +410,18 @@ export const OutboundManager: React.FC = () => {
 
       if (field === 'quantity') {
         const nextQty = Math.max(0, roundQty(val));
+        const prevQty = roundQty(prevRow.quantity);
+        const currW = Number(prevRow.weightKg) || 0;
         const found = materialMap.get(String(copy[idx].materialCode || '').trim().toLowerCase());
         if (found && found.unitWeightKg && found.unitWeightKg > 0) {
-          const prevAutoW = Math.round(found.unitWeightKg * roundQty(prevRow.quantity) * 100) / 100;
-          const currW = Number(prevRow.weightKg) || 0;
+          const prevAutoW = Math.round(found.unitWeightKg * prevQty * 100) / 100;
           if (currW === 0 || Math.abs(currW - prevAutoW) < 0.05) {
             copy[idx].weightKg = Math.round(found.unitWeightKg * nextQty * 100) / 100;
+          } else if (prevQty > 0 && currW > 0 && nextQty > 0) {
+            copy[idx].weightKg = Math.round((currW / prevQty) * nextQty * 100) / 100;
           }
+        } else if (prevQty > 0 && currW > 0 && nextQty > 0) {
+          copy[idx].weightKg = Math.round((currW / prevQty) * nextQty * 100) / 100;
         }
       }
 
@@ -981,6 +996,105 @@ export const OutboundManager: React.FC = () => {
     const start = (stockPage - 1) * stockPageSize;
     return availableStockForPicker.slice(start, start + stockPageSize);
   }, [availableStockForPicker, stockPage, stockPageSize]);
+
+  // Tập khóa O(1) đối chiếu các dòng vật tư đã được tích chọn trong danh sách xuất kho
+  const selectedStockKeySet = useMemo(() => {
+    if (!isPickStockOpen) return new Set<string>();
+    const set = new Set<string>();
+    for (let i = 0; i < formItems.length; i++) {
+      set.add(getStockItemMatchKey(formItems[i]));
+    }
+    return set;
+  }, [isPickStockOpen, formItems]);
+
+  const isAllStockPageSelected =
+    pagedStockForPicker.length > 0 &&
+    pagedStockForPicker.every((st) => selectedStockKeySet.has(getStockItemMatchKey(st)));
+
+  const isSomeStockPageSelected =
+    pagedStockForPicker.some((st) => selectedStockKeySet.has(getStockItemMatchKey(st))) &&
+    !isAllStockPageSelected;
+
+  const selectedFilteredStockCount = useMemo(() => {
+    if (!isPickStockOpen || availableStockForPicker.length === 0) return 0;
+    let count = 0;
+    for (let i = 0; i < availableStockForPicker.length; i++) {
+      if (selectedStockKeySet.has(getStockItemMatchKey(availableStockForPicker[i]))) {
+        count++;
+      }
+    }
+    return count;
+  }, [isPickStockOpen, availableStockForPicker, selectedStockKeySet]);
+
+  const toggleSelectStockPage = () => {
+    if (pagedStockForPicker.length === 0) return;
+
+    if (isAllStockPageSelected) {
+      const pageKeys = new Set<string>();
+      for (let i = 0; i < pagedStockForPicker.length; i++) {
+        pageKeys.add(getStockItemMatchKey(pagedStockForPicker[i]));
+      }
+      setFormItems((prev) => prev.filter((it) => !pageKeys.has(getStockItemMatchKey(it))));
+    } else {
+      setFormItemSearch('');
+      setFormItems((prev) => {
+        const existingKeys = new Set<string>();
+        for (let i = 0; i < prev.length; i++) {
+          existingKeys.add(getStockItemMatchKey(prev[i]));
+        }
+        const additions: OutboundItemDetail[] = [];
+        for (let i = 0; i < pagedStockForPicker.length; i++) {
+          const st = pagedStockForPicker[i];
+          if (st.currentQuantity <= 0 && st.currentWeightKg <= 0) continue;
+          const k = getStockItemMatchKey(st);
+          if (!existingKeys.has(k)) {
+            existingKeys.add(k);
+            additions.push(buildOutboundItemFromStock(st, prev.length + additions.length));
+          }
+        }
+        if (additions.length === 0) return prev;
+        const next = [...prev, ...additions];
+        setFormItemPage(Math.max(1, Math.ceil(next.length / FORM_ITEM_PAGE_SIZE)));
+        return next;
+      });
+      setFormError('');
+    }
+  };
+
+  const selectAllFilteredStock = () => {
+    if (availableStockForPicker.length === 0) return;
+    setFormItemSearch('');
+    setFormItems((prev) => {
+      const existingKeys = new Set<string>();
+      for (let i = 0; i < prev.length; i++) {
+        existingKeys.add(getStockItemMatchKey(prev[i]));
+      }
+      const additions: OutboundItemDetail[] = [];
+      for (let i = 0; i < availableStockForPicker.length; i++) {
+        const st = availableStockForPicker[i];
+        if (st.currentQuantity <= 0 && st.currentWeightKg <= 0) continue;
+        const k = getStockItemMatchKey(st);
+        if (!existingKeys.has(k)) {
+          existingKeys.add(k);
+          additions.push(buildOutboundItemFromStock(st, prev.length + additions.length));
+        }
+      }
+      if (additions.length === 0) return prev;
+      const next = [...prev, ...additions];
+      setFormItemPage(Math.max(1, Math.ceil(next.length / FORM_ITEM_PAGE_SIZE)));
+      return next;
+    });
+    setFormError('');
+  };
+
+  const clearSelectedFilteredStock = () => {
+    if (availableStockForPicker.length === 0) return;
+    const filterKeys = new Set<string>();
+    for (let i = 0; i < availableStockForPicker.length; i++) {
+      filterKeys.add(getStockItemMatchKey(availableStockForPicker[i]));
+    }
+    setFormItems((prev) => prev.filter((it) => !filterKeys.has(getStockItemMatchKey(it))));
+  };
 
   // Chi tiết phiếu xuất phân trang
   const filteredDetailItems = useMemo(() => {
@@ -1870,7 +1984,7 @@ export const OutboundManager: React.FC = () => {
         </div>
       )}
 
-      {/* Modal Chọn Từ Tồn Kho (Phân trang mượt cho 100.000+ bản ghi) */}
+      {/* Modal Chọn Từ Tồn Kho (Phân trang mượt cho 100.000+ bản ghi, tích chọn nhanh bằng Checkbox) */}
       {isPickStockOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-2 sm:p-4">
           <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-4xl max-h-[90dvh] flex flex-col overflow-hidden animate-in zoom-in-95">
@@ -1880,10 +1994,11 @@ export const OutboundManager: React.FC = () => {
                   Chọn Hàng Hóa Từ Tồn Kho Khả Dụng
                 </h4>
                 <p className="text-xs text-slate-500 line-clamp-1">
-                  Tìm nhanh theo Mã vật tư, Tên vật tư, Mã lô / Số kiện, Packing List
+                  Tích chọn nhanh nhiều vật tư cần xuất kho — Tìm theo Mã vật tư, Tên vật tư, Mã lô / Số kiện, Packing List
                 </p>
               </div>
               <button
+                type="button"
                 onClick={() => setIsPickStockOpen(false)}
                 className="p-2 hover:bg-slate-200 rounded text-slate-500 shrink-0"
               >
@@ -1911,7 +2026,7 @@ export const OutboundManager: React.FC = () => {
               <div className="border border-slate-200 rounded-xl overflow-hidden">
                 <div className="max-h-96 overflow-x-auto overflow-y-auto">
                   <table className="w-full min-w-[720px] text-left text-xs">
-                    <thead className="bg-slate-100 text-slate-700 font-semibold border-b border-slate-200 sticky top-0">
+                    <thead className="bg-slate-100 text-slate-700 font-semibold border-b border-slate-200 sticky top-0 z-10">
                       <tr>
                         <th className="p-2.5">Mã Vật Tư</th>
                         <th className="p-2.5">Tên Vật Tư</th>
@@ -1919,7 +2034,28 @@ export const OutboundManager: React.FC = () => {
                         <th className="p-2.5">Packing List / Shipment</th>
                         <th className="p-2.5 text-right">Tồn SL</th>
                         <th className="p-2.5 text-right">Tồn KL (Kg)</th>
-                        <th className="p-2.5 text-center">Thao tác</th>
+                        <th className="p-2.5 w-24 text-center">
+                          <label
+                            className="inline-flex items-center justify-center gap-1.5 cursor-pointer select-none"
+                            title={
+                              isAllStockPageSelected
+                                ? 'Bỏ chọn tất cả vật tư trên trang này'
+                                : 'Chọn tất cả vật tư trên trang này'
+                            }
+                          >
+                            <input
+                              type="checkbox"
+                              checked={isAllStockPageSelected}
+                              disabled={pagedStockForPicker.length === 0}
+                              ref={(el) => {
+                                if (el) el.indeterminate = isSomeStockPageSelected;
+                              }}
+                              onChange={toggleSelectStockPage}
+                              className="w-4 h-4 rounded text-blue-600 focus:ring-blue-500 border-slate-300 cursor-pointer disabled:opacity-40"
+                            />
+                            <span>Chọn</span>
+                          </label>
+                        </th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
@@ -1930,48 +2066,66 @@ export const OutboundManager: React.FC = () => {
                           </td>
                         </tr>
                       ) : (
-                        pagedStockForPicker.map((st) => (
-                          <tr key={st.id} className="hover:bg-slate-50">
-                            <td className="p-2.5 font-mono font-bold text-blue-700">
-                              {st.materialCode}
-                            </td>
-                            <td className="p-2.5">
-                              <span className="font-semibold text-slate-900 block">
-                                {st.materialName}
-                              </span>
-                              <span className="text-[11px] text-slate-500">ĐVT: {st.unit}</span>
-                            </td>
-                            <td className="p-2.5 font-mono font-semibold text-slate-800">
-                              {st.packageNo}
-                            </td>
-                            <td className="p-2.5">
-                              <span className="font-mono text-slate-700 block">
-                                {st.packingListNo}
-                              </span>
-                              <span className="font-mono text-slate-400 text-[11px]">
-                                {st.shipment}
-                              </span>
-                            </td>
-                            <td className="p-2.5 text-right font-bold text-slate-900 font-mono">
-                              {st.currentQuantity.toLocaleString('vi-VN')}
-                            </td>
-                            <td className="p-2.5 text-right font-mono font-medium text-emerald-700">
-                              {st.currentWeightKg.toLocaleString('en-US', {
-                                minimumFractionDigits: 2,
-                                maximumFractionDigits: 2
-                              })}
-                            </td>
-                            <td className="p-2.5 text-center">
-                              <button
-                                type="button"
-                                onClick={() => handleSelectStockItem(st)}
-                                className="px-2.5 py-1 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-semibold transition"
+                        pagedStockForPicker.map((st) => {
+                          const isChecked = selectedStockKeySet.has(getStockItemMatchKey(st));
+                          return (
+                            <tr
+                              key={st.id}
+                              onClick={() => toggleStockItemSelection(st)}
+                              className={`cursor-pointer select-none transition-colors ${
+                                isChecked
+                                  ? 'bg-blue-50/70 hover:bg-blue-100/60'
+                                  : 'hover:bg-slate-50'
+                              }`}
+                            >
+                              <td className="p-2.5 font-mono font-bold text-blue-700">
+                                {st.materialCode}
+                              </td>
+                              <td className="p-2.5">
+                                <span className="font-semibold text-slate-900 block">
+                                  {st.materialName}
+                                </span>
+                                <span className="text-[11px] text-slate-500">ĐVT: {st.unit}</span>
+                              </td>
+                              <td className="p-2.5 font-mono font-semibold text-slate-800">
+                                {st.packageNo}
+                              </td>
+                              <td className="p-2.5">
+                                <span className="font-mono text-slate-700 block">
+                                  {st.packingListNo}
+                                </span>
+                                <span className="font-mono text-slate-400 text-[11px]">
+                                  {st.shipment}
+                                </span>
+                              </td>
+                              <td className="p-2.5 text-right font-bold text-slate-900 font-mono tabular-nums">
+                                {st.currentQuantity.toLocaleString('vi-VN')}
+                              </td>
+                              <td className="p-2.5 text-right font-mono font-medium text-emerald-700 tabular-nums">
+                                {st.currentWeightKg.toLocaleString('en-US', {
+                                  minimumFractionDigits: 2,
+                                  maximumFractionDigits: 2
+                                })}
+                              </td>
+                              <td
+                                className="p-2.5 text-center"
+                                onClick={(e) => e.stopPropagation()}
                               >
-                                Chọn
-                              </button>
-                            </td>
-                          </tr>
-                        ))
+                                <input
+                                  type="checkbox"
+                                  checked={isChecked}
+                                  onChange={() => toggleStockItemSelection(st)}
+                                  className="w-4 h-4 rounded text-blue-600 focus:ring-blue-500 border-slate-300 cursor-pointer"
+                                  title={
+                                    isChecked
+                                      ? `Bỏ chọn vật tư ${st.materialCode}`
+                                      : `Chọn xuất kho vật tư ${st.materialCode}`
+                                  }
+                                />
+                              </td>
+                            </tr>
+                          );
+                        })
                       )}
                     </tbody>
                   </table>
@@ -1986,6 +2140,55 @@ export const OutboundManager: React.FC = () => {
                   pageSizeOptions={[50, 100, 200]}
                   itemLabel="mặt hàng tồn"
                 />
+              </div>
+            </div>
+
+            <div className="p-3.5 sm:p-4 border-t border-slate-200 bg-slate-50 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+              <div className="text-xs text-slate-600 flex flex-wrap items-center gap-1.5">
+                <span>
+                  Đã chọn trong phiếu xuất:{' '}
+                  <strong className="text-blue-700 font-bold tabular-nums">
+                    {formItems.length.toLocaleString('vi-VN')}
+                  </strong>{' '}
+                  mục hàng
+                </span>
+                {availableStockForPicker.length > 0 && (
+                  <span className="text-slate-400">
+                    ({selectedFilteredStockCount.toLocaleString('vi-VN')}/
+                    {availableStockForPicker.length.toLocaleString('vi-VN')} mục khả dụng đang hiển thị)
+                  </span>
+                )}
+              </div>
+
+              <div className="flex flex-wrap items-center justify-end gap-2">
+                {availableStockForPicker.length > pagedStockForPicker.length &&
+                  selectedFilteredStockCount < availableStockForPicker.length && (
+                    <button
+                      type="button"
+                      onClick={selectAllFilteredStock}
+                      className="px-3 py-2 bg-white hover:bg-blue-50 text-blue-700 border border-blue-200 rounded-xl text-xs font-semibold transition min-h-[38px]"
+                    >
+                      Chọn hết {availableStockForPicker.length.toLocaleString('vi-VN')} kết quả lọc
+                    </button>
+                  )}
+
+                {selectedFilteredStockCount > 0 && (
+                  <button
+                    type="button"
+                    onClick={clearSelectedFilteredStock}
+                    className="px-3 py-2 bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 rounded-xl text-xs font-semibold transition min-h-[38px]"
+                  >
+                    Bỏ chọn ({selectedFilteredStockCount.toLocaleString('vi-VN')})
+                  </button>
+                )}
+
+                <button
+                  type="button"
+                  onClick={() => setIsPickStockOpen(false)}
+                  className="px-5 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold shadow-sm shadow-blue-500/20 transition active:scale-95 min-h-[38px]"
+                >
+                  Xong ({formItems.length.toLocaleString('vi-VN')} mục)
+                </button>
               </div>
             </div>
           </div>
