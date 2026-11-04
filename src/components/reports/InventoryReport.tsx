@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo, useDeferredValue } from 'react';
 import { StockFilterParams, Warehouse } from '../../types/inventory';
 import { StorageService } from '../../services/storage';
 import { exportToExcel } from '../../services/excelService';
+import { roundQty } from '../../utils/additiveMerge';
 import { PaginationBar } from '../common/PaginationBar';
 import { 
   BarChart3, 
@@ -68,7 +69,7 @@ export const InventoryReport: React.FC = () => {
       startDate: startDate || undefined,
       endDate: endDate || undefined
     };
-    return StorageService.calculateInventoryRecords(filter);
+    return StorageService.calculateMergedInventoryReport(filter);
   }, [
     syncTick,
     warehouseId,
@@ -168,12 +169,16 @@ export const InventoryReport: React.FC = () => {
       stkQty += r.currentQuantity;
       stkW += r.currentWeightKg;
     }
+    const roundedInQty = roundQty(inQty);
+    const roundedOutQty = roundQty(outQty);
+    const roundedInW = Math.round(inW * 100) / 100;
+    const roundedOutW = Math.round(outW * 100) / 100;
     return {
-      totalInboundQty: inQty,
-      totalInboundWeight: Math.round(inW * 100) / 100,
-      totalOutboundQty: outQty,
-      totalOutboundWeight: Math.round(outW * 100) / 100,
-      totalStockQty: stkQty,
+      totalInboundQty: roundedInQty,
+      totalInboundWeight: roundedInW,
+      totalOutboundQty: roundedOutQty,
+      totalOutboundWeight: roundedOutW,
+      totalStockQty: roundQty(stkQty),
       totalStockWeight: Math.round(stkW * 100) / 100
     };
   }, [records]);
@@ -447,10 +452,10 @@ export const InventoryReport: React.FC = () => {
       <div className="bg-white rounded-2xl border border-slate-200/80 shadow-sm overflow-hidden">
         <div className="p-3.5 sm:p-4 border-b border-slate-100 flex flex-col sm:flex-row sm:items-center justify-between gap-1">
           <div className="font-bold text-slate-900 text-sm">
-            Bảng Chi Tiết Tồn Kho Theo Điều Kiện ({records.length.toLocaleString('vi-VN')} bản ghi)
+            Bảng Chi Tiết Nhập - Xuất - Tồn Sau Gộp ({records.length.toLocaleString('vi-VN')} vật tư gộp)
           </div>
           <span className="text-xs text-slate-500">
-            Cập nhật thời gian thực theo từng phiếu nhập và xuất
+            Tự động gộp theo Packing List, Shipment, Kiện hàng, Mã vật tư &amp; Tên vật tư
           </span>
         </div>
 
