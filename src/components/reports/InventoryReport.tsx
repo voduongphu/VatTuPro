@@ -116,24 +116,24 @@ export const InventoryReport: React.FC = () => {
   const handleExportExcel = () => {
     const dataToExport = records.map((r, index) => ({
       'STT': index + 1,
-      'Kho Bãi': r.warehouseName,
-      'Số Packing List': r.packingListNo,
-      'Shipment / Lô hàng': r.shipment,
-      'Số kiện': r.packageNo,
-      'Tên kiện': r.packageName,
+      'Packing List': r.packingListNo,
+      'Shipment': r.shipment,
+      'Kiện Hàng (Số kiện)': r.packageNo,
+      'Tên Kiện Hàng': r.packageName,
       'Mã Vật Tư': r.materialCode,
-      'Tên Vật Tư Thiết Bị': r.materialName,
+      'Vật Tư Thiết Bị': r.materialName,
       'ĐVT': r.unit,
-      'Hạng Mục': r.category,
-      'Bản Vẽ Kỹ Thuật': r.drawingNo,
-      'Nhà Sản Xuất': r.manufacturer,
-      'Nhà Cung Cấp': r.supplier,
       'Tổng Nhập (SL)': r.inboundQuantity,
       'Tổng Nhập (kg)': r.inboundWeightKg,
       'Tổng Xuất (SL)': r.outboundQuantity,
       'Tổng Xuất (kg)': r.outboundWeightKg,
-      'Tồn Kho Hiện Tại (SL)': r.currentQuantity,
-      'Tồn Kho Hiện Tại (kg)': r.currentWeightKg,
+      'Tồn SL': r.currentQuantity,
+      'Tồn KL (kg)': r.currentWeightKg,
+      'Kho Bãi': r.warehouseName,
+      'Hạng Mục': r.category,
+      'Bản Vẽ Kỹ Thuật': r.drawingNo,
+      'Nhà Sản Xuất': r.manufacturer,
+      'Nhà Cung Cấp': r.supplier,
       'Ngày Cập Nhật': r.lastUpdated
     }));
 
@@ -455,27 +455,26 @@ export const InventoryReport: React.FC = () => {
         </div>
 
         <div className="overflow-x-auto">
-          <table className="w-full text-left text-xs min-w-[1100px]">
+          <table className="w-full text-left text-xs min-w-[1050px]">
             <thead className="bg-slate-50/90 text-slate-700 font-semibold border-b border-slate-200 uppercase tracking-wider text-[11px]">
               <tr>
-                <th className="p-3 w-8 text-center">STT</th>
-                <th className="p-3 w-32">Packing List</th>
-                <th className="p-3 w-28">Shipment</th>
-                <th className="p-3 w-28">Kiện Hàng</th>
-                <th className="p-3 w-48">Vật Tư Thiết Bị</th>
-                <th className="p-3 w-32">Hạng Mục & Bản Vẽ</th>
-                <th className="p-3 w-32">Mã Vật Tư</th>
+                <th className="p-3 w-10 text-center">STT</th>
+                <th className="p-3 w-32">PACKING LIST</th>
+                <th className="p-3 w-28">SHIPMENT</th>
+                <th className="p-3 w-32">KIỆN HÀNG</th>
+                <th className="p-3 w-32">MÃ VẬT TƯ</th>
+                <th className="p-3 w-56">VẬT TƯ THIẾT BỊ</th>
                 <th className="p-3 w-16 text-center">ĐVT</th>
-                <th className="p-3 text-right bg-blue-50/50 text-blue-900">Tổng Nhập</th>
-                <th className="p-3 text-right bg-rose-50/50 text-rose-900">Tổng Xuất</th>
+                <th className="p-3 text-right bg-blue-50/50 text-blue-900">TỔNG NHẬP</th>
+                <th className="p-3 text-right bg-rose-50/50 text-rose-900">TỔNG XUẤT</th>
                 <th className="p-3 text-right bg-emerald-50 text-emerald-950 font-bold">TỒN SL</th>
-                <th className="p-3 text-right bg-emerald-50 text-emerald-950 font-bold">TỒN KL (kg)</th>
+                <th className="p-3 text-right bg-emerald-50 text-emerald-950 font-bold">TỒN KL (KG)</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
               {pagedRecords.length === 0 ? (
                 <tr>
-                  <td colSpan={12} className="p-12 text-center text-slate-400 text-sm">
+                  <td colSpan={11} className="p-12 text-center text-slate-400 text-sm">
                     Không có bản ghi tồn kho nào khớp với các điều kiện lọc đã chọn.
                   </td>
                 </tr>
@@ -489,19 +488,15 @@ export const InventoryReport: React.FC = () => {
                       <span className="font-bold text-slate-900 block">{r.packageNo}</span>
                       <span className="text-[11px] text-slate-500 line-clamp-1">{r.packageName}</span>
                     </td>
-                    <td className="p-3">
-                      <span className="font-semibold text-slate-900 block text-xs">{r.materialName}</span>
-                    </td>
-                    <td className="p-3">
-                      <div className="text-slate-800 font-medium">{r.category}</div>
-                      <div className="font-mono text-indigo-700 text-[11px]">{r.drawingNo}</div>
-                    </td>
                     <td className="p-3 font-mono font-semibold text-slate-800">
                       {r.materialCode && r.materialCode !== 'N/A' ? (
                         <span>{r.materialCode}</span>
                       ) : (
                         <span className="text-slate-400 font-normal">N/A</span>
                       )}
+                    </td>
+                    <td className="p-3">
+                      <span className="font-semibold text-slate-900 block text-xs">{r.materialName}</span>
                     </td>
                     <td className="p-3 text-center font-medium text-slate-600">{r.unit}</td>
                     
@@ -532,7 +527,7 @@ export const InventoryReport: React.FC = () => {
             </tbody>
             <tfoot className="bg-slate-100/90 font-bold border-t-2 border-slate-300">
               <tr>
-                <td colSpan={8} className="p-3 text-right uppercase text-slate-700 text-xs">
+                <td colSpan={7} className="p-3 text-right uppercase text-slate-700 text-xs">
                   Tổng Cộng Báo Cáo:
                 </td>
                 <td className="p-3 text-right font-mono text-blue-700">

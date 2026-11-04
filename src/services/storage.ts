@@ -22,7 +22,8 @@ import {
   mergeWarehousesAdditive,
   mergeMaterialsAdditive,
   mergeInboundReceiptsAdditive,
-  mergeOutboundReceiptsAdditive
+  mergeOutboundReceiptsAdditive,
+  buildLatestMaterialsFromReceipts
 } from '../utils/additiveMerge';
 
 const STORAGE_KEYS = {
@@ -46,9 +47,20 @@ const LARGE_DATA_KEYS = new Set<string>([
 ]);
 
 const SEED_FLAG_KEY = 'vtp_inventory_seeded_flag_v4';
+const AUTO_MAT_SYNC_BASELINE_KEY = 'vtp_mat_receipt_autosync_v1';
 const IDB_NAME = 'vtp_inventory_idb_v2';
 const IDB_STORE = 'kv_store';
 const IDB_VERSION = 1;
+let bootBaselineStartedAtMs = 0;
+
+function isAutoSyncedMaterialNote(notes?: string): boolean {
+  if (!notes) return false;
+  const trimmed = notes.trim();
+  return (
+    trimmed.startsWith('Đồng bộ từ ') ||
+    trimmed.startsWith('Tự động tạo ')
+  );
+}
 
 // Tài khoản Quản trị gốc mặc định khi hệ thống khởi tạo lần đầu
 const ROOT_ADMIN_USER: User = {
@@ -349,8 +361,13 @@ function buildAggregatedRecords(
 
       entry.inboundQuantity += Number(item.quantity) || 0;
       entry.inboundWeightKg += Number(item.weightKg) || 0;
-      if (rDate > entry.lastUpdated) {
+      if (rDate >= entry.lastUpdated) {
         entry.lastUpdated = rDate;
+        if (item.materialName && item.materialName !== 'N/A') entry.materialName = item.materialName;
+        if (item.unit && item.unit !== 'N/A') entry.unit = item.unit;
+        if (item.packageName) entry.packageName = item.packageName;
+        if (item.manufacturer && item.manufacturer !== 'N/A') entry.manufacturer = item.manufacturer;
+        if (item.supplier && item.supplier !== 'N/A') entry.supplier = item.supplier;
       }
     }
   }
@@ -402,8 +419,13 @@ function buildAggregatedRecords(
 
       entry.outboundQuantity += Number(item.quantity) || 0;
       entry.outboundWeightKg += Number(item.weightKg) || 0;
-      if (iDate > entry.lastUpdated) {
+      if (iDate >= entry.lastUpdated) {
         entry.lastUpdated = iDate;
+        if (item.materialName && item.materialName !== 'N/A') entry.materialName = item.materialName;
+        if (item.unit && item.unit !== 'N/A') entry.unit = item.unit;
+        if (item.packageName) entry.packageName = item.packageName;
+        if (item.manufacturer && item.manufacturer !== 'N/A') entry.manufacturer = item.manufacturer;
+        if (item.supplier && item.supplier !== 'N/A') entry.supplier = item.supplier;
       }
     }
   }
@@ -479,6 +501,7 @@ export const StorageService = {
       }
 
       this.ensureInitialized();
+      this.syncMaterialsFromReceipts({ emitMutation: true });
       inventoryVersion++;
       isHydrated = true;
     })();
@@ -790,11 +813,11 @@ export const StorageService = {
   deleteMaterial(id: string): boolean {
     const mats = this.getMaterials();
     const target = mats.find((m) => m.id === id);
-    const now = Date.now();
+    const tombTs = Math.max(Date.now(), (Number(target?.updatedAt) || 0) + 1);
     const tombstones = this.getTombstones();
-    tombstones.materials[id] = now;
+    tombstones.materials[id] = tombTs;
     if (target) {
-      tombstones.materials[normKey(target.code)] = now;
+      tombstones.materials[normKey(target.code)] = tombTs;
     }
     this.saveTombstones(tombstones);
 
@@ -814,8 +837,9 @@ export const StorageService = {
     for (let i = 0; i < mats.length; i++) {
       const m = mats[i];
       if (idSet.has(m.id)) {
-        tombstones.materials[m.id] = now;
-        tombstones.materials[normKey(m.code)] = now;
+        const tombTs = Math.max(now, (Number(m.updatedAt) || 0) + 1);
+        tombstones.materials[m.id] = tombTs;
+        tombstones.materials[normKey(m.code)] = tombTs;
       } else {
         filtered.push(m);
       }
@@ -837,8 +861,9 @@ export const StorageService = {
       const now = Date.now();
       const tombstones = this.getTombstones();
       for (let i = 0; i < mats.length; i++) {
-        tombstones.materials[mats[i].id] = now;
-        tombstones.materials[normKey(mats[i].code)] = now;
+        const tombTs = Math.max(now, (Number(mats[i].updatedAt) || 0) + 1);
+        tombstones.materials[mats[i].id] = tombTs;
+        tombstones.materials[normKey(mats[i].code)] = tombTs;
       }
       this.saveTombstones(tombstones);
       this.saveMaterials([]);
@@ -919,6 +944,241 @@ export const StorageService = {
     return { added, updated };
   },
 
+  // Tự động đồng bộ Danh mục vật tư từ toàn bộ Phiếu nhập & Phiếu xuất (trùng mã lấy dữ liệu mới nhất)
+  syncMaterialsFromReceipts(options?: {
+    forceFromReceipts?: boolean;
+    emitMutation?: boolean;
+    notify?: boolean;
+  }): { added: number; updated: number; changed: boolean } {
+    const inbounds = this.getInboundReceipts();
+    const outbounds = this.getOutboundReceipts();
+    const hasReceipts = inbounds.length > 0 || outbounds.length > 0;
+
+    let wasBaselineDone = safeLocalGetRaw(AUTO_MAT_SYNC_BASELINE_KEY) === 'true';
+    const inBootBaselineWindow =
+      bootBaselineStartedAtMs > 0 && Date.now() - bootBaselineStartedAtMs < 15_000;
+    const isBaselineRun = (!wasBaselineDone && hasReceipts) || inBootBaselineWindow;
+    const forceRefresh = Boolean(options?.forceFromReceipts) || isBaselineRun;
+
+    const rawStoredMaterials = getItem<MaterialItem[]>(STORAGE_KEYS.MATERIALS, []);
+    const tombstones = this.getTombstones();
+
+    let maxMatTombTs = 0;
+    const matTombValues = Object.values(tombstones.materials);
+    for (let i = 0; i < matTombValues.length; i++) {
+      const v = Number(matTombValues[i]) || 0;
+      if (v > maxMatTombTs) maxMatTombTs = v;
+    }
+
+    // Lưu bản ghi thô theo mã để khôi phục ID / tồn kho tối thiểu khi đồng bộ lại
+    const rawByCode = new Map<string, MaterialItem>();
+    for (let i = 0; i < rawStoredMaterials.length; i++) {
+      const m = rawStoredMaterials[i];
+      const cKey = normKey(m.code);
+      if (!cKey) continue;
+      const prev = rawByCode.get(cKey);
+      if (!prev || (Number(m.updatedAt) || 0) >= (Number(prev.updatedAt) || 0)) {
+        rawByCode.set(cKey, m);
+      }
+    }
+
+    // Khử trùng lặp ngay trên danh sách vật tư đang hoạt động (giữ bản mới nhất cho mỗi mã)
+    const activeRawList = this.getMaterials();
+    const dedupedActive: MaterialItem[] = [];
+    const activeIndexByCode = new Map<string, number>();
+    let changed = false;
+
+    for (let i = 0; i < activeRawList.length; i++) {
+      const m = activeRawList[i];
+      const cKey = normKey(m.code);
+      if (!cKey) {
+        changed = true;
+        continue;
+      }
+      const existIdx = activeIndexByCode.get(cKey);
+      if (existIdx === undefined) {
+        activeIndexByCode.set(cKey, dedupedActive.length);
+        dedupedActive.push(m);
+      } else {
+        changed = true;
+        const curr = dedupedActive[existIdx];
+        if ((Number(m.updatedAt) || 0) >= (Number(curr.updatedAt) || 0)) {
+          dedupedActive[existIdx] = m;
+        }
+      }
+    }
+
+    const candidates = buildLatestMaterialsFromReceipts(inbounds, outbounds);
+    let added = 0;
+    let updated = 0;
+    const now = Date.now();
+
+    candidates.forEach((cand, cKey) => {
+      const existIdx = activeIndexByCode.get(cKey);
+      const prevRaw = rawByCode.get(cKey);
+      const itemTombTs = Math.max(
+        Number(tombstones.materials[cKey]) || 0,
+        prevRaw?.id ? Number(tombstones.materials[prevRaw.id]) || 0 : 0
+      );
+
+      if (existIdx === undefined) {
+        if (!forceRefresh && itemTombTs > 0 && itemTombTs >= cand.latestMutationTs) {
+          return;
+        }
+        const nextUpdatedAt = forceRefresh
+          ? Math.max(now, maxMatTombTs + 1, cand.latestMutationTs, (Number(prevRaw?.updatedAt) || 0) + 1)
+          : Math.max(cand.latestMutationTs, itemTombTs > 0 ? itemTombTs + 1 : 1);
+
+        const preservedCustomNote =
+          prevRaw?.notes && !isAutoSyncedMaterialNote(prevRaw.notes) ? prevRaw.notes : '';
+        const resolvedNotes = cand.latestItemNote || preservedCustomNote || cand.latestSourceNote;
+
+        const newMat: MaterialItem = {
+          id: prevRaw?.id || `mat-auto-${cKey.replace(/[^A-Z0-9_-]/g, '_')}`,
+          code: cand.code,
+          name: cand.name || cand.code,
+          unit: cand.unit || 'Bộ',
+          category: cand.category || 'Chung',
+          packageNo: cand.packageNo || '',
+          drawingNo: cand.drawingNo || '',
+          manufacturer: cand.manufacturer || '',
+          supplier: cand.supplier || '',
+          unitWeightKg: cand.unitWeightKg || 0,
+          specification: cand.specification || '',
+          minStockAlert: prevRaw?.minStockAlert ?? 2,
+          notes: resolvedNotes,
+          updatedAt: nextUpdatedAt
+        };
+        activeIndexByCode.set(cKey, dedupedActive.length);
+        dedupedActive.push(newMat);
+        added++;
+        changed = true;
+      } else {
+        const curr = dedupedActive[existIdx];
+        const currTs = Number(curr.updatedAt) || 0;
+        const currTombTs = Math.max(
+          itemTombTs,
+          Number(tombstones.materials[curr.id]) || 0
+        );
+        const isAutoNote = isAutoSyncedMaterialNote(curr.notes);
+        const shouldOverwrite = forceRefresh || cand.latestMutationTs >= currTs || isAutoNote;
+
+        if (shouldOverwrite) {
+          const nextName = cand.name || curr.name || cand.code;
+          const nextUnit = cand.unit || curr.unit || 'Bộ';
+          const nextCategory = cand.hasSpecificCategory
+            ? cand.category
+            : curr.category &&
+                curr.category !== 'Chung' &&
+                curr.category !== 'Vật tư dự án' &&
+                curr.category !== 'Khác'
+              ? curr.category
+              : cand.category || curr.category || 'Chung';
+          const nextPackageNo = cand.packageNo || curr.packageNo || '';
+          const nextDrawingNo = cand.drawingNo || curr.drawingNo || '';
+          const nextManufacturer = cand.manufacturer || curr.manufacturer || '';
+          const nextSupplier = cand.supplier || curr.supplier || '';
+          const nextUnitWeightKg =
+            cand.unitWeightKg > 0 ? cand.unitWeightKg : Number(curr.unitWeightKg) || 0;
+          const nextSpecification = cand.specification || curr.specification || '';
+          const nextNotes =
+            isAutoNote || !curr.notes
+              ? cand.latestItemNote || cand.latestSourceNote
+              : curr.notes;
+
+          const needTombBump = forceRefresh && currTombTs >= currTs;
+          const fieldsDiff =
+            nextName !== curr.name ||
+            nextUnit !== curr.unit ||
+            nextCategory !== curr.category ||
+            nextPackageNo !== (curr.packageNo || '') ||
+            nextDrawingNo !== (curr.drawingNo || '') ||
+            nextManufacturer !== (curr.manufacturer || '') ||
+            nextSupplier !== (curr.supplier || '') ||
+            nextUnitWeightKg !== (Number(curr.unitWeightKg) || 0) ||
+            nextSpecification !== (curr.specification || '') ||
+            nextNotes !== (curr.notes || '');
+
+          if (fieldsDiff || needTombBump) {
+            const nextUpdatedAt = forceRefresh
+              ? Math.max(now, maxMatTombTs + 1, cand.latestMutationTs, currTs + 1)
+              : Math.max(cand.latestMutationTs, currTs + 1);
+            dedupedActive[existIdx] = {
+              ...curr,
+              code: cand.code,
+              name: nextName,
+              unit: nextUnit,
+              category: nextCategory,
+              packageNo: nextPackageNo,
+              drawingNo: nextDrawingNo,
+              manufacturer: nextManufacturer,
+              supplier: nextSupplier,
+              unitWeightKg: nextUnitWeightKg,
+              specification: nextSpecification,
+              notes: nextNotes,
+              updatedAt: nextUpdatedAt
+            };
+            updated++;
+            changed = true;
+          }
+        } else {
+          // Trường hợp Admin vừa chỉnh tay danh mục sau ngày lập phiếu: chỉ điền bổ sung các trường đang trống
+          const nextPackageNo = curr.packageNo || cand.packageNo || '';
+          const nextDrawingNo = curr.drawingNo || cand.drawingNo || '';
+          const nextManufacturer = curr.manufacturer || cand.manufacturer || '';
+          const nextSupplier = curr.supplier || cand.supplier || '';
+          const nextUnitWeightKg =
+            Number(curr.unitWeightKg) > 0 ? Number(curr.unitWeightKg) : cand.unitWeightKg || 0;
+          const nextSpecification = curr.specification || cand.specification || '';
+
+          if (
+            nextPackageNo !== (curr.packageNo || '') ||
+            nextDrawingNo !== (curr.drawingNo || '') ||
+            nextManufacturer !== (curr.manufacturer || '') ||
+            nextSupplier !== (curr.supplier || '') ||
+            nextUnitWeightKg !== (Number(curr.unitWeightKg) || 0) ||
+            nextSpecification !== (curr.specification || '')
+          ) {
+            dedupedActive[existIdx] = {
+              ...curr,
+              packageNo: nextPackageNo,
+              drawingNo: nextDrawingNo,
+              manufacturer: nextManufacturer,
+              supplier: nextSupplier,
+              unitWeightKg: nextUnitWeightKg,
+              specification: nextSpecification,
+              updatedAt: currTs + 1
+            };
+            updated++;
+            changed = true;
+          }
+        }
+      }
+    });
+
+    if (!wasBaselineDone && hasReceipts) {
+      bootBaselineStartedAtMs = Date.now();
+      try {
+        localStorage.setItem(AUTO_MAT_SYNC_BASELINE_KEY, 'true');
+      } catch {
+        // ignore
+      }
+      wasBaselineDone = true;
+    }
+
+    if (changed) {
+      this.saveMaterials(dedupedActive);
+      if (options?.notify) {
+        notifySubscribers();
+      }
+      if (options?.emitMutation || isBaselineRun) {
+        emitLocalMutation('materials');
+      }
+    }
+
+    return { added, updated, changed };
+  },
+
   // INBOUND RECEIPTS
   getInboundReceipts(): InboundReceipt[] {
     this.ensureInitialized();
@@ -962,7 +1222,7 @@ export const StorageService = {
     this.addInboundReceipts([rcp]);
   },
 
-  // O(N) thêm & cộng gộp phiếu nhập (không ghi đè mất phiếu cũ) + đồng bộ danh mục vật tư với 100.000+ dòng
+  // O(N) thêm & cộng gộp phiếu nhập (không ghi đè mất phiếu cũ) + tự động đồng bộ danh mục vật tư lấy dữ liệu mới nhất
   addInboundReceipts(rcps: InboundReceipt[]): { addedCount: number; newMaterialsCount: number } {
     if (rcps.length === 0) return { addedCount: 0, newMaterialsCount: 0 };
 
@@ -973,59 +1233,11 @@ export const StorageService = {
     const mergedIn = mergeInboundReceiptsAdditive(existingInbounds, stampedRcps, tombstones.inbound);
     this.saveInboundReceipts(mergedIn.list);
 
-    // Tự động bổ sung mã vật tư mới vào danh mục bằng Hash Set O(1)
-    const currentMaterials = [...this.getMaterials()];
-    const existingMatCodes = new Set<string>();
-    for (let i = 0; i < currentMaterials.length; i++) {
-      existingMatCodes.add(currentMaterials[i].code.toUpperCase());
-    }
-
-    let newMaterialsCount = 0;
-    const salt = Math.random().toString(36).slice(2, 6);
-
-    for (let rIdx = 0; rIdx < stampedRcps.length; rIdx++) {
-      const rcp = stampedRcps[rIdx];
-      const items = rcp.items;
-      for (let iIdx = 0; iIdx < items.length; iIdx++) {
-        const item = items[iIdx];
-        const rawCode = (item.materialCode || '').trim();
-        const rawName = (item.materialName || '').trim();
-        if (!rawCode && !rawName) continue;
-
-        const code = (rawCode || `VT-${rawName.slice(0, 6).toUpperCase().replace(/\s+/g, '')}`).toUpperCase();
-        if (!existingMatCodes.has(code)) {
-          existingMatCodes.add(code);
-          const qty = roundQty(item.quantity);
-          const weight = Number(item.weightKg) || 0;
-          currentMaterials.push({
-            id: `mat-auto-${now}-${salt}-${newMaterialsCount}`,
-            code,
-            name: rawName || code,
-            unit: (item.unit || '').trim() || 'Bộ',
-            category: (item.category || '').trim() || 'Chung',
-            packageNo: (item.packageNo || '').trim() || '',
-            drawingNo: (item.drawingNo || '').trim() || '',
-            manufacturer: (item.manufacturer || '').trim() || '',
-            supplier: (item.supplier || '').trim() || '',
-            unitWeightKg: weight > 0 && qty > 0 ? Math.round((weight / qty) * 100) / 100 : 0,
-            specification: item.conditionNote || '',
-            minStockAlert: 2,
-            notes: `Tự động tạo từ phiếu nhập kho ${rcp.receiptCode} (${item.packingListNo || 'PL'})`,
-            updatedAt: now
-          });
-          newMaterialsCount++;
-        }
-      }
-    }
-
-    if (newMaterialsCount > 0) {
-      this.saveMaterials(currentMaterials);
-      emitLocalMutation('materials');
-    }
+    const matSync = this.syncMaterialsFromReceipts({ emitMutation: true });
 
     notifySubscribers();
     emitLocalMutation('inbound', mergedIn.touchedCodes);
-    return { addedCount: stampedRcps.length, newMaterialsCount };
+    return { addedCount: stampedRcps.length, newMaterialsCount: matSync.added + matSync.updated };
   },
 
   updateInboundReceipt(
@@ -1073,56 +1285,14 @@ export const StorageService = {
     inbounds[idx] = savedReceipt;
     this.saveInboundReceipts(inbounds);
 
-    // Tự động bổ sung vật tư mới nếu Admin thêm dòng vật tư mới khi sửa phiếu
-    const currentMaterials = [...this.getMaterials()];
-    const existingMatCodes = new Set<string>();
-    for (let i = 0; i < currentMaterials.length; i++) {
-      existingMatCodes.add(currentMaterials[i].code.toUpperCase());
-    }
-
-    let newMaterialsCount = 0;
-    for (let iIdx = 0; iIdx < items.length; iIdx++) {
-      const item = items[iIdx];
-      const rawCode = (item.materialCode || '').trim();
-      const rawName = (item.materialName || '').trim();
-      if (!rawCode && !rawName) continue;
-
-      const code = (rawCode || `VT-${rawName.slice(0, 6).toUpperCase().replace(/\s+/g, '')}`).toUpperCase();
-      if (!existingMatCodes.has(code)) {
-        existingMatCodes.add(code);
-        const qty = roundQty(item.quantity);
-        const weight = Number(item.weightKg) || 0;
-        currentMaterials.push({
-          id: `mat-auto-${now}-${salt}-${newMaterialsCount}`,
-          code,
-          name: rawName || code,
-          unit: (item.unit || '').trim() || 'Bộ',
-          category: (item.category || '').trim() || 'Chung',
-          packageNo: (item.packageNo || '').trim() || '',
-          drawingNo: (item.drawingNo || '').trim() || '',
-          manufacturer: (item.manufacturer || '').trim() || '',
-          supplier: (item.supplier || '').trim() || '',
-          unitWeightKg: weight > 0 && qty > 0 ? Math.round((weight / qty) * 100) / 100 : 0,
-          specification: item.conditionNote || '',
-          minStockAlert: 2,
-          notes: `Tự động tạo khi cập nhật phiếu nhập kho ${savedReceipt.receiptCode}`,
-          updatedAt: now
-        });
-        newMaterialsCount++;
-      }
-    }
-
-    if (newMaterialsCount > 0) {
-      this.saveMaterials(currentMaterials);
-      emitLocalMutation('materials');
-    }
+    const matSync = this.syncMaterialsFromReceipts({ emitMutation: true });
 
     if (isCodeChanged) {
       emitLocalMutation('meta');
     }
     notifySubscribers();
     emitLocalMutation('inbound', [newCodeKey]);
-    return { success: true, newMaterialsCount };
+    return { success: true, newMaterialsCount: matSync.added + matSync.updated };
   },
 
   deleteInboundReceipt(id: string): boolean {
@@ -1141,6 +1311,7 @@ export const StorageService = {
 
     const filtered = inbounds.filter((i) => i.id !== id && i.receiptCode !== id);
     this.saveInboundReceipts(filtered);
+    this.syncMaterialsFromReceipts({ emitMutation: true });
     notifySubscribers();
     emitLocalMutation('meta');
     return true;
@@ -1169,6 +1340,7 @@ export const StorageService = {
     if (deletedCount > 0) {
       this.saveTombstones(tombstones);
       this.saveInboundReceipts(filtered);
+      this.syncMaterialsFromReceipts({ emitMutation: true });
       notifySubscribers();
       emitLocalMutation('meta');
     }
@@ -1212,8 +1384,8 @@ export const StorageService = {
     this.addOutboundReceipts([rcp]);
   },
 
-  addOutboundReceipts(rcps: OutboundReceipt[]): { addedCount: number } {
-    if (rcps.length === 0) return { addedCount: 0 };
+  addOutboundReceipts(rcps: OutboundReceipt[]): { addedCount: number; newMaterialsCount?: number } {
+    if (rcps.length === 0) return { addedCount: 0, newMaterialsCount: 0 };
 
     const now = Date.now();
     const stampedRcps = rcps.map((r) => ({ ...r, updatedAt: now }));
@@ -1222,16 +1394,21 @@ export const StorageService = {
     const mergedOut = mergeOutboundReceiptsAdditive(existingOutbounds, stampedRcps, tombstones.outbound);
     this.saveOutboundReceipts(mergedOut.list);
 
+    const matSync = this.syncMaterialsFromReceipts({ emitMutation: true });
+
     notifySubscribers();
     emitLocalMutation('outbound', mergedOut.touchedCodes);
-    return { addedCount: stampedRcps.length };
+    return { addedCount: stampedRcps.length, newMaterialsCount: matSync.added + matSync.updated };
   },
 
-  updateOutboundReceipt(originalId: string, updated: OutboundReceipt): { success: boolean } {
+  updateOutboundReceipt(
+    originalId: string,
+    updated: OutboundReceipt
+  ): { success: boolean; newMaterialsCount?: number } {
     const outbounds = [...this.getOutboundReceipts()];
     const idx = outbounds.findIndex((o) => o.id === originalId || normKey(o.issueCode) === normKey(originalId));
     if (idx === -1) {
-      return { success: false };
+      return { success: false, newMaterialsCount: 0 };
     }
 
     const oldRcp = outbounds[idx];
@@ -1267,12 +1444,14 @@ export const StorageService = {
     outbounds[idx] = savedReceipt;
     this.saveOutboundReceipts(outbounds);
 
+    const matSync = this.syncMaterialsFromReceipts({ emitMutation: true });
+
     if (isCodeChanged) {
       emitLocalMutation('meta');
     }
     notifySubscribers();
     emitLocalMutation('outbound', [newCodeKey]);
-    return { success: true };
+    return { success: true, newMaterialsCount: matSync.added + matSync.updated };
   },
 
   deleteOutboundReceipt(id: string): boolean {
@@ -1291,6 +1470,7 @@ export const StorageService = {
 
     const filtered = outbounds.filter((o) => o.id !== id && o.issueCode !== id);
     this.saveOutboundReceipts(filtered);
+    this.syncMaterialsFromReceipts({ emitMutation: true });
     notifySubscribers();
     emitLocalMutation('meta');
     return true;
@@ -1319,6 +1499,7 @@ export const StorageService = {
     if (deletedCount > 0) {
       this.saveTombstones(tombstones);
       this.saveOutboundReceipts(filtered);
+      this.syncMaterialsFromReceipts({ emitMutation: true });
       notifySubscribers();
       emitLocalMutation('meta');
     }
@@ -1367,6 +1548,11 @@ export const StorageService = {
       if (cleanMat.changed) {
         this.saveMaterials(cleanMat.list);
       }
+
+      const matSync = this.syncMaterialsFromReceipts();
+      if (matSync.changed) {
+        anyChanged = true;
+      }
     }
 
     if (Array.isArray(payload.users) && payload.users.length > 0) {
@@ -1409,6 +1595,11 @@ export const StorageService = {
       }
     }
 
+    const matSync = this.syncMaterialsFromReceipts();
+    if (matSync.changed) {
+      changed = true;
+    }
+
     if (changed) {
       notifySubscribers();
     }
@@ -1421,6 +1612,9 @@ export const StorageService = {
     const merged = mergeInboundReceiptsAdditive(this.getInboundReceipts(), receipts, tombstones.inbound);
     if (merged.changed) {
       this.saveInboundReceipts(merged.list);
+    }
+    const matSync = this.syncMaterialsFromReceipts();
+    if (merged.changed || matSync.changed) {
       inventoryVersion++;
       notifySubscribers();
       return true;
@@ -1434,6 +1628,9 @@ export const StorageService = {
     const merged = mergeOutboundReceiptsAdditive(this.getOutboundReceipts(), receipts, tombstones.outbound);
     if (merged.changed) {
       this.saveOutboundReceipts(merged.list);
+    }
+    const matSync = this.syncMaterialsFromReceipts();
+    if (merged.changed || matSync.changed) {
       inventoryVersion++;
       notifySubscribers();
       return true;

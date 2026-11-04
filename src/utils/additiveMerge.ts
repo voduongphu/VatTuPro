@@ -1102,3 +1102,308 @@ export function mergeOutboundReceiptsAdditive(
   const finalList = newlyPrepended.length > 0 ? newlyPrepended.concat(existingFiltered) : existingFiltered;
   return { list: finalList, changed, touchedCodes: Array.from(touchedSet) };
 }
+
+// ============================================================================
+// 6. ĐỒNG BỘ TỰ ĐỘNG DANH MỤC VẬT TƯ TỪ PHIẾU NHẬP & PHIẾU XUẤT (LẤY MỚI NHẤT)
+// ============================================================================
+export interface SyncedMaterialCandidate {
+  code: string;
+  name: string;
+  unit: string;
+  category: string;
+  hasSpecificCategory: boolean;
+  packageNo: string;
+  drawingNo: string;
+  manufacturer: string;
+  supplier: string;
+  unitWeightKg: number;
+  specification: string;
+  latestItemNote: string;
+  latestSourceNote: string;
+  latestMutationTs: number;
+  latestPrimaryTs: number;
+}
+
+function parseVoucherDateToMs(rawDate?: string | null): number {
+  const s = (rawDate || '').trim();
+  if (!s) return 0;
+
+  // YYYY-MM-DD
+  const isoMatch = /^(\d{4})[-/](\d{1,2})[-/](\d{1,2})/.exec(s);
+  if (isoMatch) {
+    const y = Number(isoMatch[1]);
+    const m = Number(isoMatch[2]);
+    const d = Number(isoMatch[3]);
+    if (y >= 1970 && m >= 1 && m <= 12 && d >= 1 && d <= 31) {
+      return Date.UTC(y, m - 1, d);
+    }
+  }
+
+  // DD/MM/YYYY hoặc DD-MM-YYYY
+  const dmyMatch = /^(\d{1,2})[-/](\d{1,2})[-/](\d{4})/.exec(s);
+  if (dmyMatch) {
+    const d = Number(dmyMatch[1]);
+    const m = Number(dmyMatch[2]);
+    const y = Number(dmyMatch[3]);
+    if (y >= 1970 && m >= 1 && m <= 12 && d >= 1 && d <= 31) {
+      return Date.UTC(y, m - 1, d);
+    }
+  }
+
+  const parsed = Date.parse(s);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+}
+
+function cleanMaterialFieldVal(raw?: string | null): string {
+  const s = (raw || '').trim();
+  if (!s) return '';
+  const upper = s.toUpperCase();
+  if (upper === 'N/A' || upper === 'NA' || upper === '-' || upper === '--' || upper === 'NULL' || upper === 'NONE') {
+    return '';
+  }
+  return s;
+}
+
+function cleanHeaderSupplierFallback(raw?: string | null): string {
+  const s = cleanMaterialFieldVal(raw);
+  if (!s) return '';
+  const lower = s.toLowerCase();
+  if (
+    lower === 'nhiều nhà cung cấp' ||
+    lower === 'đơn vị giao hàng' ||
+    lower === 'theo phiếu nhập'
+  ) {
+    return '';
+  }
+  return s;
+}
+
+function isGenericMaterialCategory(cat: string): boolean {
+  const lower = cat.trim().toLowerCase();
+  return !lower || lower === 'chung' || lower === 'vật tư dự án' || lower === 'khác';
+}
+
+export function deriveCatalogMaterialCode(rawCode?: string | null, rawName?: string | null): string {
+  const cleanCode = cleanMaterialFieldVal(rawCode);
+  if (cleanCode) {
+    return normKey(cleanCode);
+  }
+  const cleanName = cleanMaterialFieldVal(rawName);
+  if (!cleanName) return '';
+
+  const asciiSlug = cleanName
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[đĐ]/g, 'D')
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, '')
+    .slice(0, 10);
+
+  const [h1] = hashPair(`AUTO_MAT_CODE|${cleanName.toLowerCase()}`);
+  const suffix = h1.toString(36).toUpperCase().slice(0, 4);
+  return `VT-${asciiSlug || 'ITEM'}-${suffix}`;
+}
+
+interface OrderedReceiptRef {
+  kind: 'inbound' | 'outbound';
+  primaryTs: number;
+  mutationTs: number;
+  sourceOrder: number;
+  voucherCode: string;
+  inbound?: InboundReceipt;
+  outbound?: OutboundReceipt;
+}
+
+export function buildLatestMaterialsFromReceipts(
+  inbounds: InboundReceipt[],
+  outbounds: OutboundReceipt[]
+): Map<string, SyncedMaterialCandidate> {
+  const refs: OrderedReceiptRef[] = [];
+
+  for (let i = 0; i < inbounds.length; i++) {
+    const r = inbounds[i];
+    if (!r || !Array.isArray(r.items) || r.items.length === 0) continue;
+    const dateMs = parseVoucherDateToMs(r.receiptDate);
+    const editedTs = Math.max(
+      Number(r.itemsReplacedAt) || 0,
+      r.lastEditedAt ? Date.parse(r.lastEditedAt) || 0 : 0
+    );
+    const createdTs = r.createdAt ? Date.parse(r.createdAt) || 0 : 0;
+    const mutationTs = Math.max(Number(r.updatedAt) || 0, editedTs, createdTs, 1);
+    const primaryTs = Math.max(dateMs, editedTs);
+    refs.push({
+      kind: 'inbound',
+      primaryTs,
+      mutationTs,
+      sourceOrder: 0,
+      voucherCode: normKey(r.receiptCode || r.id),
+      inbound: r
+    });
+  }
+
+  for (let i = 0; i < outbounds.length; i++) {
+    const o = outbounds[i];
+    if (!o || !Array.isArray(o.items) || o.items.length === 0) continue;
+    const dateMs = parseVoucherDateToMs(o.issueDate);
+    const editedTs = Math.max(
+      Number(o.itemsReplacedAt) || 0,
+      o.lastEditedAt ? Date.parse(o.lastEditedAt) || 0 : 0
+    );
+    const createdTs = o.createdAt ? Date.parse(o.createdAt) || 0 : 0;
+    const mutationTs = Math.max(Number(o.updatedAt) || 0, editedTs, createdTs, 1);
+    const primaryTs = Math.max(dateMs, editedTs);
+    refs.push({
+      kind: 'outbound',
+      primaryTs,
+      mutationTs,
+      sourceOrder: 1,
+      voucherCode: normKey(o.issueCode || o.id),
+      outbound: o
+    });
+  }
+
+  // Sắp xếp từ cũ -> mới để bản ghi sau cùng luôn ghi đè bằng dữ liệu mới nhất
+  refs.sort((a, b) => {
+    if (a.primaryTs !== b.primaryTs) return a.primaryTs - b.primaryTs;
+    if (a.mutationTs !== b.mutationTs) return a.mutationTs - b.mutationTs;
+    if (a.sourceOrder !== b.sourceOrder) return a.sourceOrder - b.sourceOrder;
+    return a.voucherCode.localeCompare(b.voucherCode, undefined, { numeric: true });
+  });
+
+  const map = new Map<string, SyncedMaterialCandidate>();
+
+  for (let rIdx = 0; rIdx < refs.length; rIdx++) {
+    const ref = refs[rIdx];
+    if (ref.kind === 'inbound' && ref.inbound) {
+      const rcp = ref.inbound;
+      const fallbackMaker = cleanMaterialFieldVal(rcp.manufacturer);
+      const fallbackSupplier = cleanHeaderSupplierFallback(rcp.supplier);
+      const sourceNote = `Đồng bộ từ phiếu nhập ${rcp.receiptCode}`;
+      const items = rcp.items;
+
+      for (let i = 0; i < items.length; i++) {
+        const it = items[i];
+        const code = deriveCatalogMaterialCode(it.materialCode, it.materialName);
+        if (!code) continue;
+
+        const name = cleanMaterialFieldVal(it.materialName);
+        const unit = cleanMaterialFieldVal(it.unit);
+        const cat = cleanMaterialFieldVal(it.category);
+        const specificCat = Boolean(cat && !isGenericMaterialCategory(cat));
+        const pkgNo = cleanMaterialFieldVal(it.packageNo);
+        const dwgNo = cleanMaterialFieldVal(it.drawingNo);
+        const maker = cleanMaterialFieldVal(it.manufacturer) || fallbackMaker;
+        const supplier = cleanMaterialFieldVal(it.supplier) || fallbackSupplier;
+        const qty = roundQty(it.quantity);
+        const weight = Number(it.weightKg) || 0;
+        const calcUnitWeight = qty > 0 && weight > 0 ? Math.round((weight / qty) * 100) / 100 : 0;
+        const spec = cleanMaterialFieldVal(it.conditionNote);
+        const itemNote = cleanMaterialFieldVal(it.note);
+
+        const prev = map.get(code);
+        if (!prev) {
+          map.set(code, {
+            code,
+            name: name || code,
+            unit: unit || 'Bộ',
+            category: cat || 'Chung',
+            hasSpecificCategory: specificCat,
+            packageNo: pkgNo,
+            drawingNo: dwgNo,
+            manufacturer: maker,
+            supplier,
+            unitWeightKg: calcUnitWeight,
+            specification: spec,
+            latestItemNote: itemNote,
+            latestSourceNote: sourceNote,
+            latestMutationTs: ref.mutationTs,
+            latestPrimaryTs: ref.primaryTs
+          });
+        } else {
+          if (name) prev.name = name;
+          if (unit) prev.unit = unit;
+          if (specificCat) {
+            prev.category = cat;
+            prev.hasSpecificCategory = true;
+          } else if (cat && !prev.hasSpecificCategory) {
+            prev.category = cat;
+          }
+          if (pkgNo) prev.packageNo = pkgNo;
+          if (dwgNo) prev.drawingNo = dwgNo;
+          if (maker) prev.manufacturer = maker;
+          if (supplier) prev.supplier = supplier;
+          if (calcUnitWeight > 0) prev.unitWeightKg = calcUnitWeight;
+          if (spec) prev.specification = spec;
+          if (itemNote) prev.latestItemNote = itemNote;
+          prev.latestSourceNote = sourceNote;
+          if (ref.mutationTs > prev.latestMutationTs) prev.latestMutationTs = ref.mutationTs;
+          if (ref.primaryTs > prev.latestPrimaryTs) prev.latestPrimaryTs = ref.primaryTs;
+        }
+      }
+    } else if (ref.kind === 'outbound' && ref.outbound) {
+      const rcp = ref.outbound;
+      const sourceNote = `Đồng bộ từ phiếu xuất ${rcp.issueCode}`;
+      const items = rcp.items;
+
+      for (let i = 0; i < items.length; i++) {
+        const it = items[i];
+        const code = deriveCatalogMaterialCode(it.materialCode, it.materialName);
+        if (!code) continue;
+
+        const name = cleanMaterialFieldVal(it.materialName);
+        const unit = cleanMaterialFieldVal(it.unit);
+        const cat = cleanMaterialFieldVal(it.category);
+        const specificCat = Boolean(cat && !isGenericMaterialCategory(cat));
+        const pkgNo = cleanMaterialFieldVal(it.packageNo);
+        const dwgNo = cleanMaterialFieldVal(it.drawingNo);
+        const maker = cleanMaterialFieldVal(it.manufacturer);
+        const supplier = cleanMaterialFieldVal(it.supplier);
+        const qty = roundQty(it.quantity);
+        const weight = Number(it.weightKg) || 0;
+        const calcUnitWeight = qty > 0 && weight > 0 ? Math.round((weight / qty) * 100) / 100 : 0;
+        const itemNote = cleanMaterialFieldVal(it.note);
+
+        const prev = map.get(code);
+        if (!prev) {
+          map.set(code, {
+            code,
+            name: name || code,
+            unit: unit || 'Bộ',
+            category: cat || 'Chung',
+            hasSpecificCategory: specificCat,
+            packageNo: pkgNo,
+            drawingNo: dwgNo,
+            manufacturer: maker,
+            supplier,
+            unitWeightKg: calcUnitWeight,
+            specification: '',
+            latestItemNote: itemNote,
+            latestSourceNote: sourceNote,
+            latestMutationTs: ref.mutationTs,
+            latestPrimaryTs: ref.primaryTs
+          });
+        } else {
+          if (name) prev.name = name;
+          if (unit) prev.unit = unit;
+          if (specificCat) {
+            prev.category = cat;
+            prev.hasSpecificCategory = true;
+          } else if (cat && !prev.hasSpecificCategory) {
+            prev.category = cat;
+          }
+          if (pkgNo) prev.packageNo = pkgNo;
+          if (dwgNo) prev.drawingNo = dwgNo;
+          if (maker) prev.manufacturer = maker;
+          if (supplier) prev.supplier = supplier;
+          if (calcUnitWeight > 0) prev.unitWeightKg = calcUnitWeight;
+          if (itemNote) prev.latestItemNote = itemNote;
+          prev.latestSourceNote = sourceNote;
+          if (ref.mutationTs > prev.latestMutationTs) prev.latestMutationTs = ref.mutationTs;
+          if (ref.primaryTs > prev.latestPrimaryTs) prev.latestPrimaryTs = ref.primaryTs;
+        }
+      }
+    }
+  }
+
+  return map;
+}

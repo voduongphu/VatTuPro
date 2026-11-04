@@ -15,7 +15,8 @@ import {
   ShieldAlert, 
   X,
   FileSpreadsheet,
-  Boxes
+  Boxes,
+  RefreshCw
 } from 'lucide-react';
 import { ConfirmDeleteModal } from '../common/ConfirmDeleteModal';
 import { ExcelImportModal } from '../common/ExcelImportModal';
@@ -67,6 +68,7 @@ export const MaterialCatalog: React.FC = () => {
   };
 
   useEffect(() => {
+    StorageService.syncMaterialsFromReceipts({ emitMutation: true });
     loadMaterials();
     return StorageService.subscribe(loadMaterials);
   }, []);
@@ -142,6 +144,11 @@ export const MaterialCatalog: React.FC = () => {
       return;
     }
 
+    const cleanedNotes = notes.trim();
+    const isUnchangedAutoNote =
+      cleanedNotes === (editingItem.notes || '').trim() &&
+      (cleanedNotes.startsWith('Đồng bộ từ ') || cleanedNotes.startsWith('Tự động tạo '));
+
     StorageService.updateMaterial(editingItem.id, {
       name: name.trim(),
       unit: unit.trim(),
@@ -152,12 +159,28 @@ export const MaterialCatalog: React.FC = () => {
       unitWeightKg: Number(unitWeightKg) || 0,
       specification: specification.trim(),
       minStockAlert: Number(minStockAlert) || 0,
-      notes: notes.trim()
+      notes: isUnchangedAutoNote ? '' : cleanedNotes
     });
 
     loadMaterials();
     setEditingItem(null);
     showToast(`Đã cập nhật vật tư "${name}".`);
+  };
+
+  const handleSyncFromReceipts = () => {
+    const res = StorageService.syncMaterialsFromReceipts({
+      forceFromReceipts: true,
+      emitMutation: true,
+      notify: true
+    });
+    loadMaterials();
+    if (res.added > 0 || res.updated > 0) {
+      showToast(
+        `Đã đồng bộ Danh mục vật tư từ Phiếu nhập & Phiếu xuất (Thêm mới: ${res.added}, Cập nhật mới nhất: ${res.updated})!`
+      );
+    } else {
+      showToast('Danh mục vật tư đã được đồng bộ đầy đủ với dữ liệu mới nhất từ Phiếu nhập & Phiếu xuất.');
+    }
   };
 
   const confirmDeleteMaterial = () => {
@@ -338,11 +361,25 @@ export const MaterialCatalog: React.FC = () => {
           </div>
           <div>
             <h1 className="text-lg sm:text-xl font-bold text-slate-900">Quản Lý Danh Mục Vật Tư & Thiết Bị</h1>
-            <p className="text-slate-500 text-xs mt-0.5">Admin quản lý mã định danh, Package No., nhà sản xuất, nhà cung cấp và thông số vật tư</p>
+            <p className="text-slate-500 text-xs mt-0.5">
+              Tự động đồng bộ thời gian thực từ Phiếu nhập kho & Phiếu xuất kho (trùng mã lấy dữ liệu mới nhất)
+            </p>
           </div>
         </div>
 
         <div className="grid grid-cols-2 sm:flex sm:items-center gap-2 sm:flex-wrap w-full md:w-auto">
+          {/* Nút đồng bộ từ Phiếu nhập & Phiếu xuất */}
+          {isAdmin && (
+            <button
+              onClick={handleSyncFromReceipts}
+              title="Đồng bộ và cập nhật dữ liệu mới nhất từ toàn bộ Phiếu nhập kho và Phiếu xuất kho"
+              className="flex items-center justify-center gap-1.5 px-3 py-2.5 sm:py-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 rounded-xl text-xs font-semibold transition active:scale-95 min-h-[40px]"
+            >
+              <RefreshCw className="w-3.5 h-3.5 text-indigo-600 shrink-0" />
+              <span>Đồng Bộ Nhập/Xuất</span>
+            </button>
+          )}
+
           {/* Nút tải mẫu Excel */}
           <button
             onClick={downloadMaterialTemplate}
