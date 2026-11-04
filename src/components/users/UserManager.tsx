@@ -1,64 +1,65 @@
 import React, { useState } from 'react';
 import { useAuth } from '../../context/AuthContext';
 import { User, UserRole } from '../../types/inventory';
-import { 
-  Users, 
-  UserPlus, 
-  ShieldAlert, 
-  KeyRound, 
-  Trash2, 
-  Edit3, 
-  Search, 
-  CheckCircle2, 
-  X, 
-  ShieldCheck, 
-  UserCog, 
-  Building2, 
-  Phone, 
+import {
+  Users,
+  UserPlus,
+  ShieldAlert,
+  Trash2,
+  Edit3,
+  Search,
+  CheckCircle2,
+  X,
+  ShieldCheck,
+  UserCog,
+  Building2,
+  Phone,
   Mail,
   Lock,
-  Eye,
-  EyeOff
+  Unlock
 } from 'lucide-react';
 import { ConfirmDeleteModal } from '../common/ConfirmDeleteModal';
-import { normUserKey } from '../../utils/additiveMerge';
+import {
+  BOOTSTRAPPED_ADMIN_EMAIL,
+  computeEmailAuthDigest,
+  isBootstrappedAdminUser,
+  normUserKey
+} from '../../utils/additiveMerge';
 
 export const UserManager: React.FC = () => {
-  const { users, isAdmin, addUser, updateUser, deleteUser, resetUserPassword } = useAuth();
+  const { users, isAdmin, addUser, updateUser, deleteUser } = useAuth();
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedRole, setSelectedRole] = useState<string>('all');
-  
+
   // Modals state
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [editingUser, setEditingUser] = useState<User | null>(null);
-  const [resetPassUser, setResetPassUser] = useState<User | null>(null);
   const [userToDelete, setUserToDelete] = useState<User | null>(null);
-  const [newPasswordValue, setNewPasswordValue] = useState('123456');
-  const [visiblePasswords, setVisiblePasswords] = useState<Record<string, boolean>>({});
 
   // Form states for Add/Edit
-  const [formUsername, setFormUsername] = useState('');
-  const [formFullName, setFormFullName] = useState('');
-  const [formPassword, setFormPassword] = useState('123456');
-  const [formRole, setFormRole] = useState<UserRole>('staff');
   const [formEmail, setFormEmail] = useState('');
+  const [formFullName, setFormFullName] = useState('');
+  const [formUsername, setFormUsername] = useState('');
+  const [formRole, setFormRole] = useState<UserRole>('staff');
   const [formPhone, setFormPhone] = useState('');
   const [formDepartment, setFormDepartment] = useState('');
   const [formIsActive, setFormIsActive] = useState(true);
   const [formError, setFormError] = useState('');
-  const [notification, setNotification] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+  const [notification, setNotification] = useState<{
+    type: 'success' | 'error';
+    message: string;
+  } | null>(null);
 
   const showNotify = (type: 'success' | 'error', message: string) => {
     setNotification({ type, message });
-    setTimeout(() => setNotification(null), 3000);
+    setTimeout(() => setNotification(null), 3500);
   };
 
   const openAddModal = () => {
-    setFormUsername('');
-    setFormFullName('');
-    setFormPassword('123456');
-    setFormRole('staff');
     setFormEmail('');
+    setFormFullName('');
+    setFormUsername('');
+    setFormRole('staff');
     setFormPhone('');
     setFormDepartment('Ban Quản Lý Kho Bãi');
     setFormIsActive(true);
@@ -67,48 +68,82 @@ export const UserManager: React.FC = () => {
   };
 
   const openEditModal = (u: User) => {
+    const mainAdmin = isBootstrappedAdminUser(u);
     setEditingUser(u);
-    setFormUsername(u.username);
+    setFormEmail(mainAdmin ? BOOTSTRAPPED_ADMIN_EMAIL : u.email || '');
     setFormFullName(u.fullName);
-    setFormPassword(u.password || '');
-    setFormRole(u.role);
-    setFormEmail(u.email || '');
+    setFormUsername(u.username);
+    setFormRole(mainAdmin ? 'admin' : u.role);
     setFormPhone(u.phone || '');
     setFormDepartment(u.department || '');
-    setFormIsActive(u.isActive);
+    setFormIsActive(mainAdmin ? true : u.isActive);
     setFormError('');
+  };
+
+  const buildUniqueUsername = (preferred: string, emailLower: string, excludeId?: string): string => {
+    const baseCandidate =
+      preferred.normalize('NFC').trim() ||
+      emailLower.split('@')[0]?.trim() ||
+      'user';
+    let candidate = baseCandidate;
+    let suffix = 2;
+    while (
+      users.some(
+        (u) => u.id !== excludeId && normUserKey(u.username) === normUserKey(candidate)
+      )
+    ) {
+      candidate = `${baseCandidate}.${suffix}`;
+      suffix += 1;
+    }
+    return candidate;
   };
 
   const handleSaveAdd = (e: React.FormEvent) => {
     e.preventDefault();
-    const cleanUsername = formUsername.normalize('NFC').trim();
+    const cleanEmail = formEmail.trim().toLowerCase();
     const cleanFullName = formFullName.normalize('NFC').trim();
-    const cleanPass = formPassword.trim() || '123456';
 
-    if (!cleanUsername || !cleanFullName) {
-      setFormError('Vui lòng điền tên đăng nhập và họ tên người dùng');
+    if (!cleanEmail || !cleanEmail.includes('@')) {
+      setFormError('Vui lòng nhập địa chỉ Email Google hợp lệ (ví dụ: nhanvien@gmail.com).');
+      return;
+    }
+    if (!cleanFullName) {
+      setFormError('Vui lòng nhập họ và tên đầy đủ của người sử dụng.');
       return;
     }
 
-    // Check trùng username chuẩn hóa NFC
-    if (users.some((u) => normUserKey(u.username) === normUserKey(cleanUsername))) {
-      setFormError(`Tên đăng nhập "${cleanUsername}" đã tồn tại trên hệ thống.`);
+    const digest = computeEmailAuthDigest(cleanEmail);
+    const existingByEmail = users.find(
+      (u) =>
+        (u.email || '').trim().toLowerCase() === cleanEmail ||
+        (digest && u.emailDigest === digest)
+    );
+    if (existingByEmail) {
+      setFormError(
+        `Email Google "${cleanEmail}" đã được gán cho tài khoản "${existingByEmail.fullName}".`
+      );
       return;
     }
+
+    const finalUsername = buildUniqueUsername(formUsername, cleanEmail);
 
     try {
       addUser({
-        username: cleanUsername,
+        username: finalUsername,
         fullName: cleanFullName,
-        role: formRole,
-        password: cleanPass,
-        email: formEmail.trim(),
+        role: cleanEmail === BOOTSTRAPPED_ADMIN_EMAIL ? 'admin' : formRole,
+        password: 'google-oauth',
+        email: cleanEmail,
+        emailDigest: digest,
         phone: formPhone.trim(),
         department: formDepartment.trim(),
-        isActive: formIsActive
+        isActive: cleanEmail === BOOTSTRAPPED_ADMIN_EMAIL ? true : formIsActive
       });
       setIsAddModalOpen(false);
-      showNotify('success', `Đã tạo người sử dụng "${cleanFullName}" thành công với mật khẩu: ${cleanPass}`);
+      showNotify(
+        'success',
+        `Đã cấp quyền cho tài khoản Google "${cleanEmail}" (${cleanFullName}).`
+      );
     } catch (err: any) {
       setFormError(err.message || 'Lỗi khi tạo người dùng');
     }
@@ -117,43 +152,71 @@ export const UserManager: React.FC = () => {
   const handleSaveEdit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!editingUser) return;
-    const cleanUsername = formUsername.normalize('NFC').trim();
+    const isMainAdmin = isBootstrappedAdminUser(editingUser);
+    const cleanEmail = isMainAdmin
+      ? BOOTSTRAPPED_ADMIN_EMAIL
+      : formEmail.trim().toLowerCase();
     const cleanFullName = formFullName.normalize('NFC').trim();
-    const cleanPass = formPassword.trim();
-    const isMainAdmin = editingUser.username === 'Võ Dương Phú' || editingUser.id === 'user-admin-01';
 
-    if (!cleanFullName || !cleanUsername) {
-      setFormError('Tên đăng nhập và họ tên không được để trống');
+    if (!cleanFullName) {
+      setFormError('Họ và tên người sử dụng không được để trống.');
+      return;
+    }
+    if (!cleanEmail || !cleanEmail.includes('@')) {
+      setFormError('Vui lòng nhập Email Google hợp lệ để người dùng đăng nhập.');
       return;
     }
 
-    if (
-      !isMainAdmin &&
-      users.some(
-        (u) => u.id !== editingUser.id && normUserKey(u.username) === normUserKey(cleanUsername)
-      )
-    ) {
-      setFormError(`Tên đăng nhập "${cleanUsername}" đã được sử dụng bởi tài khoản khác.`);
+    const digest = computeEmailAuthDigest(cleanEmail);
+    const duplicateEmailUser = users.find(
+      (u) =>
+        u.id !== editingUser.id &&
+        ((u.email || '').trim().toLowerCase() === cleanEmail ||
+          (digest && u.emailDigest === digest))
+    );
+    if (duplicateEmailUser) {
+      setFormError(
+        `Email Google "${cleanEmail}" đã thuộc về người dùng "${duplicateEmailUser.fullName}".`
+      );
       return;
     }
+
+    const finalUsername = isMainAdmin
+      ? editingUser.username
+      : buildUniqueUsername(formUsername || editingUser.username, cleanEmail, editingUser.id);
 
     updateUser(editingUser.id, {
-      username: isMainAdmin ? editingUser.username : cleanUsername,
+      username: finalUsername,
       fullName: cleanFullName,
-      ...(cleanPass ? { password: cleanPass } : {}),
-      role: formRole,
-      email: formEmail.trim(),
+      role: isMainAdmin ? 'admin' : formRole,
+      email: cleanEmail,
+      emailDigest: digest,
       phone: formPhone.trim(),
       department: formDepartment.trim(),
-      isActive: formIsActive
+      isActive: isMainAdmin ? true : formIsActive
     });
 
     setEditingUser(null);
-    showNotify('success', `Đã cập nhật thông tin người dùng "${cleanFullName}".`);
+    showNotify('success', `Đã cập nhật phân quyền cho "${cleanFullName}" (${cleanEmail}).`);
+  };
+
+  const handleToggleActive = (u: User) => {
+    if (isBootstrappedAdminUser(u)) {
+      showNotify('error', 'Không thể khóa tài khoản Quản trị viên chính voduongphu@gmail.com!');
+      return;
+    }
+    const nextActive = !u.isActive;
+    updateUser(u.id, { isActive: nextActive });
+    showNotify(
+      'success',
+      nextActive
+        ? `Đã mở khóa cho phép "${u.fullName}" đăng nhập Google.`
+        : `Đã khóa quyền đăng nhập của "${u.fullName}".`
+    );
   };
 
   const handleDelete = (u: User) => {
-    if (u.username === 'Võ Dương Phú' || u.id === 'user-admin-01') {
+    if (isBootstrappedAdminUser(u)) {
       showNotify('error', 'Không thể xóa tài khoản Quản trị viên chính Võ Dương Phú!');
       return;
     }
@@ -164,30 +227,21 @@ export const UserManager: React.FC = () => {
     if (!userToDelete) return;
     const ok = deleteUser(userToDelete.id);
     if (ok) {
-      showNotify('success', `Đã xóa tài khoản "${userToDelete.fullName}" (${userToDelete.username}) thành công.`);
+      showNotify(
+        'success',
+        `Đã xóa tài khoản "${userToDelete.fullName}" (${userToDelete.email || userToDelete.username}) thành công.`
+      );
     } else {
       showNotify('error', 'Không thể xóa tài khoản này.');
     }
     setUserToDelete(null);
   };
 
-  const handleResetPasswordSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!resetPassUser) return;
-    const cleanPass = newPasswordValue.trim();
-    if (!cleanPass) {
-      showNotify('error', 'Vui lòng nhập mật khẩu mới.');
-      return;
-    }
-    resetUserPassword(resetPassUser.id, cleanPass);
-    showNotify('success', `Đã cấp mật khẩu mới "${cleanPass}" cho người dùng ${resetPassUser.fullName}.`);
-    setResetPassUser(null);
-  };
-
   const normalizedSearch = searchTerm.normalize('NFC').toLowerCase();
   const filteredUsers = users.filter((u) => {
     const matchesSearch =
       u.fullName.normalize('NFC').toLowerCase().includes(normalizedSearch) ||
+      (u.email && u.email.toLowerCase().includes(normalizedSearch)) ||
       u.username.normalize('NFC').toLowerCase().includes(normalizedSearch) ||
       (u.department && u.department.normalize('NFC').toLowerCase().includes(normalizedSearch));
     const matchesRole = selectedRole === 'all' || u.role === selectedRole;
@@ -197,13 +251,29 @@ export const UserManager: React.FC = () => {
   const getRoleBadge = (role: UserRole) => {
     switch (role) {
       case 'admin':
-        return <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-rose-100 text-rose-800 border border-rose-200"><ShieldCheck className="w-3 h-3" /> Quản Trị Viên (Admin)</span>;
+        return (
+          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-rose-100 text-rose-800 border border-rose-200">
+            <ShieldCheck className="w-3 h-3" /> Quản Trị Viên (Admin)
+          </span>
+        );
       case 'manager':
-        return <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-blue-100 text-blue-800 border border-blue-200"><UserCog className="w-3 h-3" /> Quản Lý Kho</span>;
+        return (
+          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-blue-100 text-blue-800 border border-blue-200">
+            <UserCog className="w-3 h-3" /> Quản Lý Kho
+          </span>
+        );
       case 'staff':
-        return <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-100 text-emerald-800 border border-emerald-200"><Users className="w-3 h-3" /> Thủ Kho / Nhân Viên</span>;
+        return (
+          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-100 text-emerald-800 border border-emerald-200">
+            <Users className="w-3 h-3" /> Thủ Kho / Nhân Viên
+          </span>
+        );
       default:
-        return <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-slate-100 text-slate-700 border border-slate-200">Chỉ Xem</span>;
+        return (
+          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-slate-100 text-slate-700 border border-slate-200">
+            Chỉ Xem
+          </span>
+        );
     }
   };
 
@@ -211,12 +281,18 @@ export const UserManager: React.FC = () => {
     <div className="space-y-6">
       {/* Toast notification */}
       {notification && (
-        <div className={`p-4 rounded-xl flex items-center gap-3 border shadow-md animate-in slide-in-from-top-2 ${
-          notification.type === 'success' 
-            ? 'bg-emerald-50 text-emerald-800 border-emerald-200' 
-            : 'bg-rose-50 text-rose-800 border-rose-200'
-        }`}>
-          {notification.type === 'success' ? <CheckCircle2 className="w-5 h-5 shrink-0" /> : <ShieldAlert className="w-5 h-5 shrink-0" />}
+        <div
+          className={`p-4 rounded-xl flex items-center gap-3 border shadow-md animate-in slide-in-from-top-2 ${
+            notification.type === 'success'
+              ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
+              : 'bg-rose-50 text-rose-800 border-rose-200'
+          }`}
+        >
+          {notification.type === 'success' ? (
+            <CheckCircle2 className="w-5 h-5 shrink-0" />
+          ) : (
+            <ShieldAlert className="w-5 h-5 shrink-0" />
+          )}
           <span className="text-sm font-medium">{notification.message}</span>
         </div>
       )}
@@ -229,8 +305,12 @@ export const UserManager: React.FC = () => {
               <Users className="w-6 h-6" />
             </div>
             <div>
-              <h1 className="text-lg sm:text-xl font-bold text-slate-900">Quản Lý Danh Mục Người Sử Dụng</h1>
-              <p className="text-slate-500 text-xs mt-0.5">Admin quản lý tài khoản, phân quyền vai trò và cấp phát mật khẩu truy cập hệ thống</p>
+              <h1 className="text-lg sm:text-xl font-bold text-slate-900">
+                Quản Lý Tài Khoản Google & Phân Quyền
+              </h1>
+              <p className="text-slate-500 text-xs mt-0.5">
+                Người dùng đăng nhập đồng bộ bằng tài khoản Google (Gmail). Admin ({BOOTSTRAPPED_ADMIN_EMAIL}) quản lý vai trò và trạng thái truy cập.
+              </p>
             </div>
           </div>
         </div>
@@ -241,12 +321,12 @@ export const UserManager: React.FC = () => {
             className="w-full md:w-auto flex items-center justify-center gap-2 px-4 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-semibold text-sm shadow-md shadow-blue-500/20 transition active:scale-95 min-h-[42px]"
           >
             <UserPlus className="w-4 h-4 shrink-0" />
-            <span>Thêm Người Sử Dụng Mới</span>
+            <span>Thêm Tài Khoản Google</span>
           </button>
         ) : (
           <div className="text-xs bg-amber-50 text-amber-800 px-3 py-2 rounded-lg border border-amber-200 flex items-center gap-1.5">
             <ShieldAlert className="w-4 h-4 text-amber-600 shrink-0" />
-            <span>Chỉ tài khoản Admin mới có quyền thêm/sửa/xóa và cấp mật khẩu</span>
+            <span>Chỉ Admin ({BOOTSTRAPPED_ADMIN_EMAIL}) mới có quyền thêm/sửa/khóa người dùng</span>
           </div>
         )}
       </div>
@@ -258,7 +338,7 @@ export const UserManager: React.FC = () => {
             type="text"
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
-            placeholder="Tìm theo tên đăng nhập, họ tên, phòng ban..."
+            placeholder="Tìm theo Email Google, họ tên, phòng ban..."
             className="w-full pl-9 pr-4 py-2.5 sm:py-2 bg-slate-50 border border-slate-200 rounded-xl text-base sm:text-sm focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none min-h-[42px]"
           />
           <Search className="w-4 h-4 text-slate-400 absolute left-3 top-3.5 sm:top-3" />
@@ -287,7 +367,7 @@ export const UserManager: React.FC = () => {
             <thead className="bg-slate-50/80 text-slate-600 border-b border-slate-200 text-xs font-semibold uppercase tracking-wider">
               <tr>
                 <th className="px-5 py-3.5">Người Sử Dụng</th>
-                <th className="px-5 py-3.5">Tên Đăng Nhập</th>
+                <th className="px-5 py-3.5">Tài Khoản Google (Email)</th>
                 <th className="px-5 py-3.5">Vai Trò</th>
                 <th className="px-5 py-3.5">Phòng Ban / Liên Hệ</th>
                 <th className="px-5 py-3.5 text-center">Trạng Thái</th>
@@ -303,101 +383,80 @@ export const UserManager: React.FC = () => {
                 </tr>
               ) : (
                 filteredUsers.map((u) => {
-                  const isMainAdmin = u.username === 'Võ Dương Phú' || u.id === 'user-admin-01';
+                  const isMainAdmin = isBootstrappedAdminUser(u);
+                  const displayEmail = isMainAdmin ? BOOTSTRAPPED_ADMIN_EMAIL : u.email || '';
                   return (
                     <tr key={u.id} className="hover:bg-slate-50/60 transition">
                       <td className="px-5 py-4">
                         <div className="flex items-center gap-3">
-                          <div className={`w-10 h-10 rounded-xl flex items-center justify-center font-bold text-sm ${
-                            isMainAdmin 
-                              ? 'bg-rose-100 text-rose-700 ring-2 ring-rose-300' 
-                              : 'bg-blue-100 text-blue-700'
-                          }`}>
+                          <div
+                            className={`w-10 h-10 rounded-xl flex items-center justify-center font-bold text-sm shrink-0 ${
+                              isMainAdmin
+                                ? 'bg-rose-100 text-rose-700 ring-2 ring-rose-300'
+                                : 'bg-blue-100 text-blue-700'
+                            }`}
+                          >
                             {u.fullName.slice(0, 2).toUpperCase()}
                           </div>
                           <div>
-                            <div className="font-semibold text-slate-900 flex items-center gap-1.5">
-                              {u.fullName}
+                            <div className="font-semibold text-slate-900 flex items-center gap-1.5 flex-wrap">
+                              <span>{u.fullName}</span>
                               {isMainAdmin && (
-                                <span className="bg-rose-600 text-white text-[10px] px-1.5 py-0.2 rounded font-bold">ADMIN CHÍNH</span>
+                                <span className="bg-rose-600 text-white text-[10px] px-1.5 py-0.5 rounded font-bold">
+                                  ADMIN CHÍNH
+                                </span>
                               )}
                             </div>
                             <div className="text-xs text-slate-400">
-                              Ngày tạo: {new Date(u.createdAt).toLocaleDateString('vi-VN')}
+                              Mã nội bộ: @{u.username} • Ngày tạo:{' '}
+                              {new Date(u.createdAt).toLocaleDateString('vi-VN')}
                             </div>
                           </div>
-                        </div>
-                      </td>
-
-                      <td className="px-5 py-4 font-mono font-medium text-slate-700">
-                        <div className="space-y-1">
-                          <div>
-                            <span className="bg-slate-100 px-2 py-1 rounded-md text-xs border border-slate-200">
-                              {u.username}
-                            </span>
-                          </div>
-                          {isAdmin && (
-                            <div className="flex items-center gap-1.5 text-[11px] text-slate-500">
-                              <span>MK:</span>
-                              <span className="font-semibold text-slate-700">
-                                {visiblePasswords[u.id] ? u.password || '—' : '••••••'}
-                              </span>
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  setVisiblePasswords((prev) => ({
-                                    ...prev,
-                                    [u.id]: !prev[u.id]
-                                  }))
-                                }
-                                title={visiblePasswords[u.id] ? 'Ẩn mật khẩu' : 'Xem mật khẩu đăng nhập'}
-                                className="p-0.5 text-slate-400 hover:text-blue-600 rounded transition"
-                              >
-                                {visiblePasswords[u.id] ? (
-                                  <EyeOff className="w-3.5 h-3.5" />
-                                ) : (
-                                  <Eye className="w-3.5 h-3.5" />
-                                )}
-                              </button>
-                            </div>
-                          )}
                         </div>
                       </td>
 
                       <td className="px-5 py-4">
-                        {getRoleBadge(u.role)}
+                        {displayEmail ? (
+                          <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-blue-50/80 border border-blue-200/80 text-blue-900 font-mono text-xs font-semibold">
+                            <Mail className="w-3.5 h-3.5 text-blue-600 shrink-0" />
+                            <span>{displayEmail}</span>
+                          </div>
+                        ) : (
+                          <span className="text-xs text-amber-700 bg-amber-50 border border-amber-200 px-2 py-1 rounded-lg">
+                            Chưa gắn Email Google (Bấm Sửa để cập nhật)
+                          </span>
+                        )}
                       </td>
+
+                      <td className="px-5 py-4">{getRoleBadge(isMainAdmin ? 'admin' : u.role)}</td>
 
                       <td className="px-5 py-4">
                         <div className="space-y-0.5 text-xs text-slate-600">
                           {u.department && (
                             <div className="flex items-center gap-1.5 text-slate-700 font-medium">
-                              <Building2 className="w-3.5 h-3.5 text-slate-400" />
+                              <Building2 className="w-3.5 h-3.5 text-slate-400 shrink-0" />
                               <span>{u.department}</span>
                             </div>
                           )}
                           {u.phone && (
                             <div className="flex items-center gap-1.5 text-slate-500">
-                              <Phone className="w-3.5 h-3.5 text-slate-400" />
+                              <Phone className="w-3.5 h-3.5 text-slate-400 shrink-0" />
                               <span>{u.phone}</span>
                             </div>
                           )}
-                          {u.email && (
-                            <div className="flex items-center gap-1.5 text-slate-500">
-                              <Mail className="w-3.5 h-3.5 text-slate-400" />
-                              <span>{u.email}</span>
-                            </div>
+                          {!u.department && !u.phone && (
+                            <span className="text-slate-400">—</span>
                           )}
                         </div>
                       </td>
 
                       <td className="px-5 py-4 text-center">
-                        {u.isActive ? (
-                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-emerald-50 text-emerald-700 border border-emerald-200">
+                        {u.isActive || isMainAdmin ? (
+                          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-medium bg-emerald-50 text-emerald-700 border border-emerald-200">
                             Hoạt động
                           </span>
                         ) : (
-                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-slate-100 text-slate-500 border border-slate-200">
+                          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-medium bg-rose-50 text-rose-700 border border-rose-200">
                             Đã khóa
                           </span>
                         )}
@@ -406,28 +465,36 @@ export const UserManager: React.FC = () => {
                       <td className="px-5 py-4 text-right">
                         {isAdmin ? (
                           <div className="flex items-center justify-end gap-1.5">
-                            {/* Cấp mật khẩu */}
-                            <button
-                              onClick={() => {
-                                setResetPassUser(u);
-                                setNewPasswordValue('123456');
-                              }}
-                              title="Cấp lại mật khẩu cho người dùng"
-                              className="p-1.5 text-amber-600 hover:bg-amber-50 rounded-lg border border-amber-200 transition"
-                            >
-                              <KeyRound className="w-4 h-4" />
-                            </button>
+                            {!isMainAdmin && (
+                              <button
+                                onClick={() => handleToggleActive(u)}
+                                title={
+                                  u.isActive
+                                    ? 'Khóa quyền đăng nhập Google của tài khoản này'
+                                    : 'Mở khóa cho phép tài khoản này đăng nhập Google'
+                                }
+                                className={`p-1.5 rounded-lg border transition ${
+                                  u.isActive
+                                    ? 'text-amber-600 hover:bg-amber-50 border-amber-200'
+                                    : 'text-emerald-600 hover:bg-emerald-50 border-emerald-200'
+                                }`}
+                              >
+                                {u.isActive ? (
+                                  <Lock className="w-4 h-4" />
+                                ) : (
+                                  <Unlock className="w-4 h-4" />
+                                )}
+                              </button>
+                            )}
 
-                            {/* Sửa thông tin */}
                             <button
                               onClick={() => openEditModal(u)}
-                              title="Chỉnh sửa thông tin"
+                              title="Chỉnh sửa thông tin & Phân quyền"
                               className="p-1.5 text-blue-600 hover:bg-blue-50 rounded-lg border border-blue-200 transition"
                             >
                               <Edit3 className="w-4 h-4" />
                             </button>
 
-                            {/* Xóa người dùng (không cho xóa admin Võ Dương Phú) */}
                             {!isMainAdmin && (
                               <button
                                 onClick={() => handleDelete(u)}
@@ -439,7 +506,7 @@ export const UserManager: React.FC = () => {
                             )}
                           </div>
                         ) : (
-                          <span className="text-xs text-slate-400">Không có quyền</span>
+                          <span className="text-xs text-slate-400">Chỉ xem</span>
                         )}
                       </td>
                     </tr>
@@ -451,7 +518,7 @@ export const UserManager: React.FC = () => {
         </div>
       </div>
 
-      {/* Modal Thêm người dùng mới */}
+      {/* Modal Thêm tài khoản Google mới */}
       {isAddModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-2 sm:p-4">
           <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-lg max-h-[92dvh] flex flex-col overflow-hidden animate-in zoom-in-95">
@@ -460,9 +527,14 @@ export const UserManager: React.FC = () => {
                 <div className="p-2 bg-blue-100 text-blue-700 rounded-xl shrink-0">
                   <UserPlus className="w-5 h-5" />
                 </div>
-                <h3 className="font-bold text-slate-900 text-sm sm:text-base truncate">Thêm Người Sử Dụng Mới</h3>
+                <h3 className="font-bold text-slate-900 text-sm sm:text-base truncate">
+                  Thêm Tài Khoản Google Mới
+                </h3>
               </div>
-              <button onClick={() => setIsAddModalOpen(false)} className="p-2 hover:bg-slate-200 rounded-lg text-slate-500 shrink-0">
+              <button
+                onClick={() => setIsAddModalOpen(false)}
+                className="p-2 hover:bg-slate-200 rounded-lg text-slate-500 shrink-0"
+              >
                 <X className="w-4 h-4" />
               </button>
             </div>
@@ -475,48 +547,50 @@ export const UserManager: React.FC = () => {
                 </div>
               )}
 
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 uppercase mb-1">
+                  Email Google đăng nhập (*)
+                </label>
+                <input
+                  type="email"
+                  value={formEmail}
+                  onChange={(e) => setFormEmail(e.target.value)}
+                  placeholder="ví dụ: nhanvienkho@gmail.com"
+                  className="w-full px-3 py-2.5 text-sm font-mono bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none"
+                  required
+                />
+                <p className="text-[11px] text-slate-500 mt-1">
+                  Nhân sự dùng đúng địa chỉ Gmail này để bấm &ldquo;Đăng nhập bằng tài khoản Google&rdquo;.
+                </p>
+              </div>
+
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
                   <label className="block text-xs font-semibold text-slate-700 uppercase mb-1">
-                    Tên đăng nhập (*)
+                    Họ và tên đầy đủ (*)
+                  </label>
+                  <input
+                    type="text"
+                    value={formFullName}
+                    onChange={(e) => setFormFullName(e.target.value)}
+                    placeholder="ví dụ: Lê Văn Hải"
+                    className="w-full px-3 py-2 text-sm bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none"
+                    required
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 uppercase mb-1">
+                    Mã định danh nội bộ
                   </label>
                   <input
                     type="text"
                     value={formUsername}
                     onChange={(e) => setFormUsername(e.target.value)}
-                    placeholder="ví dụ: levanhai"
+                    placeholder="Tự động lấy theo Gmail nếu để trống"
                     className="w-full px-3 py-2 text-sm bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none"
-                    required
                   />
                 </div>
-
-                <div>
-                  <label className="block text-xs font-semibold text-slate-700 uppercase mb-1">
-                    Mật khẩu khởi tạo (*)
-                  </label>
-                  <input
-                    type="text"
-                    value={formPassword}
-                    onChange={(e) => setFormPassword(e.target.value)}
-                    placeholder="Mặc định: 123456"
-                    className="w-full px-3 py-2 text-sm bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none"
-                    required
-                  />
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 uppercase mb-1">
-                  Họ và tên đầy đủ (*)
-                </label>
-                <input
-                  type="text"
-                  value={formFullName}
-                  onChange={(e) => setFormFullName(e.target.value)}
-                  placeholder="ví dụ: Lê Văn Hải"
-                  className="w-full px-3 py-2 text-sm bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none"
-                  required
-                />
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -544,38 +618,23 @@ export const UserManager: React.FC = () => {
                     type="text"
                     value={formDepartment}
                     onChange={(e) => setFormDepartment(e.target.value)}
-                    placeholder="Ban QL Kho Bãi Cát Lái"
+                    placeholder="Ban Quản Lý Kho Bãi"
                     className="w-full px-3 py-2 text-sm bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none"
                   />
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-xs font-semibold text-slate-700 uppercase mb-1">
-                    Số điện thoại
-                  </label>
-                  <input
-                    type="text"
-                    value={formPhone}
-                    onChange={(e) => setFormPhone(e.target.value)}
-                    placeholder="09xx xxx xxx"
-                    className="w-full px-3 py-2 text-sm bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-xs font-semibold text-slate-700 uppercase mb-1">
-                    Email
-                  </label>
-                  <input
-                    type="email"
-                    value={formEmail}
-                    onChange={(e) => setFormEmail(e.target.value)}
-                    placeholder="user@kho-vattu.vn"
-                    className="w-full px-3 py-2 text-sm bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none"
-                  />
-                </div>
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 uppercase mb-1">
+                  Số điện thoại liên hệ
+                </label>
+                <input
+                  type="text"
+                  value={formPhone}
+                  onChange={(e) => setFormPhone(e.target.value)}
+                  placeholder="09xx xxx xxx"
+                  className="w-full px-3 py-2 text-sm bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none"
+                />
               </div>
 
               <div className="flex items-center gap-2 pt-1">
@@ -587,7 +646,7 @@ export const UserManager: React.FC = () => {
                   className="w-4 h-4 text-blue-600 rounded border-slate-300"
                 />
                 <label htmlFor="userActive" className="text-xs font-medium text-slate-700">
-                  Kích hoạt tài khoản người dùng ngay lập tức
+                  Cho phép tài khoản Google này đăng nhập ngay lập tức
                 </label>
               </div>
 
@@ -596,7 +655,7 @@ export const UserManager: React.FC = () => {
                   type="submit"
                   className="flex-1 py-2.5 bg-blue-600 hover:bg-blue-700 text-white font-semibold text-sm rounded-xl transition shadow-md shadow-blue-500/20"
                 >
-                  Tạo Người Dùng
+                  Lưu & Cấp Quyền Google
                 </button>
                 <button
                   type="button"
@@ -611,7 +670,7 @@ export const UserManager: React.FC = () => {
         </div>
       )}
 
-      {/* Modal Sửa người dùng */}
+      {/* Modal Sửa thông tin & phân quyền */}
       {editingUser && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-2 sm:p-4">
           <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-lg max-h-[92dvh] flex flex-col overflow-hidden">
@@ -620,9 +679,14 @@ export const UserManager: React.FC = () => {
                 <div className="p-2 bg-blue-100 text-blue-700 rounded-xl shrink-0">
                   <Edit3 className="w-5 h-5" />
                 </div>
-                <h3 className="font-bold text-slate-900 text-sm sm:text-base truncate">Sửa Người Dùng: {editingUser.username}</h3>
+                <h3 className="font-bold text-slate-900 text-sm sm:text-base truncate">
+                  Phân Quyền Tài Khoản: {editingUser.fullName}
+                </h3>
               </div>
-              <button onClick={() => setEditingUser(null)} className="p-2 hover:bg-slate-200 rounded-lg text-slate-500 shrink-0">
+              <button
+                onClick={() => setEditingUser(null)}
+                className="p-2 hover:bg-slate-200 rounded-lg text-slate-500 shrink-0"
+              >
                 <X className="w-4 h-4" />
               </button>
             </div>
@@ -635,46 +699,47 @@ export const UserManager: React.FC = () => {
                 </div>
               )}
 
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 uppercase mb-1">
+                  Email Google đăng nhập (*)
+                </label>
+                <input
+                  type="email"
+                  value={formEmail}
+                  disabled={isBootstrappedAdminUser(editingUser)}
+                  onChange={(e) => setFormEmail(e.target.value)}
+                  placeholder="nhanvien@gmail.com"
+                  className="w-full px-3 py-2.5 text-sm font-mono bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none disabled:bg-slate-200"
+                  required
+                />
+              </div>
+
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
                   <label className="block text-xs font-semibold text-slate-700 uppercase mb-1">
-                    Tên đăng nhập (*)
+                    Họ và tên đầy đủ (*)
                   </label>
                   <input
                     type="text"
-                    value={formUsername}
-                    disabled={editingUser.username === 'Võ Dương Phú' || editingUser.id === 'user-admin-01'}
-                    onChange={(e) => setFormUsername(e.target.value)}
-                    className="w-full px-3 py-2 text-sm bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none disabled:bg-slate-200"
+                    value={formFullName}
+                    onChange={(e) => setFormFullName(e.target.value)}
+                    className="w-full px-3 py-2 text-sm bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none"
                     required
                   />
                 </div>
 
                 <div>
                   <label className="block text-xs font-semibold text-slate-700 uppercase mb-1">
-                    Mật khẩu đăng nhập
+                    Mã định danh nội bộ
                   </label>
                   <input
                     type="text"
-                    value={formPassword}
-                    onChange={(e) => setFormPassword(e.target.value)}
-                    placeholder="Nhập để đổi mật khẩu..."
-                    className="w-full px-3 py-2 text-sm font-mono bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none"
+                    value={formUsername}
+                    disabled={isBootstrappedAdminUser(editingUser)}
+                    onChange={(e) => setFormUsername(e.target.value)}
+                    className="w-full px-3 py-2 text-sm bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none disabled:bg-slate-200"
                   />
                 </div>
-              </div>
-
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 uppercase mb-1">
-                  Họ và tên đầy đủ (*)
-                </label>
-                <input
-                  type="text"
-                  value={formFullName}
-                  onChange={(e) => setFormFullName(e.target.value)}
-                  className="w-full px-3 py-2 text-sm bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none"
-                  required
-                />
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -685,7 +750,7 @@ export const UserManager: React.FC = () => {
                   <select
                     value={formRole}
                     onChange={(e) => setFormRole(e.target.value as UserRole)}
-                    disabled={editingUser.username === 'Võ Dương Phú'}
+                    disabled={isBootstrappedAdminUser(editingUser)}
                     className="w-full px-3 py-2 text-sm bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none disabled:bg-slate-200"
                   >
                     <option value="admin">Quản Trị Viên (Admin)</option>
@@ -708,30 +773,16 @@ export const UserManager: React.FC = () => {
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-xs font-semibold text-slate-700 uppercase mb-1">
-                    Số điện thoại
-                  </label>
-                  <input
-                    type="text"
-                    value={formPhone}
-                    onChange={(e) => setFormPhone(e.target.value)}
-                    className="w-full px-3 py-2 text-sm bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-xs font-semibold text-slate-700 uppercase mb-1">
-                    Email
-                  </label>
-                  <input
-                    type="email"
-                    value={formEmail}
-                    onChange={(e) => setFormEmail(e.target.value)}
-                    className="w-full px-3 py-2 text-sm bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none"
-                  />
-                </div>
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 uppercase mb-1">
+                  Số điện thoại
+                </label>
+                <input
+                  type="text"
+                  value={formPhone}
+                  onChange={(e) => setFormPhone(e.target.value)}
+                  className="w-full px-3 py-2 text-sm bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none"
+                />
               </div>
 
               <div className="flex items-center gap-2 pt-1">
@@ -739,12 +790,12 @@ export const UserManager: React.FC = () => {
                   type="checkbox"
                   id="editActive"
                   checked={formIsActive}
-                  disabled={editingUser.username === 'Võ Dương Phú'}
+                  disabled={isBootstrappedAdminUser(editingUser)}
                   onChange={(e) => setFormIsActive(e.target.checked)}
                   className="w-4 h-4 text-blue-600 rounded border-slate-300"
                 />
                 <label htmlFor="editActive" className="text-xs font-medium text-slate-700">
-                  Tài khoản đang hoạt động
+                  Cho phép tài khoản này đăng nhập hệ thống
                 </label>
               </div>
 
@@ -768,100 +819,19 @@ export const UserManager: React.FC = () => {
         </div>
       )}
 
-      {/* Modal Cấp Mật Khẩu (Admin cấp mật khẩu cho người sử dụng) */}
-      {resetPassUser && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-2 sm:p-4">
-          <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-md max-h-[92dvh] flex flex-col overflow-hidden">
-            <div className="flex items-center justify-between p-4 sm:p-5 border-b border-slate-100 bg-amber-50">
-              <div className="flex items-center gap-2 min-w-0">
-                <div className="p-2 bg-amber-100 text-amber-800 rounded-xl shrink-0">
-                  <KeyRound className="w-5 h-5" />
-                </div>
-                <div className="min-w-0">
-                  <h3 className="font-bold text-slate-900 text-sm truncate">Cấp Mật Khẩu Cho Người Sử Dụng</h3>
-                  <p className="text-xs text-amber-800 font-semibold truncate">{resetPassUser.fullName} ({resetPassUser.username})</p>
-                </div>
-              </div>
-              <button onClick={() => setResetPassUser(null)} className="p-2 hover:bg-slate-200 rounded-lg text-slate-500 shrink-0">
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-
-            <form onSubmit={handleResetPasswordSubmit} className="p-4 sm:p-6 space-y-4 overflow-y-auto flex-1">
-              <p className="text-xs text-slate-600">
-                Với tư cách Admin, bạn có quyền cấp lại mật khẩu truy cập cho người dùng này. Mật khẩu mới sẽ có hiệu lực ngay lập tức.
-              </p>
-
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 uppercase mb-1">
-                  Mật khẩu mới cấp phát (*)
-                </label>
-                <div className="relative">
-                  <input
-                    type="text"
-                    value={newPasswordValue}
-                    onChange={(e) => setNewPasswordValue(e.target.value)}
-                    placeholder="Nhập mật khẩu mới..."
-                    className="w-full px-3.5 py-2.5 pl-10 text-sm font-mono bg-slate-50 border border-slate-300 rounded-xl focus:bg-white focus:ring-2 focus:ring-amber-500 outline-none"
-                    required
-                  />
-                  <Lock className="w-4 h-4 text-slate-400 absolute left-3.5 top-3" />
-                </div>
-              </div>
-
-              <div className="flex gap-2 text-xs">
-                <button
-                  type="button"
-                  onClick={() => setNewPasswordValue('123456')}
-                  className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 rounded-md text-slate-600"
-                >
-                  Mặc định: 123456
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setNewPasswordValue('1234567')}
-                  className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 rounded-md text-slate-600"
-                >
-                  1234567
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setNewPasswordValue(Math.floor(100000 + Math.random() * 900000).toString())}
-                  className="px-2.5 py-1 bg-amber-100 hover:bg-amber-200 text-amber-800 rounded-md font-medium"
-                >
-                  Tạo ngẫu nhiên 6 số
-                </button>
-              </div>
-
-              <div className="pt-3 flex gap-2">
-                <button
-                  type="submit"
-                  className="flex-1 py-2.5 bg-amber-600 hover:bg-amber-700 text-white font-semibold text-sm rounded-xl transition shadow-md shadow-amber-500/20"
-                >
-                  Xác Nhận Cấp Mật Khẩu
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setResetPassUser(null)}
-                  className="py-2.5 px-4 bg-slate-100 hover:bg-slate-200 text-slate-700 text-sm font-semibold rounded-xl transition"
-                >
-                  Hủy
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
       {/* Modal Xác Nhận Xóa Người Dùng */}
       <ConfirmDeleteModal
         isOpen={Boolean(userToDelete)}
         onClose={() => setUserToDelete(null)}
         onConfirm={confirmDeleteUser}
-        title="Xác Nhận Xóa Người Sử Dụng"
-        itemName={userToDelete ? `${userToDelete.fullName} (@${userToDelete.username})` : ''}
+        title="Xác Nhận Xóa Tài Khoản Google"
+        itemName={
+          userToDelete
+            ? `${userToDelete.fullName} (${userToDelete.email || '@' + userToDelete.username})`
+            : ''
+        }
         itemType="tài khoản người sử dụng"
-        warningText="Tài khoản này sẽ bị xóa vĩnh viễn và không thể đăng nhập vào hệ thống nữa. Bạn có chắc chắn muốn xóa không?"
+        warningText="Tài khoản này sẽ bị xóa khỏi danh sách phân quyền của hệ thống. Bạn có chắc chắn muốn xóa không?"
       />
     </div>
   );

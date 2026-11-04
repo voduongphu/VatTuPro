@@ -12,7 +12,7 @@ import type {
 import {
   normKey,
   normUserKey,
-  computeEmailAuthDigest,
+  resolveGoogleUserRecord,
   findMatchingUser,
   isPasswordMatch,
   isSessionHeartbeatFresh,
@@ -185,6 +185,7 @@ let memoryStaticSessions: Record<string, ActiveUserSession> = {};
 
 const revokedLocalTokens = new Set<string>();
 let inFlightLogoutPromise: Promise<void> | null = null;
+let authAttemptEpoch = 0;
 
 function rememberRevokedLocalToken(token?: string | null): void {
   const clean = String(token || '').trim();
@@ -458,12 +459,17 @@ function clearPersistedKickNotice(): void {
 
 function triggerLocalKickOut(info: SessionInvalidationInfo): void {
   const current = getStoredUnifiedSession();
+  if (current?.session.sessionToken) {
+    rememberRevokedLocalToken(current.session.sessionToken);
+  }
   const enriched: SessionInvalidationInfo = {
     ...info,
     username: info.username || current?.user.username,
     fullName: info.fullName || current?.user.fullName
   };
+  FirestoreSyncService.watchActiveSession(null);
   clearStoredUnifiedSession();
+  void FirestoreSyncService.disconnectGoogleAccount().catch(() => {});
   if (!current && sessionInvalidatedListeners.size === 0) {
     return;
   }
@@ -1617,120 +1623,403 @@ export const SyncService = {
   async loginWithGoogleCloud(options?: {
     forceLogoutOtherDevice?: boolean;
     forceSelectAccount?: boolean;
+    reuseExistingAccount?: boolean;
   }): Promise<LoginServerResult> {
     authTransitionCount++;
+    ++authAttemptEpoch;
+    const forceFlag = Boolean(options?.forceLogoutOtherDevice);
+
+    // Dọn dẹp đồng bộ phiên cũ trong RAM/sessionStorage ngay trước khi gọi Google Popup (không await mạng để tránh Chrome chặn Popup)
+    const prevUnified = getStoredUnifiedSession();
+    if (prevUnified) {
+      rememberRevokedLocalToken(prevUnified.session.sessionToken);
+      FirestoreSyncService.watchActiveSession(null);
+      clearStoredUnifiedSession();
+      void FirestoreSyncService.logoutFromCloud(prevUnified.session).catch(() => {});
+      if (
+        !prevUnified.session.sessionToken.startsWith('static-') &&
+        !prevUnified.session.sessionToken.startsWith('cloud.')
+      ) {
+        void fetch('/api/auth/logout', {
+          method: 'POST',
+          keepalive: true,
+          cache: 'no-store',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            userKey: prevUnified.session.userKey,
+            sessionToken: prevUnified.session.sessionToken,
+            deviceId: prevUnified.session.deviceId
+          })
+        }).catch(() => {});
+      }
+    }
+    clearBrowserAuthCookiesAndArtifacts(prevUnified?.session.userKey);
+
     try {
-      await awaitPendingLogout(1800);
+      const authRes = await FirestoreSyncService.authenticateGooglePopup({
+        forceSelectAccount: Boolean(options?.forceSelectAccount),
+        reuseExistingIfAvailable: Boolean(options?.reuseExistingAccount || forceFlag)
+      });
+
+      if (!authRes.success || !authRes.email) {
+        return {
+          success: false,
+          message: authRes.message || 'Không thể xác thực tài khoản Google.'
+        };
+      }
+
       await StorageService.init();
 
-      const prevUnified = getStoredUnifiedSession();
-      if (prevUnified) {
-        rememberRevokedLocalToken(prevUnified.session.sessionToken);
-        clearStoredUnifiedSession();
-        await FirestoreSyncService.logoutFromCloud(prevUnified.session).catch(() => {});
-      }
-      clearBrowserAuthCookiesAndArtifacts();
-
-      if (options?.forceSelectAccount) {
-        await FirestoreSyncService.disconnectGoogleAccount().catch(() => {});
-      }
-
-      let cloudEmail = FirestoreSyncService.getState().cloudEmail;
-      let cloudName = FirestoreSyncService.getState().cloudDisplayName;
-
-      if (!FirestoreSyncService.isCloudConnected()) {
-        const conn = await FirestoreSyncService.connectGoogleAccount();
-        if (!conn.success) {
-          return {
-            success: false,
-            message: conn.message
-          };
-        }
-        cloudEmail = conn.email || null;
-        cloudName = conn.displayName || null;
-      } else {
-        await FirestoreSyncService.reconcileWithCloud();
-      }
-
-      const users = StorageService.getUsers();
-      const emailLower = (cloudEmail || '').trim().toLowerCase();
-      const emailDigest = computeEmailAuthDigest(emailLower);
-      const matched =
-        users.find(
-          (u) =>
-            (emailLower && (u.email || '').trim().toLowerCase() === emailLower) ||
-            (emailDigest &&
-              (u.emailDigest === emailDigest || computeEmailAuthDigest(u.email) === emailDigest))
-        ) || (cloudName ? findMatchingUser(users, cloudName) : undefined);
-
-      if (!matched) {
-        return {
-          success: false,
-          cloudConnectedOnly: true,
-          message: `Đã kết nối Đám mây (${cloudEmail || 'Google'}) và đồng bộ đầy đủ danh sách tài khoản về máy tính này! Vui lòng nhập Tên người sử dụng và Mật khẩu bên dưới để đăng nhập.`
-        };
-      }
-
+      const emailLower = authRes.email.trim().toLowerCase();
+      const displayName = authRes.displayName || null;
+      const uid = authRes.uid || null;
       const deviceId = getDeviceId();
       const deviceLabel = getDeviceLabel();
-      const forceFlag = Boolean(options?.forceLogoutOtherDevice);
-      let cloudRes = await FirestoreSyncService.loginWithCloud(
-        matched.username,
-        matched.password || '',
-        deviceId,
-        deviceLabel,
-        forceFlag
-      );
 
-      if (
-        cloudRes.handled &&
-        cloudRes.conflict &&
-        !forceFlag &&
-        cloudRes.activeSession &&
-        (cloudRes.activeSession.deviceId === deviceId ||
-          revokedLocalTokens.has(cloudRes.activeSession.sessionToken))
-      ) {
-        cloudRes = await FirestoreSyncService.loginWithCloud(
-          matched.username,
-          matched.password || '',
+      // 1. Ưu tiên cấp phiên trên Cloud Firestore nếu đã kết nối workspace
+      if (authRes.cloudReady && authRes.fbUser) {
+        let cloudRes = await FirestoreSyncService.loginWithGoogleIdentityOnCloud(
+          authRes.fbUser,
           deviceId,
           deviceLabel,
-          true
+          forceFlag
         );
+
+        if (
+          cloudRes.handled &&
+          cloudRes.conflict &&
+          !forceFlag &&
+          cloudRes.activeSession &&
+          (cloudRes.activeSession.deviceId === deviceId ||
+            revokedLocalTokens.has(cloudRes.activeSession.sessionToken))
+        ) {
+          cloudRes = await FirestoreSyncService.loginWithGoogleIdentityOnCloud(
+            authRes.fbUser,
+            deviceId,
+            deviceLabel,
+            true
+          );
+        }
+
+        if (cloudRes.handled) {
+          if (!cloudRes.success || !cloudRes.user || !cloudRes.session) {
+            if (!cloudRes.conflict) {
+              await FirestoreSyncService.disconnectGoogleAccount().catch(() => {});
+            }
+            return {
+              success: false,
+              conflict: cloudRes.conflict,
+              activeSession: cloudRes.activeSession,
+              user: cloudRes.user,
+              message: cloudRes.message || 'Không thể đăng nhập bằng tài khoản Google này.'
+            };
+          }
+
+          pendingInvalidation = null;
+          clearPersistedKickNotice();
+          saveStoredUnifiedSession({
+            user: cloudRes.user,
+            session: cloudRes.session
+          });
+
+          // Đồng bộ ngầm tài khoản Google lên máy chủ /api để luôn đồng nhất dữ liệu
+          void fetch('/api/auth/google-login', {
+            method: 'POST',
+            cache: 'no-store',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              email: emailLower,
+              displayName,
+              uid,
+              deviceId,
+              deviceLabel,
+              localUsers: StorageService.getUsers(),
+              forceLogoutOtherDevice: true
+            })
+          }).catch(() => {});
+
+          try {
+            authChannel?.postMessage({
+              type: 'auth:session_replaced',
+              userKey: cloudRes.session.userKey,
+              activeSessionToken: cloudRes.session.sessionToken,
+              issuedAtMs: cloudRes.session.issuedAtMs,
+              deviceLabel: cloudRes.session.deviceLabel,
+              loginAt: cloudRes.session.loginAt
+            });
+          } catch {
+            // ignore
+          }
+
+          queueMicrotask(() => {
+            void reconcileInternal();
+          });
+
+          return {
+            success: true,
+            user: cloudRes.user,
+            replacedSession: cloudRes.replacedSession,
+            message: cloudRes.message
+          };
+        }
       }
 
-      if (!cloudRes.handled) {
-        return await this.loginWithServer(matched.username, matched.password || '', {
-          forceLogoutOtherDevice: forceFlag
+      // 2. Fallback tự động qua máy chủ /api/auth/google-login (khi Firestore chạm hạn mức miễn phí hoặc mạng chặn WebChannel)
+      try {
+        const localUsers = StorageService.getUsers();
+        const attemptGoogleServerLogin = (forceOther: boolean) =>
+          fetchJson<{
+            success: boolean;
+            conflict?: boolean;
+            activeSession?: ActiveUserSession;
+            message: string;
+            user?: User;
+            session?: ActiveUserSession;
+            replacedSession?: ActiveUserSession;
+            users?: User[];
+          }>('/api/auth/google-login', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              email: emailLower,
+              displayName,
+              uid,
+              deviceId,
+              deviceLabel,
+              localUsers,
+              forceLogoutOtherDevice: forceOther
+            })
+          });
+
+        let res = await attemptGoogleServerLogin(forceFlag);
+        if (
+          res.conflict &&
+          !forceFlag &&
+          res.activeSession &&
+          (res.activeSession.deviceId === deviceId ||
+            revokedLocalTokens.has(res.activeSession.sessionToken))
+        ) {
+          res = await attemptGoogleServerLogin(true);
+        }
+
+        if (!res.success || !res.user || !res.session) {
+          if (!res.conflict) {
+            await FirestoreSyncService.disconnectGoogleAccount().catch(() => {});
+          }
+          return {
+            success: false,
+            conflict: Boolean(res.conflict),
+            activeSession: res.activeSession,
+            user: res.user,
+            message: res.message || 'Không thể đăng nhập bằng tài khoản Google này.'
+          };
+        }
+
+        pendingInvalidation = null;
+        clearPersistedKickNotice();
+        saveStoredUnifiedSession({
+          user: res.user,
+          session: res.session
         });
+
+        if (Array.isArray(res.users) && res.users.length > 0) {
+          StorageService.applyRemoteMeta({ users: res.users });
+        } else {
+          StorageService.applyRemoteMeta({ users: [res.user] });
+        }
+
+        try {
+          authChannel?.postMessage({
+            type: 'auth:session_replaced',
+            userKey: res.session.userKey,
+            activeSessionToken: res.session.sessionToken,
+            issuedAtMs: res.session.issuedAtMs,
+            deviceLabel: res.session.deviceLabel,
+            loginAt: res.session.loginAt
+          });
+        } catch {
+          // ignore
+        }
+
+        connectWebSocket();
+        sendWsAuthCheck();
+        queueMicrotask(() => {
+          void reconcileInternal();
+        });
+
+        return {
+          success: true,
+          user: res.user,
+          replacedSession: res.replacedSession,
+          message: res.message
+        };
+      } catch {
+        // 3. Fallback cục bộ an toàn khi triển khai tĩnh không có /api
+        const nowMs = Date.now();
+        const resolved = resolveGoogleUserRecord(StorageService.getUsers(), {
+          email: emailLower,
+          displayName,
+          uid,
+          nowMs
+        });
+        if (!resolved.allowed) {
+          await FirestoreSyncService.disconnectGoogleAccount().catch(() => {});
+          return {
+            success: false,
+            message: resolved.message || 'Tài khoản Google này đang bị khóa truy cập.'
+          };
+        }
+
+        const matched =
+          resolved.isNew || resolved.mutated
+            ? StorageService.upsertGoogleUser(resolved.user)
+            : resolved.user;
+        const userKey = normUserKey(matched.username);
+        const staticMap = getStaticSessionsMap();
+        const prevStatic = staticMap[userKey];
+
+        if (
+          prevStatic &&
+          prevStatic.deviceId !== deviceId &&
+          !revokedLocalTokens.has(prevStatic.sessionToken) &&
+          isSessionHeartbeatFresh(nowMs, prevStatic.lastSeenAt, STATIC_TTL_MS) &&
+          !forceFlag
+        ) {
+          return {
+            success: false,
+            conflict: true,
+            activeSession: prevStatic,
+            user: matched,
+            message: `Tài khoản Google "${emailLower}" hiện đang mở trên ${prevStatic.deviceLabel || 'thiết bị khác'}. Nhấn nút bên dưới để đăng xuất thiết bị kia và tiếp tục.`
+          };
+        }
+
+        const issuedAtMs = Math.max(
+          nowMs,
+          (Number(matched.sessionRevokedAt) || 0) + 2,
+          (Number(prevStatic?.issuedAtMs) || 0) + 2
+        );
+        const nowIso = new Date(issuedAtMs).toISOString();
+        const staticSession: ActiveUserSession = {
+          userId: matched.id,
+          username: matched.username,
+          userKey,
+          sessionToken: `static-${issuedAtMs}-${Math.random().toString(36).slice(2, 10)}`,
+          issuedAtMs,
+          deviceId,
+          deviceLabel,
+          loginAt: nowIso,
+          lastSeenAt: nowMs
+        };
+
+        saveStaticSessionEntry(userKey, staticSession);
+        pendingInvalidation = null;
+        clearPersistedKickNotice();
+        saveStoredUnifiedSession({
+          user: matched,
+          session: staticSession
+        });
+
+        return {
+          success: true,
+          user: matched,
+          replacedSession: prevStatic && prevStatic.deviceId !== deviceId ? prevStatic : undefined,
+          message: `Đăng nhập thành công với ${emailLower}!`
+        };
+      }
+    } finally {
+      authTransitionCount = Math.max(0, authTransitionCount - 1);
+    }
+  },
+
+  async requestLogoutOtherDeviceWithGoogle(): Promise<{ success: boolean; message: string }> {
+    authTransitionCount++;
+    const deviceId = getDeviceId();
+    const deviceLabel = getDeviceLabel();
+
+    try {
+      let fbUser = FirestoreSyncService.getCurrentFirebaseUser();
+      if (!fbUser || !fbUser.email) {
+        const authRes = await FirestoreSyncService.authenticateGooglePopup({
+          forceSelectAccount: true,
+          reuseExistingIfAvailable: false
+        });
+        if (!authRes.success || !authRes.fbUser || !authRes.email) {
+          return {
+            success: false,
+            message: authRes.message || 'Vui lòng xác thực tài khoản Google để đăng xuất thiết bị kia.'
+          };
+        }
+        fbUser = authRes.fbUser;
       }
 
-      if (!cloudRes.success || !cloudRes.user || !cloudRes.session) {
+      await StorageService.init();
+      const emailLower = (fbUser.email || '').trim().toLowerCase();
+      if (!emailLower) {
         return {
           success: false,
-          conflict: cloudRes.conflict,
-          activeSession: cloudRes.activeSession,
-          user: matched,
-          message: cloudRes.message || 'Không thể đăng nhập.'
+          message: 'Không đọc được địa chỉ email từ tài khoản Google.'
         };
       }
 
-      pendingInvalidation = null;
-      clearPersistedKickNotice();
-      saveStoredUnifiedSession({
-        user: cloudRes.user,
-        session: cloudRes.session
+      const cloudRes = await FirestoreSyncService.requestLogoutOtherDeviceByGoogleWithCloud(
+        fbUser,
+        deviceLabel
+      );
+      if (cloudRes.handled && cloudRes.success) {
+        void fetch('/api/auth/force-logout', {
+          method: 'POST',
+          cache: 'no-store',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            googleEmail: emailLower,
+            deviceId,
+            deviceLabel,
+            localUsers: StorageService.getUsers()
+          })
+        }).catch(() => {});
+        return {
+          success: true,
+          message: cloudRes.message
+        };
+      }
+      if (cloudRes.handled && !cloudRes.success) {
+        return {
+          success: false,
+          message: cloudRes.message
+        };
+      }
+
+      const res = await fetchJson<{
+        success: boolean;
+        message: string;
+        users?: User[];
+      }>('/api/auth/force-logout', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          googleEmail: emailLower,
+          deviceId,
+          deviceLabel,
+          localUsers: StorageService.getUsers()
+        })
       });
 
-      queueMicrotask(() => {
-        void reconcileInternal();
-      });
-
+      if (Array.isArray(res.users) && res.users.length > 0) {
+        StorageService.applyRemoteMeta({ users: res.users });
+      }
       return {
-        success: true,
-        user: cloudRes.user,
-        replacedSession: cloudRes.replacedSession,
-        message: cloudRes.message
+        success: res.success,
+        message:
+          res.message ||
+          (res.success
+            ? 'Đã đăng xuất phiên trên thiết bị kia thành công!'
+            : 'Không thể gửi yêu cầu đăng xuất thiết bị kia.')
+      };
+    } catch {
+      return {
+        success: false,
+        message: 'Không thể kết nối để đăng xuất thiết bị kia. Bạn có thể nhấn trực tiếp "Đăng xuất thiết bị kia & Tiếp tục".'
       };
     } finally {
       authTransitionCount = Math.max(0, authTransitionCount - 1);
@@ -2334,6 +2623,7 @@ export const SyncService = {
   },
 
   async logoutFromServer(): Promise<void> {
+    const logoutEpoch = ++authAttemptEpoch;
     const current = getStoredUnifiedSession();
     if (current?.session.sessionToken) {
       rememberRevokedLocalToken(current.session.sessionToken);
@@ -2342,40 +2632,46 @@ export const SyncService = {
     clearStoredUnifiedSession();
     clearBrowserAuthCookiesAndArtifacts(current?.session.userKey);
 
-    if (!current) return;
-
     let releaseTask: Promise<void> | null = null;
     releaseTask = (async () => {
       authTransitionCount++;
       try {
-        await FirestoreSyncService.logoutFromCloud(current.session);
+        if (current) {
+          // Giải phóng khóa phiên trên Cloud Firestore TRƯỚC khi signOut Firebase Auth để đảm bảo quyền ghi hợp lệ
+          await Promise.race([
+            FirestoreSyncService.logoutFromCloud(current.session),
+            new Promise<void>((resolve) => setTimeout(resolve, 1200))
+          ]);
 
-        const staticMap = getStaticSessionsMap();
-        if (staticMap[current.session.userKey]?.sessionToken === current.session.sessionToken) {
-          saveStaticSessionEntry(current.session.userKey, null);
+          const staticMap = getStaticSessionsMap();
+          if (staticMap[current.session.userKey]?.sessionToken === current.session.sessionToken) {
+            saveStaticSessionEntry(current.session.userKey, null);
+          }
+
+          if (
+            !current.session.sessionToken.startsWith('static-') &&
+            !current.session.sessionToken.startsWith('cloud.')
+          ) {
+            await Promise.race([
+              fetch('/api/auth/logout', {
+                method: 'POST',
+                keepalive: true,
+                cache: 'no-store',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  userKey: current.session.userKey,
+                  sessionToken: current.session.sessionToken,
+                  deviceId: current.session.deviceId
+                })
+              }).then(() => {}),
+              new Promise<void>((resolve) => setTimeout(resolve, 1200))
+            ]).catch(() => {});
+          }
         }
 
-        if (
-          current.session.sessionToken.startsWith('static-') ||
-          current.session.sessionToken.startsWith('cloud.')
-        ) {
-          return;
-        }
-
-        try {
-          await fetch('/api/auth/logout', {
-            method: 'POST',
-            keepalive: true,
-            cache: 'no-store',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              userKey: current.session.userKey,
-              sessionToken: current.session.sessionToken,
-              deviceId: current.session.deviceId
-            })
-          });
-        } catch {
-          // ignore network error on logout
+        // Luôn đăng xuất hoàn toàn tài khoản Google khỏi Firebase Auth nếu người dùng chưa bấm phiên đăng nhập mới
+        if (authAttemptEpoch === logoutEpoch) {
+          await FirestoreSyncService.disconnectGoogleAccount().catch(() => {});
         }
       } finally {
         authTransitionCount = Math.max(0, authTransitionCount - 1);
@@ -2391,6 +2687,7 @@ export const SyncService = {
 
   async resetBrowserAuthState(): Promise<{ success: boolean; message: string }> {
     authTransitionCount++;
+    const resetEpoch = ++authAttemptEpoch;
     try {
       await this.logoutFromServer();
       memoryStaticSessions = {};
@@ -2403,15 +2700,14 @@ export const SyncService = {
       }
       clearBrowserAuthCookiesAndArtifacts();
 
-      if (FirestoreSyncService.getState().status === 'error') {
+      if (authAttemptEpoch >= resetEpoch) {
         await FirestoreSyncService.disconnectGoogleAccount().catch(() => {});
       }
 
-      await reconcileInternal().catch(() => {});
       return {
         success: true,
         message:
-          'Đã làm mới phiên trình duyệt và dọn sạch cookies đăng nhập cũ. Bạn có thể đăng nhập lại ngay!'
+          'Đã thoát hoàn toàn phiên Google cũ và dọn sạch dữ liệu đăng nhập trên trình duyệt. Bạn có thể đăng nhập bằng Google ngay!'
       };
     } finally {
       authTransitionCount = Math.max(0, authTransitionCount - 1);

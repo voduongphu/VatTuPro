@@ -3,7 +3,12 @@ import { User, ActiveUserSession } from '../types/inventory';
 import { StorageService } from '../services/storage';
 import { SyncService, SessionInvalidationInfo } from '../services/syncService';
 import type { CloudSyncSnapshotState } from '../services/firestoreSync';
-import { normUserKey, isPasswordMatch, isRecordDeleted } from '../utils/additiveMerge';
+import {
+  normUserKey,
+  isBootstrappedAdminUser,
+  isPasswordMatch,
+  isRecordDeleted
+} from '../utils/additiveMerge';
 
 export interface SessionKickAlert extends SessionInvalidationInfo {
   title: string;
@@ -32,7 +37,7 @@ function buildKickAlert(info: SessionInvalidationInfo): SessionKickAlert {
       ...info,
       title: 'Tài Khoản Đã Bị Khóa Hoặc Ngừng Kích Hoạt',
       message:
-        'Tài khoản của bạn đã bị khóa hoặc ngừng kích hoạt bởi Quản trị viên. Hệ thống đã tự động đăng xuất khỏi thiết bị này.'
+        'Tài khoản Google của bạn đã bị khóa hoặc ngừng kích hoạt bởi Quản trị viên. Hệ thống đã tự động đăng xuất khỏi thiết bị này.'
     };
   }
   if (info.reason === 'force_logout') {
@@ -48,14 +53,14 @@ function buildKickAlert(info: SessionInvalidationInfo): SessionKickAlert {
       ...info,
       title: 'Phiên Đăng Nhập Đã Kết Thúc',
       message:
-        'Phiên đăng nhập trước đó đã hết hiệu lực hoặc đã đăng xuất. Vui lòng đăng nhập lại để tiếp tục làm việc.'
+        'Phiên đăng nhập trước đó đã hết hiệu lực hoặc đã đăng xuất. Vui lòng đăng nhập lại bằng tài khoản Google để tiếp tục làm việc.'
     };
   }
   const deviceDesc = info.deviceLabel ? ` (${info.deviceLabel})` : '';
   return {
     ...info,
     title: 'Cảnh Báo: Đã Tự Động Đăng Xuất Khỏi Thiết Bị Này',
-    message: `Phát hiện tài khoản đang được chuyển phiên đăng nhập sang thiết bị mới${deviceDesc}. Hệ thống đã tự động đăng xuất khỏi thiết bị hiện tại để đảm bảo an toàn dữ liệu.`
+    message: `Phát hiện tài khoản Google đang được chuyển phiên đăng nhập sang thiết bị mới${deviceDesc}. Hệ thống đã tự động đăng xuất khỏi thiết bị hiện tại để đảm bảo an toàn dữ liệu.`
   };
 }
 
@@ -67,8 +72,11 @@ interface AuthContextType {
   disconnectCloudSync: () => Promise<void>;
   loginWithGoogle: (
     forceLogoutOtherDevice?: boolean,
-    forceSelectAccount?: boolean
+    forceSelectAccount?: boolean,
+    reuseExistingAccount?: boolean
   ) => Promise<LoginActionResult>;
+  switchGoogleAccount: () => Promise<LoginActionResult>;
+  requestLogoutOtherDeviceWithGoogle: () => Promise<{ success: boolean; message: string }>;
   sessionKickNotice: string | null;
   sessionKickAlert: SessionKickAlert | null;
   isKickModalOpen: boolean;
@@ -87,7 +95,7 @@ interface AuthContextType {
   ) => Promise<{ success: boolean; message: string }>;
   forceLogoutOtherDevicesFromCurrent: () => Promise<{ success: boolean; message: string }>;
   resetBrowserAuthState: () => Promise<{ success: boolean; message: string }>;
-  logout: () => void;
+  logout: () => Promise<void>;
   isAdmin: boolean;
   isManager: boolean;
   refreshUsers: () => void;
@@ -111,14 +119,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const list = StorageService.getUsers();
     const match = list.find(
       (u) =>
-        u.id === unified.user.id || normUserKey(u.username) === normUserKey(unified.user.username)
+        u.id === unified.user.id ||
+        normUserKey(u.username) === normUserKey(unified.user.username) ||
+        (unified.user.emailDigest && u.emailDigest === unified.user.emailDigest)
     );
     if (match) {
       return match.isActive ? match : null;
     }
     const deleted = isRecordDeleted(
       StorageService.getTombstones().users,
-      [unified.user.id, normUserKey(unified.user.username)],
+      [unified.user.id, normUserKey(unified.user.username), unified.user.emailDigest || ''],
       unified.user.updatedAt
     );
     if (deleted || unified.user.isActive === false) {
@@ -188,7 +198,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         if (!unified) return null;
 
         const found = latestUsers.find(
-          (u) => u.id === prev.id || normUserKey(u.username) === normUserKey(prev.username)
+          (u) =>
+            u.id === prev.id ||
+            normUserKey(u.username) === normUserKey(prev.username) ||
+            (prev.emailDigest && u.emailDigest === prev.emailDigest)
         );
         if (found) {
           if (!found.isActive) {
@@ -201,7 +214,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
         const deleted = isRecordDeleted(
           StorageService.getTombstones().users,
-          [prev.id, normUserKey(prev.username)],
+          [prev.id, normUserKey(prev.username), prev.emailDigest || ''],
           prev.updatedAt
         );
         if (deleted) {
@@ -229,13 +242,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const loginWithGoogle = async (
     forceLogoutOtherDevice = false,
-    forceSelectAccount = false
+    forceSelectAccount = false,
+    reuseExistingAccount = false
   ): Promise<LoginActionResult> => {
     clearSessionKickNotice();
     setReplacedOtherDeviceAlert(null);
     const res = await SyncService.loginWithGoogleCloud({
       forceLogoutOtherDevice,
-      forceSelectAccount
+      forceSelectAccount,
+      reuseExistingAccount
     });
     const latestUsers = StorageService.getUsers();
     setUsers(latestUsers);
@@ -265,6 +280,20 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       success: true,
       message: res.message || 'Đăng nhập thành công!'
     };
+  };
+
+  const switchGoogleAccount = async (): Promise<LoginActionResult> => {
+    return loginWithGoogle(false, true, false);
+  };
+
+  const requestLogoutOtherDeviceWithGoogle = async (): Promise<{
+    success: boolean;
+    message: string;
+  }> => {
+    clearSessionKickNotice();
+    const res = await SyncService.requestLogoutOtherDeviceWithGoogle();
+    refreshUsers();
+    return res;
   };
 
   const login = async (
@@ -335,11 +364,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return res;
   };
 
-  const logout = () => {
+  const logout = async (): Promise<void> => {
     setCurrentUser(null);
     clearSessionKickNotice();
     setReplacedOtherDeviceAlert(null);
-    void SyncService.logoutFromServer();
+    await SyncService.logoutFromServer();
   };
 
   const addUser = (userData: Omit<User, 'id' | 'createdAt'>): User => {
@@ -399,7 +428,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return { success: false, message: 'Không thể đổi mật khẩu' };
   };
 
-  const isAdmin = currentUser?.role === 'admin' || normUserKey(currentUser?.username) === normUserKey('Võ Dương Phú');
+  const isAdmin = currentUser?.role === 'admin' || isBootstrappedAdminUser(currentUser);
   const isManager = isAdmin || currentUser?.role === 'manager';
 
   return (
@@ -411,6 +440,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         connectCloudSync,
         disconnectCloudSync,
         loginWithGoogle,
+        switchGoogleAccount,
+        requestLogoutOtherDeviceWithGoogle,
         sessionKickNotice: sessionKickAlert?.message || null,
         sessionKickAlert,
         isKickModalOpen,

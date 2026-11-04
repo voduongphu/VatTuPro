@@ -62,6 +62,179 @@ export function computeEmailAuthDigest(email: string | undefined | null): string
   return `em_${h1.toString(36)}_${h2.toString(36)}_${h3.toString(36)}_${h4.toString(36)}`;
 }
 
+export const BOOTSTRAPPED_ADMIN_EMAIL = 'voduongphu@gmail.com';
+const BOOTSTRAPPED_ADMIN_DIGEST = computeEmailAuthDigest(BOOTSTRAPPED_ADMIN_EMAIL);
+
+export function isBootstrappedAdminUser(u?: Partial<User> | null): boolean {
+  if (!u) return false;
+  if (u.id === 'user-admin-01') return true;
+  const uKey = normUserKey(u.username);
+  if (uKey === 'võ dương phú' || uKey === 'vo duong phu') return true;
+  const em = (u.email || '').trim().toLowerCase();
+  if (em === BOOTSTRAPPED_ADMIN_EMAIL) return true;
+  if (u.emailDigest && u.emailDigest === BOOTSTRAPPED_ADMIN_DIGEST) return true;
+  return false;
+}
+
+export interface GoogleIdentityInput {
+  email: string;
+  displayName?: string | null;
+  uid?: string | null;
+  nowMs?: number;
+}
+
+export interface ResolvedGoogleUserResult {
+  allowed: boolean;
+  isNew: boolean;
+  mutated: boolean;
+  user: User;
+  message?: string;
+}
+
+export function resolveGoogleUserRecord(
+  users: User[],
+  input: GoogleIdentityInput
+): ResolvedGoogleUserResult {
+  const nowMs = Number(input.nowMs) > 0 ? Number(input.nowMs) : Date.now();
+  const nowIso = new Date(nowMs).toISOString();
+  const emailLower = (input.email || '').trim().toLowerCase();
+  const emailDigest = computeEmailAuthDigest(emailLower);
+  const cleanDisplay = (input.displayName || '').normalize('NFC').trim();
+  const safeUsers = Array.isArray(users) ? users : [];
+
+  if (emailLower === BOOTSTRAPPED_ADMIN_EMAIL) {
+    const existingAdmin = safeUsers.find((u) => isBootstrappedAdminUser(u));
+    if (existingAdmin) {
+      const nextFullName =
+        existingAdmin.fullName?.trim() || cleanDisplay || 'Võ Dương Phú (Tổng Quản Trị)';
+      const needsUpdate =
+        existingAdmin.role !== 'admin' ||
+        !existingAdmin.isActive ||
+        (existingAdmin.email || '').trim().toLowerCase() !== BOOTSTRAPPED_ADMIN_EMAIL ||
+        existingAdmin.emailDigest !== emailDigest ||
+        existingAdmin.fullName !== nextFullName;
+
+      const adminUser: User = needsUpdate
+        ? {
+            ...existingAdmin,
+            fullName: nextFullName,
+            role: 'admin',
+            isActive: true,
+            email: BOOTSTRAPPED_ADMIN_EMAIL,
+            emailDigest,
+            password: existingAdmin.password || 'google-oauth',
+            updatedAt: Math.max(nowMs, (Number(existingAdmin.updatedAt) || 0) + 1)
+          }
+        : existingAdmin;
+
+      return {
+        allowed: true,
+        isNew: false,
+        mutated: needsUpdate,
+        user: adminUser
+      };
+    }
+
+    return {
+      allowed: true,
+      isNew: true,
+      mutated: true,
+      user: {
+        id: 'user-admin-01',
+        username: 'Võ Dương Phú',
+        fullName: cleanDisplay || 'Võ Dương Phú (Tổng Quản Trị)',
+        role: 'admin',
+        password: 'google-oauth',
+        email: BOOTSTRAPPED_ADMIN_EMAIL,
+        emailDigest,
+        department: 'Ban Giám Đốc / QL Dự Án',
+        isActive: true,
+        createdAt: nowIso,
+        updatedAt: nowMs
+      }
+    };
+  }
+
+  const matched =
+    safeUsers.find(
+      (u) =>
+        (emailLower && (u.email || '').trim().toLowerCase() === emailLower) ||
+        (emailDigest &&
+          (u.emailDigest === emailDigest || computeEmailAuthDigest(u.email) === emailDigest))
+    ) || safeUsers.find((u) => emailLower && normUserKey(u.username) === emailLower);
+
+  if (matched) {
+    if (!matched.isActive) {
+      return {
+        allowed: false,
+        isNew: false,
+        mutated: false,
+        user: matched,
+        message:
+          'Tài khoản Google này hiện đang bị khóa hoặc ngừng kích hoạt trên hệ thống. Vui lòng liên hệ Quản trị viên (voduongphu@gmail.com).'
+      };
+    }
+
+    const nextFullName =
+      matched.fullName && normUserKey(matched.fullName) !== normUserKey(matched.username)
+        ? matched.fullName
+        : cleanDisplay || matched.fullName || matched.username;
+
+    const needsEnrich =
+      (matched.email || '').trim().toLowerCase() !== emailLower ||
+      matched.emailDigest !== emailDigest ||
+      matched.fullName !== nextFullName;
+
+    const enrichedUser: User = needsEnrich
+      ? {
+          ...matched,
+          fullName: nextFullName,
+          email: emailLower,
+          emailDigest,
+          password: matched.password || 'google-oauth',
+          updatedAt: Math.max(nowMs, (Number(matched.updatedAt) || 0) + 1)
+        }
+      : matched;
+
+    return {
+      allowed: true,
+      isNew: false,
+      mutated: needsEnrich,
+      user: enrichedUser
+    };
+  }
+
+  const [h1, h2] = hashPair(`GOOGLE_USER_ID|${emailLower}`);
+  const detId = `user-g-${h1.toString(36)}${h2.toString(36)}`;
+  const rawLocalPart = emailLower.split('@')[0] || 'user';
+  const cleanLocalPart = rawLocalPart.replace(/[^a-z0-9._-]/g, '') || 'user';
+  const usernameTaken = safeUsers.some(
+    (u) => normUserKey(u.username) === normUserKey(cleanLocalPart)
+  );
+  const finalUsername = usernameTaken
+    ? `${cleanLocalPart}_${h1.toString(36).slice(0, 4)}`
+    : cleanLocalPart;
+
+  return {
+    allowed: true,
+    isNew: true,
+    mutated: true,
+    user: {
+      id: detId,
+      username: finalUsername,
+      fullName: cleanDisplay || finalUsername,
+      role: 'staff',
+      password: 'google-oauth',
+      email: emailLower,
+      emailDigest,
+      department: 'Nhân sự Kho vận',
+      isActive: true,
+      createdAt: nowIso,
+      updatedAt: nowMs
+    }
+  };
+}
+
 export function isSessionHeartbeatFresh(
   nowMs: number,
   lastSeenAt: number | undefined | null,
@@ -316,7 +489,7 @@ export function computePackingListSummary(items: OutboundItemDetail[]): string {
   return `${sample.join(', ')} (+${(seen.size - sample.length).toLocaleString('vi-VN')} PL)`;
 }
 
-// 1. USERS: Đồng bộ cộng gộp theo username (không ghi đè mất tài khoản của người khác)
+// 1. USERS: Đồng bộ cộng gộp theo emailDigest / username / id (không ghi đè mất tài khoản của người khác)
 export function mergeUsersAdditive(
   existing: User[],
   incoming: User[],
@@ -326,40 +499,74 @@ export function mergeUsersAdditive(
   const result: User[] = [];
   const indexByUsername = new Map<string, number>();
   const indexById = new Map<string, number>();
+  const indexByEmailDigest = new Map<string, number>();
 
   for (let i = 0; i < existing.length; i++) {
-    const u = existing[i];
+    let u = existing[i];
     const uKey = normUserKey(u.username);
-    const isProtectedAdmin = uKey === 'võ dương phú' || uKey === 'vo duong phu' || u.id === 'user-admin-01';
-    if (!isProtectedAdmin && isRecordDeleted(tombstones, [u.id, uKey], u.updatedAt)) {
+    const isProtectedAdmin = isBootstrappedAdminUser(u);
+    const emDigest = u.emailDigest || computeEmailAuthDigest(u.email) || '';
+    if (!isProtectedAdmin && isRecordDeleted(tombstones, [u.id, uKey, emDigest], u.updatedAt)) {
       changed = true;
       continue;
     }
+    if (isProtectedAdmin && (u.role !== 'admin' || !u.isActive || u.email !== BOOTSTRAPPED_ADMIN_EMAIL || u.emailDigest !== BOOTSTRAPPED_ADMIN_DIGEST)) {
+      u = {
+        ...u,
+        role: 'admin',
+        isActive: true,
+        email: BOOTSTRAPPED_ADMIN_EMAIL,
+        emailDigest: BOOTSTRAPPED_ADMIN_DIGEST
+      };
+      changed = true;
+    }
     const idx = result.length;
     result.push(u);
+    const finalEmDigest = u.emailDigest || computeEmailAuthDigest(u.email) || '';
     if (uKey) indexByUsername.set(uKey, idx);
     if (u.id) indexById.set(u.id, idx);
+    if (finalEmDigest) indexByEmailDigest.set(finalEmDigest, idx);
   }
 
   for (let i = 0; i < incoming.length; i++) {
     const inc = incoming[i];
-    if (!inc || !inc.username) continue;
-    const uKey = normUserKey(inc.username);
-    const isProtectedAdmin = uKey === 'võ dương phú' || uKey === 'vo duong phu' || inc.id === 'user-admin-01';
-    if (!isProtectedAdmin && isRecordDeleted(tombstones, [inc.id, uKey], inc.updatedAt)) {
+    if (!inc || (!inc.username && !inc.email)) continue;
+    const uKey = normUserKey(inc.username || inc.email);
+    const incEmDigest = inc.emailDigest || computeEmailAuthDigest(inc.email) || '';
+    const isProtectedAdmin = isBootstrappedAdminUser(inc);
+    if (!isProtectedAdmin && isRecordDeleted(tombstones, [inc.id, uKey, incEmDigest], inc.updatedAt)) {
       continue;
     }
 
-    let existIdx = indexByUsername.get(uKey);
+    let existIdx = incEmDigest ? indexByEmailDigest.get(incEmDigest) : undefined;
+    if (existIdx === undefined && uKey) {
+      existIdx = indexByUsername.get(uKey);
+    }
     if (existIdx === undefined && inc.id) {
       existIdx = indexById.get(inc.id);
     }
+    if (existIdx === undefined && isProtectedAdmin) {
+      existIdx = result.findIndex((x) => isBootstrappedAdminUser(x));
+      if (existIdx === -1) existIdx = undefined;
+    }
 
     if (existIdx === undefined) {
+      const normalizedInc: User = isProtectedAdmin
+        ? {
+            ...inc,
+            role: 'admin',
+            isActive: true,
+            email: BOOTSTRAPPED_ADMIN_EMAIL,
+            emailDigest: BOOTSTRAPPED_ADMIN_DIGEST
+          }
+        : incEmDigest && !inc.emailDigest
+          ? { ...inc, emailDigest: incEmDigest }
+          : inc;
       const idx = result.length;
-      result.push(inc);
+      result.push(normalizedInc);
       if (uKey) indexByUsername.set(uKey, idx);
-      if (inc.id) indexById.set(inc.id, idx);
+      if (normalizedInc.id) indexById.set(normalizedInc.id, idx);
+      if (normalizedInc.emailDigest) indexByEmailDigest.set(normalizedInc.emailDigest, idx);
       changed = true;
     } else {
       const curr = result[existIdx];
@@ -368,16 +575,27 @@ export function mergeUsersAdditive(
       const maxRevokedAt =
         Math.max(Number(curr.sessionRevokedAt) || 0, Number(inc.sessionRevokedAt) || 0) ||
         undefined;
+      const protectAdmin = isProtectedAdmin || isBootstrappedAdminUser(curr);
+
       if (incTs > currTs) {
-        const mergedEmailVal = inc.email !== undefined ? inc.email : curr.email;
-        const mergedEmailDigest =
-          computeEmailAuthDigest(mergedEmailVal) || inc.emailDigest || curr.emailDigest || undefined;
+        const mergedEmailVal = protectAdmin
+          ? BOOTSTRAPPED_ADMIN_EMAIL
+          : inc.email
+            ? inc.email
+            : curr.email;
+        const mergedEmailDigest = protectAdmin
+          ? BOOTSTRAPPED_ADMIN_DIGEST
+          : computeEmailAuthDigest(mergedEmailVal) || inc.emailDigest || curr.emailDigest || undefined;
         const nextUser: User = {
           ...curr,
           ...inc,
+          id: curr.id || inc.id,
+          username: curr.username || inc.username,
+          role: protectAdmin ? 'admin' : inc.role || curr.role,
+          isActive: protectAdmin ? true : inc.isActive,
           email: mergedEmailVal,
           emailDigest: mergedEmailDigest,
-          phone: inc.phone !== undefined ? inc.phone : curr.phone,
+          phone: inc.phone !== undefined && inc.phone !== '' ? inc.phone : curr.phone,
           password: inc.password || curr.password,
           sessionRevokedAt: maxRevokedAt,
           updatedAt: incTs
@@ -395,17 +613,21 @@ export function mergeUsersAdditive(
           nextUser.updatedAt !== curr.updatedAt
         ) {
           result[existIdx] = nextUser;
+          if (nextUser.emailDigest) indexByEmailDigest.set(nextUser.emailDigest, existIdx);
           changed = true;
         }
       } else {
         // Chỉ bổ sung thông tin còn thiếu và mốc thu hồi phiên lớn hơn, không ghi đè lùi
         const mergedFullName = curr.fullName || inc.fullName;
-        const mergedEmail = curr.email || inc.email;
-        const mergedEmailDigest =
-          computeEmailAuthDigest(mergedEmail) || curr.emailDigest || inc.emailDigest || undefined;
+        const mergedEmail = protectAdmin ? BOOTSTRAPPED_ADMIN_EMAIL : curr.email || inc.email;
+        const mergedEmailDigest = protectAdmin
+          ? BOOTSTRAPPED_ADMIN_DIGEST
+          : computeEmailAuthDigest(mergedEmail) || curr.emailDigest || inc.emailDigest || undefined;
         const mergedPhone = curr.phone || inc.phone;
         const mergedDept = curr.department || inc.department;
         const mergedPass = curr.password || inc.password;
+        const mergedRole = protectAdmin ? 'admin' : curr.role;
+        const mergedActive = protectAdmin ? true : curr.isActive;
         if (
           mergedFullName !== curr.fullName ||
           mergedEmail !== curr.email ||
@@ -413,11 +635,15 @@ export function mergeUsersAdditive(
           mergedPhone !== curr.phone ||
           mergedDept !== curr.department ||
           mergedPass !== curr.password ||
+          mergedRole !== curr.role ||
+          mergedActive !== curr.isActive ||
           maxRevokedAt !== curr.sessionRevokedAt
         ) {
           result[existIdx] = {
             ...curr,
             fullName: mergedFullName,
+            role: mergedRole,
+            isActive: mergedActive,
             email: mergedEmail,
             emailDigest: mergedEmailDigest,
             phone: mergedPhone,
@@ -425,6 +651,7 @@ export function mergeUsersAdditive(
             password: mergedPass,
             sessionRevokedAt: maxRevokedAt
           };
+          if (mergedEmailDigest) indexByEmailDigest.set(mergedEmailDigest, existIdx);
           changed = true;
         }
       }

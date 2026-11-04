@@ -12,8 +12,8 @@ import {
 import {
   db,
   auth,
-  googleProvider,
-  signInWithPopup,
+  signInWithGooglePopup,
+  signOutAndPurgeFirebaseAuth,
   signOut,
   onAuthStateChanged,
   handleFirestoreError,
@@ -37,6 +37,7 @@ import {
   normKey,
   normUserKey,
   computeEmailAuthDigest,
+  resolveGoogleUserRecord,
   findMatchingUser,
   isPasswordMatch,
   isSessionHeartbeatFresh,
@@ -1680,64 +1681,149 @@ export const FirestoreSyncService = {
     if (kind === 'materials') cloudMaterialsDirty = true;
   },
 
+  getCurrentFirebaseUser(): FirebaseUser | null {
+    return auth.currentUser;
+  },
+
+  async authenticateGooglePopup(options?: {
+    forceSelectAccount?: boolean;
+    reuseExistingIfAvailable?: boolean;
+  }): Promise<{
+    success: boolean;
+    cloudReady: boolean;
+    fbUser?: FirebaseUser;
+    email?: string | null;
+    displayName?: string | null;
+    uid?: string | null;
+    message: string;
+  }> {
+    try {
+      let fbUser: FirebaseUser | null = null;
+      const shouldForcePicker = Boolean(options?.forceSelectAccount);
+      const canReuse =
+        Boolean(options?.reuseExistingIfAvailable) &&
+        !shouldForcePicker &&
+        Boolean(auth.currentUser && auth.currentUser.email);
+
+      if (canReuse && auth.currentUser) {
+        const validToken = await ensureValidFirebaseAuthToken(auth.currentUser);
+        if (validToken && auth.currentUser) {
+          fbUser = auth.currentUser;
+        }
+      }
+
+      if (!fbUser) {
+        emitCloudState({ status: 'connecting', errorMessage: null });
+        // Gọi signInWithGooglePopup trực tiếp không qua await mạng trung gian để Chrome không bao giờ chặn Popup
+        const cred = await signInWithGooglePopup(shouldForcePicker || !auth.currentUser);
+        fbUser = cred.user;
+      }
+
+      if (!fbUser || !fbUser.email) {
+        return {
+          success: false,
+          cloudReady: false,
+          message: 'Tài khoản Google không cung cấp địa chỉ email hợp lệ. Vui lòng chọn tài khoản Google khác.'
+        };
+      }
+
+      emitCloudState({
+        authReady: true,
+        cloudEmail: fbUser.email,
+        cloudDisplayName: fbUser.displayName || null,
+        cloudUid: fbUser.uid,
+        errorMessage: null
+      });
+
+      let cloudReady = false;
+      try {
+        const wsOk = await Promise.race<boolean>([
+          ensureWorkspaceReady(fbUser),
+          new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 4500))
+        ]);
+        if (wsOk) {
+          attachWorkspaceRealtimeListener();
+          emitCloudState({
+            authReady: true,
+            status: 'connected',
+            cloudEmail: fbUser.email,
+            cloudDisplayName: fbUser.displayName || null,
+            cloudUid: fbUser.uid,
+            errorMessage: null
+          });
+          cloudReady = true;
+        }
+      } catch (wsErr) {
+        console.warn('Firestore workspace init skipped during Google login (using server fallback):', wsErr);
+      }
+
+      return {
+        success: true,
+        cloudReady,
+        fbUser,
+        email: fbUser.email,
+        displayName: fbUser.displayName,
+        uid: fbUser.uid,
+        message: `Đã xác thực tài khoản Google (${fbUser.email}) thành công!`
+      };
+    } catch (err: any) {
+      const code = String(err?.code || '');
+      let msg = 'Không thể đăng nhập bằng tài khoản Google. Vui lòng thử lại.';
+      if (code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request') {
+        msg = 'Bạn đã đóng cửa sổ chọn tài khoản Google trước khi hoàn tất đăng nhập.';
+      } else if (code === 'auth/popup-blocked') {
+        msg =
+          'Trình duyệt đã chặn cửa sổ bật lên (Popup). Vui lòng cho phép Popup trên thanh địa chỉ trình duyệt rồi nhấn đăng nhập lại.';
+      } else if (code === 'auth/unauthorized-domain') {
+        const host = typeof window !== 'undefined' ? window.location.hostname : 'tên miền hiện tại';
+        msg = `Tên miền "${host}" chưa được thêm vào Authorized Domains trên Firebase Authentication. Vui lòng thêm "${host}" trong Firebase Console > Authentication > Settings > Authorized domains.`;
+      } else if (code === 'auth/network-request-failed') {
+        msg = 'Kết nối mạng bị gián đoạn khi xác thực với Google. Vui lòng kiểm tra mạng và thử lại.';
+      }
+      emitCloudState({
+        status: auth.currentUser ? 'connected' : 'disconnected',
+        errorMessage: code === 'auth/popup-closed-by-user' ? null : msg
+      });
+      return { success: false, cloudReady: false, message: msg };
+    }
+  },
+
   async connectGoogleAccount(): Promise<{
     success: boolean;
     email?: string | null;
     displayName?: string | null;
     message: string;
   }> {
-    try {
-      emitCloudState({ status: 'connecting', errorMessage: null });
-      const cred = await signInWithPopup(auth, googleProvider);
-      const fbUser = cred.user;
-      const ok = await ensureWorkspaceReady(fbUser);
-      if (!ok) {
-        return {
-          success: false,
-          message: currentState.errorMessage || 'Không thể kết nối không gian làm việc đám mây.'
-        };
-      }
-      attachWorkspaceRealtimeListener();
-      emitCloudState({
-        authReady: true,
-        status: 'connected',
-        cloudEmail: fbUser.email || null,
-        cloudDisplayName: fbUser.displayName || null,
-        cloudUid: fbUser.uid,
-        errorMessage: null
-      });
-      await this.reconcileWithCloud();
+    const authRes = await this.authenticateGooglePopup({
+      forceSelectAccount: true,
+      reuseExistingIfAvailable: false
+    });
+    if (!authRes.success) {
       return {
-        success: true,
-        email: fbUser.email,
-        displayName: fbUser.displayName,
-        message: `Đã kết nối đồng bộ đám mây (${fbUser.email || 'Google'}) thành công!`
+        success: false,
+        message: authRes.message
       };
-    } catch (err: any) {
-      const code = String(err?.code || '');
-      let msg = 'Không thể kết nối tài khoản Google Đám mây. Vui lòng thử lại.';
-      if (code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request') {
-        msg = 'Bạn đã đóng cửa sổ đăng nhập Google trước khi hoàn tất kết nối đám mây.';
-      } else if (code === 'auth/popup-blocked') {
-        msg = 'Trình duyệt đã chặn cửa sổ bật lên (Popup). Vui lòng cho phép Popup trên trang này rồi bấm lại.';
-      } else if (code === 'auth/unauthorized-domain') {
-        const host = typeof window !== 'undefined' ? window.location.hostname : 'tên miền hiện tại';
-        msg = `Tên miền "${host}" chưa được thêm vào Authorized Domains trên Firebase Authentication. Vui lòng thêm "${host}" trong Firebase Console > Authentication > Settings > Authorized domains.`;
-      }
-      emitCloudState({
-        status: auth.currentUser ? 'connected' : 'disconnected',
-        errorMessage: code === 'auth/popup-closed-by-user' ? null : msg
-      });
-      return { success: false, message: msg };
     }
+    if (authRes.cloudReady) {
+      await this.reconcileWithCloud();
+    }
+    return {
+      success: true,
+      email: authRes.email,
+      displayName: authRes.displayName,
+      message: authRes.cloudReady
+        ? `Đã kết nối đồng bộ đám mây (${authRes.email || 'Google'}) thành công!`
+        : `Đã xác thực Google (${authRes.email || 'Google'}) thành công!`
+    };
   },
 
   async disconnectGoogleAccount(): Promise<void> {
     detachAllListeners();
     workspaceReadyPromise = null;
     workspaceReadyUid = null;
-    await signOut(auth);
+    await signOutAndPurgeFirebaseAuth();
     emitCloudState({
+      authReady: true,
       status: 'disconnected',
       cloudEmail: null,
       cloudDisplayName: null,
@@ -2302,6 +2388,282 @@ export const FirestoreSyncService = {
       };
     } catch (err) {
       console.warn('Cloud login unavailable, falling back to server authentication:', err);
+      return { handled: false, success: false, message: '' };
+    }
+  },
+
+  async loginWithGoogleIdentityOnCloud(
+    fbUser: FirebaseUser,
+    deviceId: string,
+    deviceLabel: string,
+    forceLogoutOtherDevice: boolean
+  ): Promise<{
+    handled: boolean;
+    success: boolean;
+    conflict?: boolean;
+    locked?: boolean;
+    activeSession?: ActiveUserSession;
+    user?: User;
+    session?: ActiveUserSession;
+    replacedSession?: ActiveUserSession;
+    message: string;
+  }> {
+    try {
+      if (!fbUser || !fbUser.email || !fbUser.emailVerified) {
+        return { handled: false, success: false, message: '' };
+      }
+
+      const tokenOk = await ensureValidFirebaseAuthToken(fbUser);
+      if (!tokenOk) {
+        return { handled: false, success: false, message: '' };
+      }
+
+      const ok = await ensureWorkspaceReady(fbUser);
+      if (!ok) {
+        return { handled: false, success: false, message: '' };
+      }
+
+      const wsRef = doc(db, 'workspaces', WORKSPACE_ID);
+      const wsSnap = await safeGetDoc(wsRef, `workspaces/${WORKSPACE_ID}`);
+      if (wsSnap.exists()) {
+        await pullMetaFromCloud(wsSnap.data() as WorkspaceManifestDoc, fbUser);
+      }
+
+      const nowMs = Date.now();
+      const nowIso = new Date(nowMs).toISOString();
+      const resolved = resolveGoogleUserRecord(StorageService.getUsers(), {
+        email: fbUser.email,
+        displayName: fbUser.displayName,
+        uid: fbUser.uid,
+        nowMs
+      });
+
+      if (!resolved.allowed) {
+        return {
+          handled: true,
+          success: false,
+          locked: true,
+          user: resolved.user,
+          message:
+            resolved.message ||
+            'Tài khoản Google này hiện đang bị khóa hoặc ngừng kích hoạt bởi Quản trị viên.'
+        };
+      }
+
+      let matched = resolved.user;
+      if (resolved.isNew || resolved.mutated) {
+        matched = StorageService.upsertGoogleUser(matched);
+        cloudMetaDirty = true;
+      }
+
+      const userKey = normUserKey(matched.username);
+      const sessionDocId = makeSafeDocId('sess', userKey);
+      const sessPath = `workspaces/${WORKSPACE_ID}/sessions/${sessionDocId}`;
+      const sessRef = doc(db, 'workspaces', WORKSPACE_ID, 'sessions', sessionDocId);
+      const sessSnap = await safeGetDoc(sessRef, sessPath);
+
+      let prevActive: ActiveUserSession | undefined;
+      let prevIssued = 0;
+      let prevRevoked = Number(matched.sessionRevokedAt) || 0;
+
+      if (sessSnap.exists()) {
+        const d = sessSnap.data();
+        prevIssued = Number(d.issuedAtMs) || 0;
+        prevRevoked = Math.max(prevRevoked, Number(d.revokedBeforeMs) || 0);
+        const existingToken = String(d.sessionToken || '');
+        const hasToken = Boolean(existingToken) && !revokedCloudSessionTokens.has(existingToken);
+        const isFresh = isSessionHeartbeatFresh(nowMs, Number(d.lastSeenAt) || 0, ACTIVE_SESSION_TTL_MS);
+        if (hasToken && isFresh) {
+          prevActive = {
+            userId: String(d.userId || matched.id),
+            username: String(d.username || matched.username),
+            userKey,
+            sessionToken: existingToken,
+            issuedAtMs: prevIssued,
+            deviceId: String(d.deviceId || ''),
+            deviceLabel: String(d.deviceLabel || 'Thiết bị khác'),
+            loginAt: String(d.loginAt || nowIso),
+            lastSeenAt: Number(d.lastSeenAt) || nowMs
+          };
+        }
+      }
+
+      if (prevActive && prevActive.deviceId !== deviceId && !forceLogoutOtherDevice) {
+        return {
+          handled: true,
+          success: false,
+          conflict: true,
+          activeSession: prevActive,
+          user: matched,
+          message: `Tài khoản Google "${fbUser.email}" hiện đang mở trên ${prevActive.deviceLabel || 'thiết bị khác'}. Nhấn nút bên dưới để đăng xuất thiết bị kia và tiếp tục vào hệ thống.`
+        };
+      }
+
+      if (prevActive?.sessionToken) {
+        rememberRevokedCloudToken(prevActive.sessionToken);
+      }
+
+      const monotonicIssued = Math.max(nowMs, prevIssued + 2, prevRevoked + 2);
+      const newToken = `cloud.${monotonicIssued}.${Math.random().toString(36).slice(2, 12)}`;
+      const nextRevokedBefore = forceLogoutOtherDevice ? monotonicIssued - 1 : prevRevoked;
+
+      const newSession: ActiveUserSession = {
+        userId: matched.id,
+        username: matched.username,
+        userKey,
+        sessionToken: newToken,
+        issuedAtMs: monotonicIssued,
+        deviceId,
+        deviceLabel,
+        loginAt: nowIso,
+        lastSeenAt: nowMs
+      };
+
+      await writeSingleProtectedDoc(
+        sessRef,
+        sessPath,
+        {
+          workspaceId: WORKSPACE_ID,
+          sessionDocId,
+          userKey: cleanStr(userKey, 160, 'user')
+        },
+        {
+          userId: cleanStr(matched.id, 160, 'user-0'),
+          username: cleanStr(matched.username, 160, 'user'),
+          sessionToken: newToken,
+          issuedAtMs: monotonicIssued,
+          deviceId: cleanStr(deviceId, 160, ''),
+          deviceLabel: cleanStr(deviceLabel, 200, 'Thiết bị Web'),
+          loginAt: nowIso,
+          lastSeenAt: nowMs,
+          revokedBeforeMs: cleanNum(nextRevokedBefore, 0),
+          forceLogoutDeviceLabel: forceLogoutOtherDevice ? cleanStr(deviceLabel, 200, '') : '',
+          forceLogoutAt: forceLogoutOtherDevice ? nowIso : ''
+        }
+      );
+
+      const nextUserUpdatedAt = Math.max(nowMs, (Number(matched.updatedAt) || 0) + 1);
+      const updatedFromStore =
+        StorageService.updateUser(matched.id, {
+          email: fbUser.email.trim().toLowerCase(),
+          lastLogin: nowIso,
+          sessionRevokedAt: forceLogoutOtherDevice
+            ? Math.max(Number(matched.sessionRevokedAt) || 0, nextRevokedBefore)
+            : matched.sessionRevokedAt,
+          updatedAt: nextUserUpdatedAt
+        }) || {
+          ...matched,
+          email: fbUser.email.trim().toLowerCase(),
+          lastLogin: nowIso,
+          updatedAt: nextUserUpdatedAt
+        };
+
+      cloudMetaDirty = true;
+      emitCloudState({ status: 'connected', errorMessage: null });
+      this.watchActiveSession(userKey);
+      void this.reconcileWithCloud();
+
+      return {
+        handled: true,
+        success: true,
+        user: updatedFromStore,
+        session: newSession,
+        replacedSession: prevActive && prevActive.deviceId !== deviceId ? prevActive : undefined,
+        message: `Đăng nhập thành công với ${fbUser.email}!`
+      };
+    } catch (err) {
+      console.warn('Cloud Google identity login deferred to server fallback:', err);
+      return { handled: false, success: false, message: '' };
+    }
+  },
+
+  async requestLogoutOtherDeviceByGoogleWithCloud(
+    fbUser: FirebaseUser,
+    deviceLabel: string
+  ): Promise<{ handled: boolean; success: boolean; message: string }> {
+    try {
+      if (!fbUser || !fbUser.email || !fbUser.emailVerified) {
+        return { handled: false, success: false, message: '' };
+      }
+      const tokenOk = await ensureValidFirebaseAuthToken(fbUser);
+      if (!tokenOk) return { handled: false, success: false, message: '' };
+
+      const ok = await ensureWorkspaceReady(fbUser);
+      if (!ok) return { handled: false, success: false, message: '' };
+
+      const wsRef = doc(db, 'workspaces', WORKSPACE_ID);
+      const wsSnap = await safeGetDoc(wsRef, `workspaces/${WORKSPACE_ID}`);
+      if (wsSnap.exists()) {
+        await pullMetaFromCloud(wsSnap.data() as WorkspaceManifestDoc, fbUser);
+      }
+
+      const resolved = resolveGoogleUserRecord(StorageService.getUsers(), {
+        email: fbUser.email,
+        displayName: fbUser.displayName,
+        uid: fbUser.uid
+      });
+      if (!resolved.allowed) {
+        return {
+          handled: true,
+          success: false,
+          message: resolved.message || 'Tài khoản Google này đang bị khóa.'
+        };
+      }
+
+      const matched = resolved.user;
+      const userKey = normUserKey(matched.username);
+      const sessionDocId = makeSafeDocId('sess', userKey);
+      const sessPath = `workspaces/${WORKSPACE_ID}/sessions/${sessionDocId}`;
+      const sessRef = doc(db, 'workspaces', WORKSPACE_ID, 'sessions', sessionDocId);
+      const prevSnap = await safeGetDoc(sessRef, sessPath);
+      const prev = prevSnap.exists() ? prevSnap.data() : null;
+      if (prev?.sessionToken) {
+        rememberRevokedCloudToken(String(prev.sessionToken));
+      }
+      const nowMs = Date.now();
+      const nowIso = new Date(nowMs).toISOString();
+      const revokeMark = Math.max(
+        nowMs,
+        Number(matched.sessionRevokedAt) || 0,
+        Number(prev?.issuedAtMs) || 0,
+        Number(prev?.revokedBeforeMs) || 0
+      );
+
+      await writeSingleProtectedDoc(
+        sessRef,
+        sessPath,
+        {
+          workspaceId: WORKSPACE_ID,
+          sessionDocId,
+          userKey: cleanStr(userKey, 160, 'user')
+        },
+        {
+          userId: cleanStr(matched.id, 160, 'user-0'),
+          username: cleanStr(matched.username, 160, 'user'),
+          sessionToken: '',
+          issuedAtMs: revokeMark,
+          deviceId: '',
+          deviceLabel: '',
+          loginAt: '',
+          lastSeenAt: 0,
+          revokedBeforeMs: revokeMark,
+          forceLogoutDeviceLabel: cleanStr(deviceLabel, 200, 'Thiết bị khác'),
+          forceLogoutAt: nowIso
+        }
+      );
+
+      if (!resolved.isNew) {
+        StorageService.updateUser(matched.id, { sessionRevokedAt: revokeMark });
+      }
+      void this.reconcileWithCloud();
+
+      return {
+        handled: true,
+        success: true,
+        message: 'Đã đăng xuất phiên trên thiết bị kia thành công! Bạn có thể tiếp tục đăng nhập ngay.'
+      };
+    } catch (err) {
+      console.warn('Cloud Google remote logout fallback to server:', err);
       return { handled: false, success: false, message: '' };
     }
   },

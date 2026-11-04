@@ -3,7 +3,6 @@ import { useAuth } from '../../context/AuthContext';
 import { SyncService } from '../../services/syncService';
 import {
   Boxes,
-  KeyRound,
   LogOut,
   RefreshCw,
   ShieldCheck,
@@ -18,7 +17,6 @@ import {
   X
 } from 'lucide-react';
 import { LoginModal } from '../auth/LoginModal';
-import { ChangePasswordModal } from '../auth/ChangePasswordModal';
 
 interface NavbarProps {
   onOpenMobileMenu?: () => void;
@@ -29,13 +27,12 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenMobileMenu }) => {
     currentUser,
     cloudState,
     connectCloudSync,
-    disconnectCloudSync,
+    switchGoogleAccount,
     logout,
     forceLogoutOtherDevicesFromCurrent,
     isAdmin
   } = useAuth();
   const [isLoginModalOpen, setIsLoginModalOpen] = useState(false);
-  const [isChangePassModalOpen, setIsChangePassModalOpen] = useState(false);
   const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
   const [isConnectingCloud, setIsConnectingCloud] = useState(false);
@@ -75,28 +72,25 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenMobileMenu }) => {
     }
   };
 
-  const handleSwitchCloudAccount = async () => {
+  const handleSwitchGoogleAccount = async () => {
     setIsUserMenuOpen(false);
     setIsConnectingCloud(true);
     try {
-      await disconnectCloudSync();
-      const res = await connectCloudSync();
-      setRemoteLogoutNotice({
-        success: res.success,
-        message: res.message
-      });
+      const res = await switchGoogleAccount();
+      if (!res.success && res.message) {
+        setRemoteLogoutNotice({
+          success: false,
+          message: res.message
+        });
+      } else if (res.success) {
+        setRemoteLogoutNotice({
+          success: true,
+          message: res.message
+        });
+      }
     } finally {
       setIsConnectingCloud(false);
     }
-  };
-
-  const handleDisconnectCloud = async () => {
-    setIsUserMenuOpen(false);
-    await disconnectCloudSync();
-    setRemoteLogoutNotice({
-      success: true,
-      message: 'Đã ngắt kết nối Đám mây Google trên trình duyệt này.'
-    });
   };
 
   const handleForceLogoutOtherDevices = async () => {
@@ -109,6 +103,14 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenMobileMenu }) => {
       setIsForcingRemoteLogout(false);
     }
   };
+
+  const handleLogout = async () => {
+    setIsUserMenuOpen(false);
+    await logout();
+  };
+
+  const displayEmail =
+    currentUser?.email || cloudState.cloudEmail || (currentUser ? `@${currentUser.username}` : '');
 
   return (
     <>
@@ -148,23 +150,23 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenMobileMenu }) => {
                 type="button"
                 onClick={handleManualSync}
                 disabled={isSyncing}
-                title={`Đã kết nối Đám mây (${cloudState.cloudEmail || 'Google'}) — Bấm để đồng bộ ngay`}
+                title={`Đã đồng bộ Google Cloud (${cloudState.cloudEmail || displayEmail}) — Bấm để đồng bộ ngay`}
                 className="min-h-[40px] flex items-center justify-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-xl text-xs font-semibold text-emerald-200 hover:text-white bg-emerald-950/70 hover:bg-emerald-900/70 border border-emerald-700/60 transition disabled:opacity-70 shrink-0"
               >
                 <Cloud className="w-4 h-4 text-emerald-400 shrink-0" />
-                <span className="hidden md:inline">Đám mây</span>
+                <span className="hidden md:inline">Google Cloud</span>
               </button>
             ) : (
               <button
                 type="button"
                 onClick={handleConnectCloud}
                 disabled={isConnectingCloud}
-                title="Bấm để kết nối Đám mây Google — Tự động đồng bộ dữ liệu thời gian thực giữa Điện thoại & Máy tính"
+                title="Bấm để kết nối lại Google Cloud đồng bộ thời gian thực"
                 className="min-h-[40px] flex items-center justify-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-xl text-xs font-bold text-amber-200 hover:text-white bg-amber-950/80 hover:bg-amber-900/80 border border-amber-600/70 transition disabled:opacity-70 shrink-0"
               >
                 <CloudOff className="w-4 h-4 text-amber-400 shrink-0" />
                 <span className="hidden sm:inline">
-                  {isConnectingCloud ? 'Đang kết nối...' : 'Kết nối Đám mây'}
+                  {isConnectingCloud ? 'Đang kết nối...' : 'Đồng bộ Cloud'}
                 </span>
               </button>
             )}
@@ -176,7 +178,9 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenMobileMenu }) => {
               title="Đồng bộ cộng gộp dữ liệu mới nhất giữa các thiết bị"
               className="min-h-[40px] min-w-[40px] flex items-center justify-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-xl text-xs font-semibold text-slate-200 hover:text-white bg-slate-800 hover:bg-slate-700 border border-slate-700 transition disabled:opacity-70 shrink-0"
             >
-              <RefreshCw className={`w-4 h-4 text-emerald-400 shrink-0 ${isSyncing ? 'animate-spin' : ''}`} />
+              <RefreshCw
+                className={`w-4 h-4 text-emerald-400 shrink-0 ${isSyncing ? 'animate-spin' : ''}`}
+              />
               <span className="hidden sm:inline">{isSyncing ? 'Đang đồng bộ...' : 'Đồng Bộ'}</span>
             </button>
 
@@ -192,15 +196,15 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenMobileMenu }) => {
                       isAdmin ? 'bg-rose-600 text-white' : 'bg-blue-600 text-white'
                     }`}
                   >
-                    {currentUser.username.slice(0, 2).toUpperCase()}
+                    {currentUser.fullName.slice(0, 2).toUpperCase()}
                   </div>
                   <div className="hidden md:block">
                     <div className="text-xs font-semibold text-white flex items-center gap-1">
                       <span className="max-w-[160px] truncate">{currentUser.fullName}</span>
                       {isAdmin && <ShieldCheck className="w-3.5 h-3.5 text-rose-400 shrink-0" />}
                     </div>
-                    <div className="text-[10px] text-slate-400">
-                      {isAdmin ? 'Quản trị viên (Admin)' : 'Nhân viên kho'}
+                    <div className="text-[10px] text-slate-400 max-w-[170px] truncate">
+                      {displayEmail}
                     </div>
                   </div>
                   <ChevronDown className="w-3.5 h-3.5 text-slate-400 mr-0.5 sm:mr-0" />
@@ -214,65 +218,28 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenMobileMenu }) => {
                     />
                     <div className="absolute right-0 mt-2 w-72 max-w-[calc(100vw-1.5rem)] bg-white rounded-2xl shadow-xl border border-slate-200 py-1.5 text-slate-700 text-xs z-50">
                       <div className="px-4 py-2.5 border-b border-slate-100 bg-slate-50">
-                        <div className="font-bold text-slate-900 truncate">{currentUser.fullName}</div>
-                        <div className="text-[11px] text-slate-500 font-mono truncate">@{currentUser.username}</div>
-                        {cloudState.status === 'connected' ? (
-                          <div className="mt-1.5 flex items-center gap-1.5 text-[11px] text-emerald-700 font-medium truncate">
-                            <Cloud className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
-                            <span className="truncate">Đám mây: {cloudState.cloudEmail}</span>
-                          </div>
-                        ) : (
-                          <div className="mt-1.5 flex items-center gap-1.5 text-[11px] text-amber-700 font-medium">
-                            <CloudOff className="w-3.5 h-3.5 text-amber-600 shrink-0" />
-                            <span>Chưa kết nối Đám mây Google</span>
-                          </div>
-                        )}
+                        <div className="font-bold text-slate-900 truncate">
+                          {currentUser.fullName}
+                        </div>
+                        <div className="text-[11px] text-blue-700 font-mono truncate">
+                          {displayEmail}
+                        </div>
+                        <div className="mt-1 flex items-center gap-1.5 text-[11px] text-emerald-700 font-medium">
+                          <ShieldCheck className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                          <span>
+                            {isAdmin ? 'Quản trị viên chính (Admin)' : 'Tài khoản Google đồng bộ'}
+                          </span>
+                        </div>
                       </div>
-
-                      {cloudState.status === 'connected' ? (
-                        <>
-                          <button
-                            type="button"
-                            onClick={handleSwitchCloudAccount}
-                            disabled={isConnectingCloud}
-                            className="w-full min-h-[42px] px-4 py-2 text-left hover:bg-emerald-50 text-emerald-800 flex items-center gap-2.5 font-medium"
-                          >
-                            <Cloud className="w-4 h-4 text-emerald-600 shrink-0" />
-                            <span>Đổi tài khoản Google Đám mây</span>
-                          </button>
-                          <button
-                            type="button"
-                            onClick={handleDisconnectCloud}
-                            className="w-full min-h-[40px] px-4 py-2 text-left hover:bg-slate-50 text-slate-600 flex items-center gap-2.5"
-                          >
-                            <CloudOff className="w-4 h-4 text-slate-400 shrink-0" />
-                            <span>Ngắt kết nối Đám mây trên máy này</span>
-                          </button>
-                        </>
-                      ) : (
-                        <button
-                          type="button"
-                          onClick={handleConnectCloud}
-                          disabled={isConnectingCloud}
-                          className="w-full min-h-[44px] px-4 py-2.5 text-left bg-amber-50/70 hover:bg-amber-100/80 text-amber-900 flex items-center gap-2.5 font-semibold"
-                        >
-                          <Cloud className="w-4 h-4 text-amber-600 shrink-0" />
-                          <span>Kết nối Đám mây Google (Đồng bộ Đa Thiết Bị)</span>
-                        </button>
-                      )}
-
-                      <div className="border-t border-slate-100 my-1" />
 
                       <button
                         type="button"
-                        onClick={() => {
-                          setIsUserMenuOpen(false);
-                          setIsChangePassModalOpen(true);
-                        }}
-                        className="w-full min-h-[44px] px-4 py-2.5 text-left hover:bg-slate-50 flex items-center gap-2.5"
+                        onClick={handleSwitchGoogleAccount}
+                        disabled={isConnectingCloud}
+                        className="w-full min-h-[44px] px-4 py-2.5 text-left hover:bg-blue-50 text-blue-700 flex items-center gap-2.5 font-semibold disabled:opacity-60"
                       >
-                        <KeyRound className="w-4 h-4 text-slate-500 shrink-0" />
-                        <span>Đổi mật khẩu cá nhân</span>
+                        <LogIn className="w-4 h-4 shrink-0" />
+                        <span>Đổi tài khoản Google khác</span>
                       </button>
 
                       <button
@@ -289,25 +256,10 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenMobileMenu }) => {
                         </span>
                       </button>
 
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setIsUserMenuOpen(false);
-                          logout();
-                        }}
-                        className="w-full min-h-[44px] px-4 py-2.5 text-left hover:bg-slate-50 flex items-center gap-2.5 text-blue-700"
-                      >
-                        <LogIn className="w-4 h-4 shrink-0" />
-                        <span>Đăng nhập tài khoản khác</span>
-                      </button>
-
                       <div className="border-t border-slate-100 mt-1 pt-1">
                         <button
                           type="button"
-                          onClick={() => {
-                            setIsUserMenuOpen(false);
-                            logout();
-                          }}
+                          onClick={handleLogout}
                           className="w-full min-h-[44px] px-4 py-2.5 text-left hover:bg-rose-50 text-rose-600 flex items-center gap-2.5 font-semibold"
                         >
                           <LogOut className="w-4 h-4 shrink-0" />
@@ -325,7 +277,7 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenMobileMenu }) => {
                 className="min-h-[40px] flex items-center gap-1.5 px-3.5 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-semibold shadow-md transition shrink-0"
               >
                 <LogIn className="w-4 h-4" />
-                <span>Đăng Nhập</span>
+                <span>Đăng Nhập Google</span>
               </button>
             )}
           </div>
@@ -359,15 +311,7 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenMobileMenu }) => {
         )}
       </header>
 
-      <LoginModal
-        isOpen={isLoginModalOpen}
-        onClose={() => setIsLoginModalOpen(false)}
-      />
-
-      <ChangePasswordModal
-        isOpen={isChangePassModalOpen}
-        onClose={() => setIsChangePassModalOpen(false)}
-      />
+      <LoginModal isOpen={isLoginModalOpen} onClose={() => setIsLoginModalOpen(false)} />
     </>
   );
 };

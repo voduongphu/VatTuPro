@@ -3,23 +3,18 @@ import { useAuth } from '../../context/AuthContext';
 import type { ActiveUserSession } from '../../types/inventory';
 import {
   Boxes,
-  Lock,
   User,
   ShieldCheck,
   ShieldAlert,
   AlertCircle,
   AlertTriangle,
   CheckCircle2,
-  Eye,
-  EyeOff,
-  ArrowRight,
   Warehouse,
   Layers,
   MonitorSmartphone,
   LogOut,
   Clock,
   Cloud,
-  CloudOff,
   RefreshCw,
   X
 } from 'lucide-react';
@@ -41,13 +36,32 @@ function formatKickTime(iso?: string): string {
   }
 }
 
+const GoogleLogoIcon: React.FC<{ className?: string }> = ({ className = 'w-5 h-5' }) => (
+  <svg className={className} viewBox="0 0 24 24" aria-hidden="true">
+    <path
+      fill="#EA4335"
+      d="M12 10.2v3.9h5.5c-.2 1.3-1.5 3.8-5.5 3.8-3.3 0-6-2.7-6-6.1s2.7-6.1 6-6.1c1.9 0 3.2.8 3.9 1.5l2.7-2.6C16.9 3 14.7 2 12 2 6.5 2 2 6.5 2 12s4.5 10 10 10c5.8 0 9.6-4.1 9.6-9.8 0-.7-.1-1.2-.2-1.8H12z"
+    />
+    <path
+      fill="#34A853"
+      d="M3.2 7.3l3.2 2.4c.9-2.4 3.1-4 5.6-4 1.9 0 3.2.8 3.9 1.5l2.7-2.6C16.9 3 14.7 2 12 2 8.1 2 4.8 4.2 3.2 7.3z"
+    />
+    <path
+      fill="#FBBC05"
+      d="M12 22c2.6 0 4.8-.9 6.4-2.4l-3-2.4c-.8.6-1.9 1-3.4 1-2.6 0-4.8-1.7-5.6-4.1l-3.2 2.5C4.8 19.8 8.1 22 12 22z"
+    />
+    <path
+      fill="#4285F4"
+      d="M21.6 12.2c0-.7-.1-1.2-.2-1.8H12v3.9h5.5c-.3 1.3-1.1 2.4-2.1 3.1l3 2.4c1.8-1.6 3.2-4.1 3.2-7.6z"
+    />
+  </svg>
+);
+
 export const LoginScreen: React.FC = () => {
   const {
-    login,
     loginWithGoogle,
-    connectCloudSync,
+    requestLogoutOtherDeviceWithGoogle,
     cloudState,
-    requestLogoutOtherDevice,
     resetBrowserAuthState,
     sessionKickNotice,
     sessionKickAlert,
@@ -55,205 +69,53 @@ export const LoginScreen: React.FC = () => {
     acknowledgeKickModal,
     clearSessionKickNotice
   } = useAuth();
-  const [username, setUsername] = useState('');
-  const [password, setPassword] = useState('');
-  const [showPassword, setShowPassword] = useState(false);
+
   const [errorMessage, setErrorMessage] = useState('');
-  const [needsCloudConnect, setNeedsCloudConnect] = useState(false);
   const [successMessage, setSuccessMessage] = useState('');
   const [conflictSession, setConflictSession] = useState<ActiveUserSession | null>(null);
   const [conflictMessage, setConflictMessage] = useState('');
-  const [conflictViaGoogle, setConflictViaGoogle] = useState(false);
-  const [isLoading, setIsLoading] = useState(false);
-  const [isCloudConnecting, setIsCloudConnecting] = useState(false);
+  const [isAuthenticating, setIsAuthenticating] = useState(false);
   const [isRequestingRemoteLogout, setIsRequestingRemoteLogout] = useState(false);
-  const [isResettingCookies, setIsResettingCookies] = useState(false);
+  const [isResettingSession, setIsResettingSession] = useState(false);
 
-  const handleAcknowledgeModal = () => {
-    if (!username.trim() && sessionKickAlert?.username) {
-      setUsername(sessionKickAlert.username);
-    }
-    acknowledgeKickModal();
-  };
-
-  const validateInputs = (): boolean => {
-    if (!username.trim()) {
-      setErrorMessage('Vui lòng nhập tên người sử dụng.');
-      return false;
-    }
-    if (!password) {
-      setErrorMessage('Vui lòng nhập mật khẩu đăng nhập.');
-      return false;
-    }
-    return true;
-  };
-
-  const handleConnectCloudOnly = async () => {
+  const handleGoogleSignIn = async (
+    forceLogoutOtherDevice = false,
+    forceSelectAccount = true,
+    reuseExistingAccount = false
+  ) => {
     setErrorMessage('');
-    setNeedsCloudConnect(false);
-    setSuccessMessage('');
-    clearSessionKickNotice();
-    setIsCloudConnecting(true);
-    try {
-      const res = await connectCloudSync();
-      if (res.success) {
-        setSuccessMessage(res.message);
-      } else {
-        setErrorMessage(res.message);
-      }
-    } finally {
-      setIsCloudConnecting(false);
-    }
-  };
-
-  const handleConnectCloudAndAutoLogin = async () => {
-    setErrorMessage('');
-    setNeedsCloudConnect(false);
-    setSuccessMessage('');
-    setConflictSession(null);
-    setConflictMessage('');
-    setConflictViaGoogle(false);
-    clearSessionKickNotice();
-    setIsCloudConnecting(true);
-    try {
-      const cloudRes = await connectCloudSync();
-      if (!cloudRes.success) {
-        setErrorMessage(cloudRes.message);
-        return;
-      }
-      if (username.trim() && password) {
-        const loginRes = await login(username.trim(), password, false);
-        if (loginRes.success) {
-          setSuccessMessage(
-            'Đã đồng bộ Đám mây và đăng nhập thành công! Đang chuyển vào hệ thống...'
-          );
-          return;
-        }
-        if (loginRes.conflict) {
-          setConflictViaGoogle(false);
-          setConflictSession(loginRes.activeSession || null);
-          setConflictMessage(loginRes.message);
-          return;
-        }
-        setNeedsCloudConnect(Boolean(loginRes.needsCloudConnect));
-        setErrorMessage(loginRes.message);
-      } else {
-        setSuccessMessage(cloudRes.message);
-      }
-    } finally {
-      setIsCloudConnecting(false);
-    }
-  };
-
-  const handleGoogleLogin = async (forceLogoutOtherDevice = false, forceSelectAccount = false) => {
-    setErrorMessage('');
-    setNeedsCloudConnect(false);
     setSuccessMessage('');
     if (!forceLogoutOtherDevice) {
       setConflictSession(null);
       setConflictMessage('');
-      setConflictViaGoogle(false);
     }
     clearSessionKickNotice();
-    setIsCloudConnecting(true);
+    setIsAuthenticating(true);
     try {
-      const res = await loginWithGoogle(forceLogoutOtherDevice, forceSelectAccount);
+      const res = await loginWithGoogle(
+        forceLogoutOtherDevice,
+        forceSelectAccount,
+        reuseExistingAccount
+      );
       if (res.success) {
         setConflictSession(null);
         setConflictMessage('');
-        setConflictViaGoogle(false);
-        setSuccessMessage(res.message || 'Đăng nhập thành công! Đang chuyển vào hệ thống...');
-      } else if (res.cloudConnectedOnly) {
-        setSuccessMessage(res.message);
+        setSuccessMessage(res.message || 'Đăng nhập Google thành công! Đang chuyển vào hệ thống...');
       } else if (res.conflict) {
-        if (res.matchedUsername) {
-          setUsername(res.matchedUsername);
-        }
-        setConflictViaGoogle(true);
         setConflictSession(res.activeSession || null);
         setConflictMessage(res.message);
       } else {
         setErrorMessage(res.message);
       }
     } finally {
-      setIsCloudConnecting(false);
+      setIsAuthenticating(false);
     }
   };
 
-  const handleSwitchGoogleAccount = async () => {
-    await handleGoogleLogin(false, true);
-  };
-
-  const handleResetBrowserCookies = async () => {
-    setErrorMessage('');
-    setNeedsCloudConnect(false);
-    setSuccessMessage('');
-    setConflictSession(null);
-    setConflictMessage('');
-    setConflictViaGoogle(false);
-    clearSessionKickNotice();
-    setIsResettingCookies(true);
-    try {
-      const res = await resetBrowserAuthState();
-      setSuccessMessage(res.message);
-    } finally {
-      setIsResettingCookies(false);
-    }
-  };
-
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setErrorMessage('');
-    setNeedsCloudConnect(false);
-    setSuccessMessage('');
-    setConflictSession(null);
-    setConflictMessage('');
-    setConflictViaGoogle(false);
-    clearSessionKickNotice();
-
-    if (!validateInputs()) return;
-
-    setIsLoading(true);
-    try {
-      const res = await login(username.normalize('NFC').trim(), password, false);
-      if (res.success) {
-        setSuccessMessage('Đăng nhập thành công! Đang chuyển vào hệ thống...');
-      } else if (res.conflict) {
-        setConflictViaGoogle(false);
-        setConflictSession(res.activeSession || null);
-        setConflictMessage(res.message);
-      } else {
-        setNeedsCloudConnect(Boolean(res.needsCloudConnect));
-        setErrorMessage(res.message);
-      }
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const handleForceLogoutAndLogin = async () => {
-    if (conflictViaGoogle && !password) {
-      await handleGoogleLogin(true);
-      return;
-    }
-
-    setErrorMessage('');
-    setSuccessMessage('');
-    clearSessionKickNotice();
-
-    if (!validateInputs()) return;
-
+  const handleForceLogoutAndContinue = async () => {
     setIsRequestingRemoteLogout(true);
     try {
-      const res = await login(username.trim(), password, true);
-      if (res.success) {
-        setConflictSession(null);
-        setConflictMessage('');
-        setConflictViaGoogle(false);
-        setSuccessMessage(res.message || 'Đã đăng xuất thiết bị kia và đăng nhập thành công!');
-      } else {
-        setErrorMessage(res.message);
-      }
+      await handleGoogleSignIn(true, false, true);
     } finally {
       setIsRequestingRemoteLogout(false);
     }
@@ -263,16 +125,12 @@ export const LoginScreen: React.FC = () => {
     setErrorMessage('');
     setSuccessMessage('');
     clearSessionKickNotice();
-
-    if (!validateInputs()) return;
-
     setIsRequestingRemoteLogout(true);
     try {
-      const res = await requestLogoutOtherDevice(username.trim(), password);
+      const res = await requestLogoutOtherDeviceWithGoogle();
       if (res.success) {
         setConflictSession(null);
         setConflictMessage('');
-        setConflictViaGoogle(false);
         setSuccessMessage(res.message);
       } else {
         setErrorMessage(res.message);
@@ -282,13 +140,31 @@ export const LoginScreen: React.FC = () => {
     }
   };
 
+  const handleResetBrowserSession = async () => {
+    setErrorMessage('');
+    setSuccessMessage('');
+    setConflictSession(null);
+    setConflictMessage('');
+    clearSessionKickNotice();
+    setIsResettingSession(true);
+    try {
+      const res = await resetBrowserAuthState();
+      setSuccessMessage(res.message);
+    } finally {
+      setIsResettingSession(false);
+    }
+  };
+
+  const activeGoogleEmail = (cloudState.cloudEmail || '').trim();
+  const isBusy = isAuthenticating || isRequestingRemoteLogout || isResettingSession;
+
   return (
     <div className="min-h-dvh w-full bg-slate-950 overflow-x-auto overflow-y-auto relative font-sans">
       <div className="fixed inset-0 bg-[radial-gradient(ellipse_80%_80%_at_50%_-20%,rgba(37,99,235,0.22),rgba(255,255,255,0))] pointer-events-none" />
 
       <div className="min-h-dvh w-full flex p-3 sm:p-6 lg:p-8">
         <div className="m-auto w-full max-w-6xl bg-slate-900 border border-slate-800/90 rounded-2xl sm:rounded-3xl shadow-2xl shadow-black/60 overflow-hidden grid grid-cols-1 lg:grid-cols-12 relative z-10">
-          {/* Form Đăng Nhập: Ưu tiên hiển thị ngay đầu tiên trên điện thoại (order-1), nằm bên phải trên máy tính (lg:order-2) */}
+          {/* Cột Đăng Nhập Google: Ưu tiên hiển thị đầu tiên trên điện thoại (order-1), nằm bên phải trên máy tính (lg:order-2) */}
           <div className="order-1 lg:order-2 lg:col-span-7 p-5 sm:p-10 lg:p-12 bg-slate-900 flex flex-col justify-center">
             <div className="max-w-md mx-auto w-full space-y-5 sm:space-y-6">
               {/* Compact Brand Lockup chỉ hiện trên điện thoại/tablet */}
@@ -306,119 +182,28 @@ export const LoginScreen: React.FC = () => {
                 </div>
               </div>
 
-              {/* Title */}
+              {/* Tiêu đề */}
               <div>
                 <div className="flex items-center gap-1.5 text-blue-400 text-xs font-semibold mb-1.5">
                   <ShieldCheck className="w-4 h-4 shrink-0" />
-                  <span>Xác thực tài khoản người sử dụng</span>
+                  <span>Xác thực đồng bộ bằng Google Cloud</span>
                 </div>
                 <h2 className="text-xl sm:text-2xl font-bold text-white tracking-tight">
-                  Đăng Nhập Hệ Thống
+                  Đăng Nhập Bằng Google
                 </h2>
-                <p className="text-xs text-slate-400 mt-1 leading-relaxed">
-                  Nhập tên người sử dụng và mật khẩu đăng nhập đã được cấp. Mỗi tài khoản chỉ hoạt động trên 1 thiết bị tại một thời điểm.
+                <p className="text-xs sm:text-sm text-slate-400 mt-1.5 leading-relaxed">
+                  Đăng nhập trực tiếp bằng tài khoản Google (Gmail) để vào hệ thống và tự động đồng bộ dữ liệu thời gian thực giữa Máy tính và Điện thoại.
                 </p>
               </div>
-
-              {/* Khối Trạng Thái Đồng Bộ Đám Mây Đa Thiết Bị (Firebase Cloud Firestore) */}
-              {cloudState.status === 'connected' ? (
-                <div className="p-3.5 bg-emerald-950/60 border border-emerald-700/60 rounded-2xl text-xs space-y-2.5">
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="flex items-start gap-2.5 min-w-0">
-                      <Cloud className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
-                      <div className="min-w-0">
-                        <div className="font-bold text-emerald-300">
-                          Đã kết nối Đám mây Đa Thiết Bị
-                        </div>
-                        <div className="text-[11px] text-emerald-100/80 truncate">
-                          {cloudState.cloudEmail || 'Google Cloud Firestore'} • Tự động đồng bộ thời gian thực
-                        </div>
-                      </div>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={handleSwitchGoogleAccount}
-                      disabled={isCloudConnecting || isLoading}
-                      className="px-2.5 py-1 rounded-lg bg-slate-900/80 hover:bg-slate-800 border border-emerald-700/50 text-[11px] font-semibold text-emerald-200 transition shrink-0 disabled:opacity-60"
-                    >
-                      Đổi Google
-                    </button>
-                  </div>
-
-                  <button
-                    type="button"
-                    onClick={() => handleGoogleLogin(false)}
-                    disabled={isCloudConnecting || isLoading}
-                    className="w-full min-h-[40px] px-3 py-2 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs rounded-xl transition flex items-center justify-center gap-2 disabled:opacity-60"
-                  >
-                    {isCloudConnecting ? (
-                      <>
-                        <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                        <span>Đang đồng bộ & đăng nhập...</span>
-                      </>
-                    ) : (
-                      <>
-                        <ShieldCheck className="w-4 h-4 shrink-0" />
-                        <span>Đăng nhập nhanh bằng tài khoản Google này</span>
-                      </>
-                    )}
-                  </button>
-
-                  <div className="text-[11px] text-emerald-100/80 leading-relaxed pt-0.5 border-t border-emerald-800/50">
-                    Mọi tài khoản nhân sự (Admin, Quản lý kho, Thủ kho...) đều có thể đăng nhập bằng <strong>Tên người sử dụng &amp; Mật khẩu</strong> bên dưới.
-                  </div>
-                </div>
-              ) : (
-                <div className="p-3.5 bg-blue-950/50 border border-blue-700/50 rounded-2xl text-xs space-y-2.5">
-                  <div className="flex items-start gap-2.5">
-                    <CloudOff className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
-                    <div className="leading-relaxed">
-                      <div className="font-bold text-blue-200">
-                        Kết nối Đám mây để đồng bộ giữa Điện thoại & Máy tính
-                      </div>
-                      <p className="text-[11px] text-slate-300 mt-0.5">
-                        Bấm kết nối Google 1 lần trên mỗi thiết bị để tự động đồng bộ kho, vật tư, phiếu nhập/xuất và tài khoản theo thời gian thực.
-                      </p>
-                    </div>
-                  </div>
-
-                  {cloudState.errorMessage && (
-                    <div className="p-2.5 rounded-xl bg-rose-950/80 border border-rose-800/70 text-[11px] text-rose-200 leading-relaxed">
-                      {cloudState.errorMessage}
-                    </div>
-                  )}
-
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                    <button
-                      type="button"
-                      onClick={handleConnectCloudOnly}
-                      disabled={isCloudConnecting || isLoading}
-                      className="min-h-[40px] px-3 py-2 bg-slate-900 hover:bg-slate-800 border border-blue-500/50 text-blue-200 font-bold text-xs rounded-xl transition flex items-center justify-center gap-1.5 disabled:opacity-60"
-                    >
-                      <Cloud className="w-4 h-4 text-blue-400 shrink-0" />
-                      <span>
-                        {isCloudConnecting ? 'Đang kết nối...' : 'Kết nối Google Đám mây'}
-                      </span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => handleGoogleLogin(false)}
-                      disabled={isCloudConnecting || isLoading}
-                      className="min-h-[40px] px-3 py-2 bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs rounded-xl transition flex items-center justify-center gap-1.5 disabled:opacity-60"
-                    >
-                      <ShieldCheck className="w-4 h-4 shrink-0" />
-                      <span>Đăng nhập với Google</span>
-                    </button>
-                  </div>
-                </div>
-              )}
 
               {/* Cảnh báo khi bị đăng xuất tự động do đăng nhập ở thiết bị khác */}
               {sessionKickNotice && (
                 <div className="p-3.5 sm:p-4 bg-amber-950/85 border border-amber-700/80 rounded-2xl text-amber-200 text-xs flex items-start gap-2.5 shadow-lg">
                   <AlertTriangle className="w-5 h-5 shrink-0 text-amber-400 mt-0.5" />
                   <div className="flex-1 leading-relaxed">
-                    <div className="font-bold text-amber-300 mb-0.5">Đã tự động thoát phiên trên thiết bị này</div>
+                    <div className="font-bold text-amber-300 mb-0.5">
+                      Đã tự động thoát phiên trên thiết bị này
+                    </div>
                     <div>{sessionKickNotice}</div>
                   </div>
                   <button
@@ -432,14 +217,14 @@ export const LoginScreen: React.FC = () => {
                 </div>
               )}
 
-              {/* Cảnh báo chặn đăng nhập đồng thời trên 2 thiết bị + Thao tác Yêu cầu đăng xuất trên thiết bị kia */}
+              {/* Cảnh báo chặn đăng nhập đồng thời trên 2 thiết bị + Thao tác 1 chạm chuyển phiên */}
               {conflictMessage && (
                 <div className="p-4 bg-amber-950/85 border border-amber-600/80 rounded-2xl text-amber-100 text-xs space-y-3 shadow-lg">
                   <div className="flex items-start gap-2.5">
                     <ShieldAlert className="w-5 h-5 shrink-0 text-amber-400 mt-0.5" />
                     <div className="flex-1 leading-relaxed">
                       <div className="font-bold text-amber-300 text-sm mb-0.5">
-                        Tài khoản đang hoạt động trên thiết bị khác
+                        Tài khoản Google đang hoạt động trên thiết bị khác
                       </div>
                       <p className="text-amber-100/90">{conflictMessage}</p>
                     </div>
@@ -473,71 +258,55 @@ export const LoginScreen: React.FC = () => {
                   <div className="flex flex-col sm:flex-row gap-2 pt-0.5">
                     <button
                       type="button"
-                      onClick={handleForceLogoutAndLogin}
-                      disabled={isRequestingRemoteLogout || isLoading || isCloudConnecting}
-                      className="flex-1 min-h-[42px] px-3.5 py-2.5 bg-amber-500 hover:bg-amber-400 text-slate-950 font-extrabold text-xs rounded-xl shadow-md transition flex items-center justify-center gap-1.5 disabled:opacity-70"
+                      onClick={handleForceLogoutAndContinue}
+                      disabled={isBusy}
+                      className="flex-1 min-h-[44px] px-3.5 py-2.5 bg-amber-500 hover:bg-amber-400 text-slate-950 font-extrabold text-xs rounded-xl shadow-md transition flex items-center justify-center gap-1.5 disabled:opacity-70"
                     >
                       <LogOut className="w-4 h-4 shrink-0" />
                       <span>
-                        {isRequestingRemoteLogout || isCloudConnecting
-                          ? 'Đang xử lý...'
-                          : 'Yêu cầu đăng xuất thiết bị kia & Đăng nhập'}
+                        {isRequestingRemoteLogout || isAuthenticating
+                          ? 'Đang chuyển phiên sang máy này...'
+                          : 'Đăng xuất thiết bị kia & Tiếp tục vào hệ thống'}
                       </span>
                     </button>
-                    {!conflictViaGoogle && (
-                      <button
-                        type="button"
-                        onClick={handleRequestLogoutOtherOnly}
-                        disabled={isRequestingRemoteLogout || isLoading || isCloudConnecting}
-                        className="min-h-[42px] px-3.5 py-2.5 bg-slate-900 hover:bg-slate-800 border border-amber-600/60 text-amber-200 font-semibold text-xs rounded-xl transition flex items-center justify-center gap-1.5 disabled:opacity-70"
-                      >
-                        <span>Chỉ đăng xuất thiết bị kia</span>
-                      </button>
-                    )}
+                    <button
+                      type="button"
+                      onClick={handleRequestLogoutOtherOnly}
+                      disabled={isBusy}
+                      className="min-h-[44px] px-3.5 py-2.5 bg-slate-900 hover:bg-slate-800 border border-amber-600/60 text-amber-200 font-semibold text-xs rounded-xl transition flex items-center justify-center gap-1.5 disabled:opacity-70"
+                    >
+                      <span>Chỉ đăng xuất thiết bị kia</span>
+                    </button>
                   </div>
                 </div>
               )}
 
-              {/* Alert messages */}
+              {/* Thông báo lỗi */}
               {errorMessage && (
                 <div className="p-3.5 bg-rose-950/75 border border-rose-800 rounded-2xl text-rose-200 text-xs space-y-2.5">
                   <div className="flex items-start gap-2.5">
                     <AlertCircle className="w-4 h-4 shrink-0 text-rose-400 mt-0.5" />
                     <span className="font-medium leading-relaxed">{errorMessage}</span>
                   </div>
-                  <div className="flex flex-col gap-2">
-                    {needsCloudConnect && (
-                      <button
-                        type="button"
-                        onClick={handleConnectCloudAndAutoLogin}
-                        disabled={isCloudConnecting || isLoading || isResettingCookies}
-                        className="w-full min-h-[40px] px-3 py-2 bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs rounded-xl shadow-md transition flex items-center justify-center gap-2 disabled:opacity-60"
-                      >
-                        <Cloud className="w-4 h-4 shrink-0" />
-                        <span>
-                          {isCloudConnecting
-                            ? 'Đang kết nối Đám mây & tự động đăng nhập...'
-                            : 'Kết nối Đám mây & Đăng nhập ngay'}
-                        </span>
-                      </button>
-                    )}
-                    <button
-                      type="button"
-                      onClick={handleResetBrowserCookies}
-                      disabled={isResettingCookies || isLoading || isCloudConnecting}
-                      className="w-full min-h-[38px] px-3 py-2 bg-slate-900/90 hover:bg-slate-800 border border-rose-700/60 text-rose-100 font-semibold text-xs rounded-xl transition flex items-center justify-center gap-1.5 disabled:opacity-60"
-                    >
-                      <RefreshCw className={`w-3.5 h-3.5 shrink-0 ${isResettingCookies ? 'animate-spin' : ''}`} />
-                      <span>
-                        {isResettingCookies
-                          ? 'Đang dọn cookies phiên cũ...'
-                          : 'Làm mới phiên & Xóa cookies đăng nhập cũ'}
-                      </span>
-                    </button>
-                  </div>
+                  <button
+                    type="button"
+                    onClick={handleResetBrowserSession}
+                    disabled={isBusy}
+                    className="w-full min-h-[38px] px-3 py-2 bg-slate-900/90 hover:bg-slate-800 border border-rose-700/60 text-rose-100 font-semibold text-xs rounded-xl transition flex items-center justify-center gap-1.5 disabled:opacity-60"
+                  >
+                    <RefreshCw
+                      className={`w-3.5 h-3.5 shrink-0 ${isResettingSession ? 'animate-spin' : ''}`}
+                    />
+                    <span>
+                      {isResettingSession
+                        ? 'Đang làm mới phiên đăng nhập...'
+                        : 'Làm mới phiên & Xóa dữ liệu đăng nhập Google cũ'}
+                    </span>
+                  </button>
                 </div>
               )}
 
+              {/* Thông báo thành công */}
               {successMessage && (
                 <div className="p-3.5 bg-emerald-950/75 border border-emerald-800 rounded-2xl text-emerald-200 text-xs flex items-center gap-2.5">
                   <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-400" />
@@ -545,107 +314,110 @@ export const LoginScreen: React.FC = () => {
                 </div>
               )}
 
-              {/* Form */}
-              <form onSubmit={handleSubmit} className="space-y-4">
-                <div>
-                  <label className="block text-xs font-semibold text-slate-300 mb-1.5">
-                    Tên người sử dụng (*)
-                  </label>
-                  <div className="relative">
-                    <input
-                      type="text"
-                      value={username}
-                      onChange={(e) => setUsername(e.target.value)}
-                      placeholder="Nhập tên đăng nhập hoặc họ tên (có dấu / không dấu)..."
-                      autoComplete="username"
-                      autoCapitalize="none"
-                      spellCheck={false}
-                      className="w-full min-h-[48px] px-4 py-3 pl-11 text-base sm:text-sm bg-slate-950 border border-slate-700 rounded-xl text-white placeholder-slate-500 focus:bg-slate-900 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition outline-none"
-                      required
-                    />
-                    <User className="w-4 h-4 text-slate-400 absolute left-4 top-1/2 -translate-y-1/2 pointer-events-none" />
-                  </div>
-                </div>
+              {/* Khối nút Đăng Nhập Google Chính */}
+              <div className="p-5 sm:p-6 bg-slate-950/80 border border-slate-800 rounded-2xl space-y-4 shadow-inner">
+                {activeGoogleEmail ? (
+                  <div className="space-y-3">
+                    <div className="flex items-center gap-2.5 px-3 py-2.5 rounded-xl bg-emerald-950/50 border border-emerald-800/60 text-xs text-emerald-200">
+                      <Cloud className="w-4 h-4 text-emerald-400 shrink-0" />
+                      <div className="min-w-0 flex-1">
+                        <div className="text-[11px] text-emerald-300/80">
+                          Tài khoản Google sẵn sàng trên trình duyệt:
+                        </div>
+                        <div className="font-bold text-white truncate">{activeGoogleEmail}</div>
+                      </div>
+                    </div>
 
-                <div>
-                  <label className="block text-xs font-semibold text-slate-300 mb-1.5">
-                    Mật khẩu đăng nhập (*)
-                  </label>
-                  <div className="relative">
-                    <input
-                      type={showPassword ? 'text' : 'password'}
-                      value={password}
-                      onChange={(e) => setPassword(e.target.value)}
-                      placeholder="Nhập mật khẩu đăng nhập..."
-                      autoComplete="current-password"
-                      className="w-full min-h-[48px] px-4 py-3 pl-11 pr-12 text-base sm:text-sm bg-slate-950 border border-slate-700 rounded-xl text-white placeholder-slate-500 focus:bg-slate-900 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition outline-none"
-                      required
-                    />
-                    <Lock className="w-4 h-4 text-slate-400 absolute left-4 top-1/2 -translate-y-1/2 pointer-events-none" />
                     <button
                       type="button"
-                      onClick={() => setShowPassword(!showPassword)}
-                      aria-label={showPassword ? 'Ẩn mật khẩu' : 'Hiện mật khẩu'}
-                      className="min-w-[44px] min-h-[44px] absolute right-1 top-1/2 -translate-y-1/2 flex items-center justify-center text-slate-400 hover:text-white rounded-lg transition"
+                      onClick={() => handleGoogleSignIn(false, false, true)}
+                      disabled={isBusy}
+                      className="w-full min-h-[52px] py-3.5 px-4 bg-white hover:bg-slate-100 text-slate-900 font-bold text-sm rounded-xl shadow-lg shadow-blue-950/40 transition active:scale-[0.99] flex items-center justify-center gap-3 disabled:opacity-70"
                     >
-                      {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                      {isAuthenticating ? (
+                        <>
+                          <RefreshCw className="w-5 h-5 text-blue-600 animate-spin shrink-0" />
+                          <span>Đang xác thực & đồng bộ dữ liệu...</span>
+                        </>
+                      ) : (
+                        <>
+                          <GoogleLogoIcon className="w-5 h-5 shrink-0" />
+                          <span className="truncate">Tiếp tục với {activeGoogleEmail}</span>
+                        </>
+                      )}
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => handleGoogleSignIn(false, true, false)}
+                      disabled={isBusy}
+                      className="w-full min-h-[44px] py-2.5 px-4 bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-200 font-semibold text-xs sm:text-sm rounded-xl transition flex items-center justify-center gap-2 disabled:opacity-60"
+                    >
+                      <GoogleLogoIcon className="w-4 h-4 shrink-0" />
+                      <span>Đăng nhập bằng tài khoản Google khác</span>
                     </button>
                   </div>
-                </div>
-
-                <div className="space-y-2.5 pt-1">
+                ) : (
                   <button
-                    type="submit"
-                    disabled={isLoading || isRequestingRemoteLogout}
-                    className="w-full min-h-[48px] py-3.5 px-4 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white font-bold text-sm rounded-xl shadow-lg shadow-blue-600/30 transition active:scale-[0.99] flex items-center justify-center gap-2 disabled:opacity-70"
+                    type="button"
+                    onClick={() => handleGoogleSignIn(false, true, false)}
+                    disabled={isBusy}
+                    className="w-full min-h-[54px] py-3.5 px-5 bg-white hover:bg-slate-100 text-slate-900 font-extrabold text-sm sm:text-base rounded-xl shadow-xl shadow-blue-950/50 transition active:scale-[0.99] flex items-center justify-center gap-3 disabled:opacity-70"
                   >
-                    {isLoading ? (
-                      <span className="flex items-center gap-2">
-                        <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                        <span>Đang xác thực phiên thiết bị...</span>
-                      </span>
+                    {isAuthenticating ? (
+                      <>
+                        <RefreshCw className="w-5 h-5 text-blue-600 animate-spin shrink-0" />
+                        <span>Đang mở xác thực Google...</span>
+                      </>
                     ) : (
                       <>
-                        <span>Đăng Nhập Vào Hệ Thống</span>
-                        <ArrowRight className="w-4 h-4" />
+                        <GoogleLogoIcon className="w-5 h-5 shrink-0" />
+                        <span>Đăng nhập bằng tài khoản Google</span>
                       </>
                     )}
                   </button>
+                )}
 
-                  <button
-                    type="button"
-                    onClick={handleRequestLogoutOtherOnly}
-                    disabled={isLoading || isRequestingRemoteLogout || isResettingCookies}
-                    title="Nhập tên người sử dụng và mật khẩu rồi bấm nút này để đăng xuất phiên đang mở trên thiết bị khác"
-                    className="w-full min-h-[44px] py-2.5 px-4 bg-slate-950/90 hover:bg-slate-800 border border-slate-700 hover:border-amber-500/60 text-amber-300 font-semibold text-xs sm:text-sm rounded-xl transition flex items-center justify-center gap-2 disabled:opacity-60"
-                  >
-                    <LogOut className="w-4 h-4 shrink-0 text-amber-400" />
+                <div className="pt-2 border-t border-slate-800/80 space-y-2 text-[11px] text-slate-400 leading-relaxed">
+                  <div className="flex items-start gap-2">
+                    <ShieldCheck className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
                     <span>
-                      {isRequestingRemoteLogout
-                        ? 'Đang gửi yêu cầu đăng xuất thiết bị kia...'
-                        : 'Yêu cầu đăng xuất trên thiết bị kia'}
+                      Tài khoản <strong className="text-emerald-300">voduongphu@gmail.com</strong> được phân quyền mặc định là <strong className="text-white">Quản trị viên chính (Admin)</strong>.
                     </span>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={handleResetBrowserCookies}
-                    disabled={isLoading || isRequestingRemoteLogout || isResettingCookies}
-                    title="Dùng khi trình duyệt bị kẹt cookies hoặc phiên cũ sau khi đã bấm Đăng xuất trước đó"
-                    className="w-full min-h-[38px] py-2 px-3 bg-slate-900/60 hover:bg-slate-800/80 border border-slate-800 hover:border-slate-700 text-slate-300 font-medium text-xs rounded-xl transition flex items-center justify-center gap-1.5 disabled:opacity-60"
-                  >
-                    <RefreshCw className={`w-3.5 h-3.5 shrink-0 text-blue-400 ${isResettingCookies ? 'animate-spin' : ''}`} />
+                  </div>
+                  <div className="flex items-start gap-2">
+                    <Cloud className="w-4 h-4 text-blue-400 shrink-0 mt-0.5" />
                     <span>
-                      {isResettingCookies
-                        ? 'Đang làm mới phiên & xóa cookies...'
-                        : 'Làm mới phiên / Xóa cookies đăng nhập cũ'}
+                      Nhân sự kho đăng nhập bằng tài khoản Google cá nhân để tự động đồng bộ dữ liệu theo thời gian thực. Admin phân quyền chi tiết trong mục <strong className="text-slate-200">Người Sử Dụng</strong>.
                     </span>
-                  </button>
+                  </div>
                 </div>
-              </form>
+              </div>
 
-              <div className="pt-1 text-center text-xs text-slate-500">
-                Cần cấp mới tài khoản hoặc quên mật khẩu? Vui lòng liên hệ <strong className="text-slate-300">Quản trị viên hệ thống</strong>.
+              {/* Nút dọn sạch phiên Google cũ nếu trình duyệt bị lưu cache */}
+              <div className="space-y-2">
+                <button
+                  type="button"
+                  onClick={handleResetBrowserSession}
+                  disabled={isBusy}
+                  title="Dùng khi muốn xóa sạch phiên Google cũ trên trình duyệt để chọn lại tài khoản mới"
+                  className="w-full min-h-[40px] py-2 px-3 bg-slate-900/60 hover:bg-slate-800/80 border border-slate-800 hover:border-slate-700 text-slate-300 font-medium text-xs rounded-xl transition flex items-center justify-center gap-1.5 disabled:opacity-60"
+                >
+                  <RefreshCw
+                    className={`w-3.5 h-3.5 shrink-0 text-blue-400 ${
+                      isResettingSession ? 'animate-spin' : ''
+                    }`}
+                  />
+                  <span>
+                    {isResettingSession
+                      ? 'Đang làm mới phiên & ngắt kết nối Google cũ...'
+                      : 'Làm mới phiên / Xóa dữ liệu đăng nhập Google cũ'}
+                  </span>
+                </button>
+
+                <div className="text-center text-xs text-slate-500">
+                  Mỗi tài khoản Google chỉ hoạt động trên <strong className="text-slate-300">1 thiết bị</strong> tại một thời điểm để bảo vệ toàn vẹn tồn kho.
+                </div>
               </div>
             </div>
           </div>
@@ -683,8 +455,10 @@ export const LoginScreen: React.FC = () => {
                   <Warehouse className="w-4 h-4" />
                 </div>
                 <div>
-                  <span className="font-bold text-white block">Đồng Bộ Đa Thiết Bị Thời Gian Thực</span>
-                  <span className="text-[11px] text-slate-400">Tự động cộng gộp dữ liệu từ mọi người dùng</span>
+                  <span className="font-bold text-white block">Đồng Bộ Google Cloud Thời Gian Thực</span>
+                  <span className="text-[11px] text-slate-400">
+                    Đăng nhập 1 chạm bằng Google, tự động cộng gộp dữ liệu mọi thiết bị
+                  </span>
                 </div>
               </div>
 
@@ -694,7 +468,9 @@ export const LoginScreen: React.FC = () => {
                 </div>
                 <div>
                   <span className="font-bold text-white block">Nhập Xuất & Import File Excel Lớn</span>
-                  <span className="text-[11px] text-slate-400">Xử lý mượt mà trên 100.000 dòng dữ liệu</span>
+                  <span className="text-[11px] text-slate-400">
+                    Xử lý mượt mà trên 100.000 dòng dữ liệu vật tư
+                  </span>
                 </div>
               </div>
 
@@ -704,14 +480,16 @@ export const LoginScreen: React.FC = () => {
                 </div>
                 <div>
                   <span className="font-bold text-white block">Bảo Mật Phiên Đơn Thiết Bị</span>
-                  <span className="text-[11px] text-slate-400">Mỗi tài khoản chỉ hoạt động trên 1 thiết bị duy nhất</span>
+                  <span className="text-[11px] text-slate-400">
+                    Tự động ngắt phiên cũ khi chuyển sang máy mới
+                  </span>
                 </div>
               </div>
             </div>
 
             <div className="pt-3 border-t border-white/10 flex items-center justify-between text-[11px] text-slate-400">
               <span>Hệ thống Quản lý Kho vận Công trình</span>
-              <span>Bảo mật phiên thiết bị</span>
+              <span>Google OAuth 2.0</span>
             </div>
           </div>
         </div>
@@ -742,7 +520,9 @@ export const LoginScreen: React.FC = () => {
             <div className="p-5 sm:p-6 space-y-4 text-xs sm:text-sm text-slate-200">
               <p className="leading-relaxed text-slate-200">{sessionKickAlert.message}</p>
 
-              {(sessionKickAlert.username || sessionKickAlert.deviceLabel || sessionKickAlert.loginAt) && (
+              {(sessionKickAlert.username ||
+                sessionKickAlert.deviceLabel ||
+                sessionKickAlert.loginAt) && (
                 <div className="rounded-2xl bg-slate-950/90 border border-slate-800 p-3.5 space-y-2.5 text-xs">
                   {(sessionKickAlert.fullName || sessionKickAlert.username) && (
                     <div className="flex items-center justify-between gap-3">
@@ -788,16 +568,16 @@ export const LoginScreen: React.FC = () => {
 
               {sessionKickAlert.reason === 'replaced' && (
                 <p className="text-[11px] sm:text-xs text-amber-200/80 bg-amber-950/50 border border-amber-800/50 rounded-xl p-3 leading-relaxed">
-                  Nếu không phải bạn vừa đăng nhập trên thiết bị mới, vui lòng đăng nhập lại ngay và thực hiện đổi mật khẩu để bảo vệ tài khoản.
+                  Nếu không phải bạn vừa đăng nhập trên thiết bị mới, vui lòng đăng nhập lại bằng tài khoản Google và kiểm tra bảo mật tài khoản của bạn.
                 </p>
               )}
 
               <button
                 type="button"
-                onClick={handleAcknowledgeModal}
+                onClick={acknowledgeKickModal}
                 className="w-full min-h-[48px] py-3 px-4 bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-400 hover:to-orange-400 text-slate-950 font-extrabold text-sm rounded-xl shadow-lg shadow-amber-500/20 transition active:scale-[0.99]"
               >
-                Đã hiểu & Quay lại đăng nhập
+                Đã hiểu & Quay lại đăng nhập Google
               </button>
             </div>
           </div>

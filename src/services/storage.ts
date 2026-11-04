@@ -13,6 +13,7 @@ import {
   normKey,
   normUserKey,
   computeEmailAuthDigest,
+  isBootstrappedAdminUser,
   roundQty,
   sumInboundItems,
   sumOutboundItems,
@@ -637,8 +638,13 @@ export const StorageService = {
     };
     const tombstones = this.getTombstones();
     const uKey = normUserKey(newUser.username);
-    // Nếu trước đó từng xóa tài khoản trùng username rồi tạo mới lại, đảm bảo updatedAt vượt tombstone
-    const prevTombTs = Math.max(Number(tombstones.users[uKey]) || 0, Number(tombstones.users[newUser.id]) || 0);
+    const emDigest = newUser.emailDigest || '';
+    // Nếu trước đó từng xóa tài khoản trùng username/email rồi tạo mới lại, đảm bảo updatedAt vượt tombstone
+    const prevTombTs = Math.max(
+      Number(tombstones.users[uKey]) || 0,
+      Number(tombstones.users[newUser.id]) || 0,
+      emDigest ? Number(tombstones.users[emDigest]) || 0 : 0
+    );
     if (prevTombTs >= (newUser.updatedAt || 0)) {
       newUser.updatedAt = prevTombTs + 1;
     }
@@ -649,16 +655,53 @@ export const StorageService = {
     return newUser;
   },
 
+  upsertGoogleUser(user: User): User {
+    const existingUsers = this.getUsers();
+    const tombstones = this.getTombstones();
+    const uKey = normUserKey(user.username);
+    const emDigest = user.emailDigest || computeEmailAuthDigest(user.email) || '';
+    const prevTombTs = Math.max(
+      Number(tombstones.users[uKey]) || 0,
+      Number(tombstones.users[user.id]) || 0,
+      emDigest ? Number(tombstones.users[emDigest]) || 0 : 0
+    );
+    const nextUpdatedAt = Math.max(
+      Date.now(),
+      Number(user.updatedAt) || 0,
+      prevTombTs > 0 ? prevTombTs + 1 : 0
+    );
+    const cleanUser: User = {
+      ...user,
+      emailDigest: emDigest || user.emailDigest,
+      updatedAt: nextUpdatedAt
+    };
+    const merged = mergeUsersAdditive(existingUsers, [cleanUser], tombstones.users);
+    this.saveUsers(merged.list);
+    notifySubscribers();
+    emitLocalMutation('meta');
+    return (
+      merged.list.find(
+        (u) =>
+          (emDigest && u.emailDigest === emDigest) ||
+          u.id === cleanUser.id ||
+          normUserKey(u.username) === uKey
+      ) || cleanUser
+    );
+  },
+
   updateUser(id: string, updates: Partial<User>): User | null {
     const users = [...this.getUsers()];
     const index = users.findIndex((u) => u.id === id);
     if (index === -1) return null;
     const prev = users[index];
-    const nextEmail = updates.email !== undefined ? updates.email.trim() : prev.email;
+    const isAdminRoot = isBootstrappedAdminUser(prev);
+    const nextEmail = isAdminRoot
+      ? 'voduongphu@gmail.com'
+      : updates.email !== undefined
+        ? updates.email.trim().toLowerCase()
+        : prev.email;
     const nextEmailDigest =
-      updates.email !== undefined
-        ? computeEmailAuthDigest(nextEmail) || undefined
-        : prev.emailDigest || computeEmailAuthDigest(prev.email) || undefined;
+      computeEmailAuthDigest(nextEmail) || prev.emailDigest || undefined;
     const nextUpdatedAt = Math.max(
       Date.now(),
       (Number(prev.updatedAt) || 0) + 1,
@@ -667,6 +710,8 @@ export const StorageService = {
     users[index] = {
       ...prev,
       ...updates,
+      role: isAdminRoot ? 'admin' : updates.role !== undefined ? updates.role : prev.role,
+      isActive: isAdminRoot ? true : updates.isActive !== undefined ? updates.isActive : prev.isActive,
       username: (updates.username !== undefined ? updates.username : prev.username).normalize('NFC').trim(),
       fullName: (updates.fullName !== undefined ? updates.fullName : prev.fullName).normalize('NFC').trim(),
       email: nextEmail,
@@ -683,7 +728,7 @@ export const StorageService = {
   deleteUser(id: string): boolean {
     const users = this.getUsers();
     const target = users.find((u) => u.id === id);
-    if (target && (target.username === 'Võ Dương Phú' || target.id === 'user-admin-01')) {
+    if (target && isBootstrappedAdminUser(target)) {
       return false;
     }
     const tombTs = Math.max(Date.now(), (Number(target?.updatedAt) || 0) + 1);
@@ -691,6 +736,10 @@ export const StorageService = {
     tombstones.users[id] = tombTs;
     if (target) {
       tombstones.users[normUserKey(target.username)] = tombTs;
+      const emDigest = target.emailDigest || computeEmailAuthDigest(target.email);
+      if (emDigest) {
+        tombstones.users[emDigest] = tombTs;
+      }
     }
     this.saveTombstones(tombstones);
 

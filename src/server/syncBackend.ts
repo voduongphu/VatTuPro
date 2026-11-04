@@ -17,6 +17,8 @@ import {
   normKey,
   normUserKey,
   computeEmailAuthDigest,
+  isBootstrappedAdminUser,
+  resolveGoogleUserRecord,
   isSessionHeartbeatFresh,
   isPasswordMatch,
   findMatchingUser,
@@ -1001,6 +1003,180 @@ export function createSyncBackend(options: SyncBackendOptions = {}): SyncBackend
     });
   });
 
+  app.post('/api/auth/google-login', async (req, res) => {
+    const {
+      email,
+      displayName,
+      uid,
+      deviceId,
+      deviceLabel,
+      localUsers,
+      forceLogoutOtherDevice
+    } = req.body || {};
+
+    const emailLower = String(email || '').trim().toLowerCase();
+    if (!emailLower || !emailLower.includes('@')) {
+      res.json({
+        success: false,
+        message: 'Không nhận được địa chỉ email hợp lệ từ tài khoản Google. Vui lòng thử lại.'
+      });
+      return;
+    }
+
+    if (Array.isArray(localUsers) && localUsers.length > 0) {
+      const mergedU = mergeUsersAdditive(store.users, localUsers, store.tombstones.users);
+      if (mergedU.changed) {
+        store.users = mergedU.list;
+        store.serverRevision++;
+      }
+    }
+
+    const nowMs = Date.now();
+    const resolved = resolveGoogleUserRecord(store.users, {
+      email: emailLower,
+      displayName: typeof displayName === 'string' ? displayName : null,
+      uid: typeof uid === 'string' ? uid : null,
+      nowMs
+    });
+
+    if (!resolved.allowed) {
+      res.json({
+        success: false,
+        message:
+          resolved.message ||
+          'Tài khoản Google này hiện đang bị khóa hoặc ngừng kích hoạt trên hệ thống.'
+      });
+      return;
+    }
+
+    let user = resolved.user;
+    const uKeyCandidate = normUserKey(user.username);
+    const emDigest = user.emailDigest || computeEmailAuthDigest(emailLower);
+    const prevTombTs = Math.max(
+      Number(store.tombstones.users[uKeyCandidate]) || 0,
+      Number(store.tombstones.users[user.id]) || 0,
+      emDigest ? Number(store.tombstones.users[emDigest]) || 0 : 0
+    );
+    if (prevTombTs >= (Number(user.updatedAt) || 0)) {
+      user = {
+        ...user,
+        updatedAt: prevTombTs + 1
+      };
+    }
+
+    const mergedSingle = mergeUsersAdditive(store.users, [user], store.tombstones.users);
+    if (mergedSingle.changed) {
+      store.users = mergedSingle.list;
+    }
+
+    let matchedIdx = store.users.findIndex(
+      (u) =>
+        (emDigest && u.emailDigest === emDigest) ||
+        u.id === user.id ||
+        normUserKey(u.username) === normUserKey(user.username) ||
+        (isBootstrappedAdminUser(user) && isBootstrappedAdminUser(u))
+    );
+    if (matchedIdx === -1) {
+      store.users.push(user);
+      matchedIdx = store.users.length - 1;
+    }
+    user = store.users[matchedIdx];
+
+    const userKey = normUserKey(user.username);
+    const cleanDeviceId = String(deviceId || `dev-${nowMs}`);
+    const cleanDeviceLabel = String(deviceLabel || 'Thiết bị Web');
+
+    const liveOtherSession = getLiveActiveSession(userKey, user, nowMs);
+    if (
+      liveOtherSession &&
+      liveOtherSession.deviceId !== cleanDeviceId &&
+      !forceLogoutOtherDevice
+    ) {
+      const otherLabel = liveOtherSession.deviceLabel || 'Thiết bị khác';
+      res.json({
+        success: false,
+        conflict: true,
+        code: 'ACTIVE_ON_OTHER_DEVICE',
+        activeSession: liveOtherSession,
+        user,
+        message: `Tài khoản Google "${emailLower}" hiện đang mở trên ${otherLabel}. Mỗi tài khoản chỉ hoạt động trên 1 thiết bị tại một thời điểm. Nhấn nút bên dưới để đăng xuất thiết bị kia và tiếp tục.`
+      });
+      return;
+    }
+
+    const prevSession = store.activeSessions[userKey];
+    const prevIssuedAt = getSessionIssuedAtMs(prevSession);
+    const prevRevoked = getRevokedBeforeMs(userKey, user);
+    const issuedAtMs = Math.max(nowMs, prevIssuedAt + 2, prevRevoked + 2);
+    const forceRevokedAt = issuedAtMs - 1;
+    const nowIso = new Date(nowMs).toISOString();
+    const sessionToken = createSignedSessionToken(userKey, cleanDeviceId, issuedAtMs);
+
+    if (prevSession && prevSession.sessionToken) {
+      store.revokedTokens[prevSession.sessionToken] = issuedAtMs;
+    }
+    if (forceLogoutOtherDevice) {
+      store.sessionRevokedBefore[userKey] = forceRevokedAt;
+    }
+    delete store.forceLogoutMeta[userKey];
+
+    const replacedPrevious =
+      liveOtherSession && liveOtherSession.deviceId !== cleanDeviceId
+        ? { ...liveOtherSession }
+        : undefined;
+
+    const updatedUser: User = {
+      ...user,
+      lastLogin: nowIso,
+      sessionRevokedAt: forceLogoutOtherDevice
+        ? Math.max(Number(user.sessionRevokedAt) || 0, forceRevokedAt)
+        : user.sessionRevokedAt,
+      updatedAt: Math.max(nowMs, Number(user.updatedAt || 0) + 1)
+    };
+    store.users[matchedIdx] = updatedUser;
+
+    const session: ActiveUserSession = {
+      userId: updatedUser.id,
+      username: updatedUser.username,
+      userKey,
+      sessionToken,
+      issuedAtMs,
+      deviceId: cleanDeviceId,
+      deviceLabel: cleanDeviceLabel,
+      loginAt: nowIso,
+      lastSeenAt: nowMs
+    };
+
+    store.activeSessions[userKey] = session;
+    store.serverRevision++;
+    await writeMetaToDiskNow();
+
+    broadcastRaw({
+      type: 'auth:session_replaced',
+      userKey,
+      userId: updatedUser.id,
+      username: updatedUser.username,
+      fullName: updatedUser.fullName,
+      activeSessionToken: sessionToken,
+      issuedAtMs,
+      deviceId: cleanDeviceId,
+      deviceLabel: cleanDeviceLabel,
+      loginAt: nowIso
+    });
+    broadcastUpdate();
+
+    res.json({
+      success: true,
+      message: replacedPrevious
+        ? `Đã đăng xuất phiên trên "${replacedPrevious.deviceLabel || 'thiết bị kia'}" và đăng nhập Google thành công!`
+        : `Đăng nhập thành công với ${emailLower}!`,
+      user: updatedUser,
+      session,
+      replacedSession: replacedPrevious,
+      users: store.users
+    });
+  });
+
   app.post('/api/auth/logout', async (req, res) => {
     const { userKey, username, sessionToken, deviceId } = req.body || {};
     const key = normUserKey(String(userKey || username || ''));
@@ -1045,6 +1221,7 @@ export function createSyncBackend(options: SyncBackendOptions = {}): SyncBackend
   app.post('/api/auth/force-logout', async (req, res) => {
     const {
       keepCurrentSession,
+      googleEmail,
       username,
       password,
       userKey: rawUserKey,
@@ -1136,13 +1313,14 @@ export function createSyncBackend(options: SyncBackendOptions = {}): SyncBackend
       return;
     }
 
+    const cleanGoogleEmail = String(googleEmail || '').trim().toLowerCase();
     const trimmedUser = String(username || '').trim();
     const passStr = String(password ?? '');
 
-    if (!trimmedUser || !passStr) {
+    if (!cleanGoogleEmail && (!trimmedUser || !passStr)) {
       res.json({
         success: false,
-        message: 'Vui lòng nhập tên người sử dụng và mật khẩu để xác thực yêu cầu đăng xuất thiết bị kia.'
+        message: 'Vui lòng đăng nhập bằng tài khoản Google để xác thực yêu cầu đăng xuất thiết bị kia.'
       });
       return;
     }
@@ -1155,19 +1333,30 @@ export function createSyncBackend(options: SyncBackendOptions = {}): SyncBackend
       }
     }
 
-    const matchedCandidate = findMatchingUser(store.users, trimmedUser);
-    const matchedIdx = matchedCandidate
-      ? store.users.findIndex(
-          (u) =>
-            u.id === matchedCandidate.id ||
-            normUserKey(u.username) === normUserKey(matchedCandidate.username)
-        )
-      : -1;
+    let matchedIdx = -1;
+    if (cleanGoogleEmail && cleanGoogleEmail.includes('@')) {
+      const emDigest = computeEmailAuthDigest(cleanGoogleEmail);
+      matchedIdx = store.users.findIndex(
+        (u) =>
+          (u.email || '').trim().toLowerCase() === cleanGoogleEmail ||
+          (emDigest && (u.emailDigest === emDigest || computeEmailAuthDigest(u.email) === emDigest)) ||
+          (cleanGoogleEmail === 'voduongphu@gmail.com' && isBootstrappedAdminUser(u))
+      );
+    } else {
+      const matchedCandidate = findMatchingUser(store.users, trimmedUser);
+      matchedIdx = matchedCandidate
+        ? store.users.findIndex(
+            (u) =>
+              u.id === matchedCandidate.id ||
+              normUserKey(u.username) === normUserKey(matchedCandidate.username)
+          )
+        : -1;
+    }
 
     if (matchedIdx === -1) {
       res.json({
         success: false,
-        message: `Tài khoản "${trimmedUser}" không tồn tại trong hệ thống.`
+        message: 'Không tìm thấy phiên hoạt động của tài khoản này trên thiết bị khác.'
       });
       return;
     }
@@ -1181,10 +1370,10 @@ export function createSyncBackend(options: SyncBackendOptions = {}): SyncBackend
       return;
     }
 
-    if (!isPasswordMatch(user.password, passStr)) {
+    if (!cleanGoogleEmail && !isPasswordMatch(user.password, passStr)) {
       res.json({
         success: false,
-        message: 'Mật khẩu xác thực không chính xác. Không thể gửi yêu cầu đăng xuất thiết bị kia.'
+        message: 'Xác thực không hợp lệ. Không thể gửi yêu cầu đăng xuất thiết bị kia.'
       });
       return;
     }

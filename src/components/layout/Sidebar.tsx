@@ -188,7 +188,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                       {currentUser?.fullName || 'Hệ thống kho vận'}
                     </div>
                     <div className="text-[11px] text-slate-500 font-mono truncate">
-                      @{currentUser?.username}
+                      {currentUser?.email || (currentUser?.username ? `@${currentUser.username}` : '')}
                     </div>
                   </div>
                 </div>
@@ -212,7 +212,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 type="button"
                 onClick={() => {
                   if (onCloseMobile) onCloseMobile();
-                  logout();
+                  void logout();
                 }}
                 className="w-full min-h-[44px] px-3.5 py-2.5 rounded-xl bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200/70 text-xs font-semibold flex items-center justify-center gap-2 transition"
               >

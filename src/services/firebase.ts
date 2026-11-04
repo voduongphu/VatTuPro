@@ -46,6 +46,89 @@ export const auth = createResilientAuth();
 export const googleProvider = new GoogleAuthProvider();
 googleProvider.setCustomParameters({ prompt: 'select_account' });
 
+export function purgeStaleFirebasePendingKeys(): void {
+  if (typeof window === 'undefined') return;
+  const storages: Storage[] = [];
+  try {
+    storages.push(window.sessionStorage);
+  } catch {
+    // ignore
+  }
+  try {
+    storages.push(window.localStorage);
+  } catch {
+    // ignore
+  }
+  for (const store of storages) {
+    try {
+      const toRemove: string[] = [];
+      for (let i = 0; i < store.length; i++) {
+        const k = store.key(i);
+        if (
+          k &&
+          (k.startsWith('firebase:pendingRedirect:') ||
+            k.startsWith('firebase:redirectUser:') ||
+            k.startsWith('firebase:previous_websocket_failure'))
+        ) {
+          toRemove.push(k);
+        }
+      }
+      for (const k of toRemove) {
+        store.removeItem(k);
+      }
+    } catch {
+      // ignore storage access error
+    }
+  }
+}
+
+export function signInWithGooglePopup(forceSelectAccount = true) {
+  purgeStaleFirebasePendingKeys();
+  const provider = new GoogleAuthProvider();
+  provider.addScope('email');
+  provider.addScope('profile');
+  if (forceSelectAccount) {
+    provider.setCustomParameters({ prompt: 'select_account' });
+  }
+  return signInWithPopup(auth, provider, browserPopupRedirectResolver);
+}
+
+export async function signOutAndPurgeFirebaseAuth(): Promise<void> {
+  try {
+    await signOut(auth);
+  } catch {
+    // ignore signOut error
+  }
+  if (typeof window === 'undefined') return;
+  const storages: Storage[] = [];
+  try {
+    storages.push(window.sessionStorage);
+  } catch {
+    // ignore
+  }
+  try {
+    storages.push(window.localStorage);
+  } catch {
+    // ignore
+  }
+  for (const store of storages) {
+    try {
+      const toRemove: string[] = [];
+      for (let i = 0; i < store.length; i++) {
+        const k = store.key(i);
+        if (k && k.startsWith('firebase:')) {
+          toRemove.push(k);
+        }
+      }
+      for (const k of toRemove) {
+        store.removeItem(k);
+      }
+    } catch {
+      // ignore storage access error
+    }
+  }
+}
+
 export enum OperationType {
   CREATE = 'create',
   UPDATE = 'update',
