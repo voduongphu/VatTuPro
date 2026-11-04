@@ -96,6 +96,8 @@ let isVerifyingSession = false;
 let authTransitionCount = 0;
 let metaDirty = false;
 let materialsDirty = false;
+let localReceiptsDirty = false;
+let hasCompletedInitialLocalSync = false;
 let lastKnownServerRev = 0;
 let lastPulledMaterialsRev = 0;
 let lastInteractionCheckMs = 0;
@@ -1036,7 +1038,8 @@ async function pushAllMaterialsChunked(): Promise<void> {
   materialsDirty = false;
 }
 
-async function reconcileLocalServerOnly(): Promise<void> {
+async function reconcileLocalServerOnly(): Promise<boolean> {
+  let pulledChanges = false;
   const tokenBeforeManifest = getStoredUnifiedSession()?.session.sessionToken || '';
   const manifest = await fetchJson<ServerManifest>(`/api/sync/manifest?t=${Date.now()}`);
 
@@ -1053,6 +1056,17 @@ async function reconcileLocalServerOnly(): Promise<void> {
     warehouses: manifest.warehouses,
     tombstones: manifest.tombstones
   });
+
+  // Fast-path: Nếu revision máy chủ không đổi và cục bộ không phát sinh thay đổi mới -> bỏ qua toàn bộ vòng lặp băm O(N)
+  if (
+    hasCompletedInitialLocalSync &&
+    manifest.serverRevision === lastKnownServerRev &&
+    !metaDirty &&
+    !materialsDirty &&
+    !localReceiptsDirty
+  ) {
+    return false;
+  }
 
   const localUsers = StorageService.getUsers();
   const localWhs = StorageService.getWarehouses();
@@ -1113,6 +1127,7 @@ async function reconcileLocalServerOnly(): Promise<void> {
 
   if (inboundCodesToPull.length > 0) {
     await pullMissingReceipts('inbound', inboundCodesToPull);
+    pulledChanges = true;
   }
 
   const localOutbounds = StorageService.getOutboundReceipts();
@@ -1144,7 +1159,10 @@ async function reconcileLocalServerOnly(): Promise<void> {
 
   if (outboundCodesToPull.length > 0) {
     await pullMissingReceipts('outbound', outboundCodesToPull);
+    pulledChanges = true;
   }
+
+  localReceiptsDirty = false;
 
   const refreshedInbounds = StorageService.getInboundReceipts();
   const inboundsToPush: InboundReceipt[] = [];
@@ -1191,6 +1209,7 @@ async function reconcileLocalServerOnly(): Promise<void> {
   const prePullMatDigest = computeMaterialsDigest(StorageService.getMaterials());
   if (manifest.materialsCount > 0 && prePullMatDigest !== manifest.materialsDigest) {
     await pullAllMaterials();
+    pulledChanges = true;
   }
 
   const postPullMatDigest = computeMaterialsDigest(StorageService.getMaterials());
@@ -1199,9 +1218,17 @@ async function reconcileLocalServerOnly(): Promise<void> {
   }
 
   lastKnownServerRev = Math.max(lastKnownServerRev, manifest.serverRevision);
+  hasCompletedInitialLocalSync = true;
+  return pulledChanges;
 }
 
 async function reconcileInternal(): Promise<void> {
+  // Không bao giờ chạy đồng bộ dữ liệu nặng tranh chấp băng thông khi người dùng đang thực hiện đăng nhập
+  if (authTransitionCount > 0) {
+    pendingReconcile = true;
+    return;
+  }
+
   if (isReconciling) {
     pendingReconcile = true;
     return;
@@ -1211,8 +1238,7 @@ async function reconcileInternal(): Promise<void> {
   notifySyncState(true);
 
   try {
-    // 1. Khi chưa kết nối Cloud Firestore (hoặc đang chạy trên máy chủ phát triển có dữ liệu .sync_data),
-    // vẫn đồng bộ với /api/sync để kế thừa dữ liệu sẵn có trước khi đưa lên Đám mây
+    // 1. Đồng bộ nhanh với /api/sync nếu có máy chủ cục bộ / Cloud Run
     try {
       await reconcileLocalServerOnly();
     } catch (localErr) {
@@ -1221,14 +1247,15 @@ async function reconcileInternal(): Promise<void> {
       }
     }
 
-    // 2. Đồng bộ 2 chiều thời gian thực qua Cloud Firestore (liên kết mọi thiết bị Điện thoại / Máy tính / Vercel / AI Studio)
-    if (FirestoreSyncService.isCloudConnected()) {
-      await FirestoreSyncService.reconcileWithCloud();
-      // Nếu Cloud vừa kéo về dữ liệu mới từ thiết bị khác, cập nhật ngược lại cho local server nếu có
-      try {
-        await reconcileLocalServerOnly();
-      } catch {
-        // ignore if serverless/static
+    // 2. Đồng bộ 2 chiều thời gian thực qua Cloud Firestore (chỉ đồng bộ ngược lại local server khi thực sự có dữ liệu mới kéo về từ Cloud)
+    if (authTransitionCount === 0 && FirestoreSyncService.isCloudConnected()) {
+      const cloudRes = await FirestoreSyncService.reconcileWithCloudDetailed();
+      if (cloudRes.pulledChanges) {
+        try {
+          await reconcileLocalServerOnly();
+        } catch {
+          // ignore if serverless/static
+        }
       }
     }
 
@@ -1240,8 +1267,12 @@ async function reconcileInternal(): Promise<void> {
     notifySyncState(false);
 
     if (pendingReconcile) {
-      pendingReconcile = false;
-      void reconcileInternal();
+      if (authTransitionCount === 0) {
+        pendingReconcile = false;
+        void reconcileInternal();
+      } else {
+        schedulePush(180);
+      }
     }
   }
 }
@@ -1511,6 +1542,8 @@ export const SyncService = {
         materialsDirty = true;
       } else if (kind === 'meta') {
         metaDirty = true;
+      } else if (kind === 'inbound' || kind === 'outbound') {
+        localReceiptsDirty = true;
       }
       FirestoreSyncService.markLocalMutation(kind);
       schedulePush(150);
@@ -1522,8 +1555,12 @@ export const SyncService = {
     });
 
     connectWebSocket();
-    void verifySessionHeartbeat(true);
-    void reconcileInternal();
+    if (getStoredUnifiedSession()) {
+      void verifySessionHeartbeat(true);
+    }
+    setTimeout(() => {
+      void reconcileInternal();
+    }, 80);
 
     if (typeof window !== 'undefined') {
       const wakeCheck = () => {
@@ -1656,6 +1693,9 @@ export const SyncService = {
     clearBrowserAuthCookiesAndArtifacts(prevUnified?.session.userKey);
 
     try {
+      // Khởi động nạp IndexedDB song song ngay trong lúc hộp thoại Google Popup đang mở (không await trước popup để tránh bị trình duyệt chặn)
+      const storageInitTask = StorageService.init();
+
       const authRes = await FirestoreSyncService.authenticateGooglePopup({
         forceSelectAccount: Boolean(options?.forceSelectAccount),
         reuseExistingIfAvailable: Boolean(options?.reuseExistingAccount || forceFlag)
@@ -1668,7 +1708,7 @@ export const SyncService = {
         };
       }
 
-      await StorageService.init();
+      await storageInitTask;
 
       const emailLower = authRes.email.trim().toLowerCase();
       const displayName = authRes.displayName || null;
@@ -1676,13 +1716,14 @@ export const SyncService = {
       const deviceId = getDeviceId();
       const deviceLabel = getDeviceLabel();
 
-      // 1. Ưu tiên cấp phiên trên Cloud Firestore nếu đã kết nối workspace
+      // 1. Ưu tiên cấp phiên tốc độ cao trên Cloud Firestore (giới hạn tối đa ~950ms, tự động chuyển sang máy chủ /api nếu mạng Cloud chậm)
       if (authRes.cloudReady && authRes.fbUser) {
         let cloudRes = await FirestoreSyncService.loginWithGoogleIdentityOnCloud(
           authRes.fbUser,
           deviceId,
           deviceLabel,
-          forceFlag
+          forceFlag,
+          950
         );
 
         if (
@@ -1697,7 +1738,8 @@ export const SyncService = {
             authRes.fbUser,
             deviceId,
             deviceLabel,
-            true
+            true,
+            950
           );
         }
 
@@ -1751,9 +1793,10 @@ export const SyncService = {
             // ignore
           }
 
-          queueMicrotask(() => {
+          // Nhường trình duyệt render giao diện chính ngay lập tức rồi mới đồng bộ dữ liệu kho dưới nền
+          setTimeout(() => {
             void reconcileInternal();
-          });
+          }, 120);
 
           return {
             success: true,
@@ -1764,7 +1807,7 @@ export const SyncService = {
         }
       }
 
-      // 2. Fallback tự động qua máy chủ /api/auth/google-login (khi Firestore chạm hạn mức miễn phí hoặc mạng chặn WebChannel)
+      // 2. Fallback tốc độ cao (~20ms) qua máy chủ /api/auth/google-login (khi Firestore chạm hạn mức hoặc mạng Cloud phản hồi chậm >950ms)
       try {
         const localUsers = StorageService.getUsers();
         const attemptGoogleServerLogin = (forceOther: boolean) =>
@@ -1817,9 +1860,10 @@ export const SyncService = {
 
         pendingInvalidation = null;
         clearPersistedKickNotice();
+        const issuedServerSession = res.session;
         saveStoredUnifiedSession({
           user: res.user,
-          session: res.session
+          session: issuedServerSession
         });
 
         if (Array.isArray(res.users) && res.users.length > 0) {
@@ -1831,11 +1875,11 @@ export const SyncService = {
         try {
           authChannel?.postMessage({
             type: 'auth:session_replaced',
-            userKey: res.session.userKey,
-            activeSessionToken: res.session.sessionToken,
-            issuedAtMs: res.session.issuedAtMs,
-            deviceLabel: res.session.deviceLabel,
-            loginAt: res.session.loginAt
+            userKey: issuedServerSession.userKey,
+            activeSessionToken: issuedServerSession.sessionToken,
+            issuedAtMs: issuedServerSession.issuedAtMs,
+            deviceLabel: issuedServerSession.deviceLabel,
+            loginAt: issuedServerSession.loginAt
           });
         } catch {
           // ignore
@@ -1843,9 +1887,14 @@ export const SyncService = {
 
         connectWebSocket();
         sendWsAuthCheck();
-        queueMicrotask(() => {
+
+        // Mở giao diện chính ngay tức thì, đồng bộ phiên lên Cloud và dữ liệu kho hoàn toàn dưới nền
+        setTimeout(() => {
+          if (authRes.fbUser) {
+            void FirestoreSyncService.syncActiveSessionToCloudIfConnected(issuedServerSession).catch(() => {});
+          }
           void reconcileInternal();
-        });
+        }, 120);
 
         return {
           success: true,

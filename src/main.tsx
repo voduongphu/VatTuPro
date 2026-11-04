@@ -12,9 +12,10 @@ const Bootstrap: React.FC = () => {
     let mounted = true;
     (async () => {
       try {
+        // Chỉ nạp bộ nhớ cục bộ IndexedDB (~20ms) để hiển thị giao diện đăng nhập/tổng quan ngay tức thì;
+        // quá trình đồng bộ mạng/Cloud chạy nền tự động qua SyncService.start() không chặn giao diện.
         await StorageService.init();
         SyncService.start();
-        await SyncService.initialSync(4500);
       } catch (err) {
         console.error('Bootstrap init error:', err);
       } finally {
@@ -33,7 +34,7 @@ const Bootstrap: React.FC = () => {
       <div className="min-h-screen w-full overflow-auto bg-slate-950 flex p-4 text-slate-300 font-sans">
         <div className="m-auto flex flex-col items-center justify-center gap-3">
           <div className="w-8 h-8 border-2 border-blue-500/30 border-t-blue-500 rounded-full animate-spin" />
-          <span className="text-xs font-medium tracking-wide">Đang khởi tạo và đồng bộ toàn bộ dữ liệu kho vận...</span>
+          <span className="text-xs font-medium tracking-wide">Đang mở hệ thống kho vận...</span>
         </div>
       </div>
     );
