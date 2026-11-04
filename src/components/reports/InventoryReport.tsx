@@ -464,7 +464,7 @@ export const InventoryReport: React.FC = () => {
                 <th className="p-3 w-28">Kiện Hàng</th>
                 <th className="p-3 w-48">Vật Tư Thiết Bị</th>
                 <th className="p-3 w-32">Hạng Mục & Bản Vẽ</th>
-                <th className="p-3 w-32">NSX & Nhà Cung Cấp</th>
+                <th className="p-3 w-32">Mã Vật Tư</th>
                 <th className="p-3 w-16 text-center">ĐVT</th>
                 <th className="p-3 text-right bg-blue-50/50 text-blue-900">Tổng Nhập</th>
                 <th className="p-3 text-right bg-rose-50/50 text-rose-900">Tổng Xuất</th>
@@ -491,15 +491,17 @@ export const InventoryReport: React.FC = () => {
                     </td>
                     <td className="p-3">
                       <span className="font-semibold text-slate-900 block text-xs">{r.materialName}</span>
-                      <span className="font-mono text-[11px] text-slate-500">{r.materialCode}</span>
                     </td>
                     <td className="p-3">
                       <div className="text-slate-800 font-medium">{r.category}</div>
                       <div className="font-mono text-indigo-700 text-[11px]">{r.drawingNo}</div>
                     </td>
-                    <td className="p-3">
-                      <div className="text-[11px] text-slate-700 line-clamp-1">NSX: {r.manufacturer}</div>
-                      <div className="text-[11px] text-slate-500 line-clamp-1">NCC: {r.supplier}</div>
+                    <td className="p-3 font-mono font-semibold text-slate-800">
+                      {r.materialCode && r.materialCode !== 'N/A' ? (
+                        <span>{r.materialCode}</span>
+                      ) : (
+                        <span className="text-slate-400 font-normal">N/A</span>
+                      )}
                     </td>
                     <td className="p-3 text-center font-medium text-slate-600">{r.unit}</td>
                     
