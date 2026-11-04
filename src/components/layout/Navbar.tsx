@@ -10,6 +10,8 @@ import {
   MonitorSmartphone,
   CheckCircle2,
   AlertCircle,
+  Cloud,
+  CloudOff,
   LogIn,
   ChevronDown,
   Menu,
@@ -23,11 +25,20 @@ interface NavbarProps {
 }
 
 export const Navbar: React.FC<NavbarProps> = ({ onOpenMobileMenu }) => {
-  const { currentUser, logout, forceLogoutOtherDevicesFromCurrent, isAdmin } = useAuth();
+  const {
+    currentUser,
+    cloudState,
+    connectCloudSync,
+    disconnectCloudSync,
+    logout,
+    forceLogoutOtherDevicesFromCurrent,
+    isAdmin
+  } = useAuth();
   const [isLoginModalOpen, setIsLoginModalOpen] = useState(false);
   const [isChangePassModalOpen, setIsChangePassModalOpen] = useState(false);
   const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
+  const [isConnectingCloud, setIsConnectingCloud] = useState(false);
   const [isForcingRemoteLogout, setIsForcingRemoteLogout] = useState(false);
   const [remoteLogoutNotice, setRemoteLogoutNotice] = useState<{
     success: boolean;
@@ -42,12 +53,50 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenMobileMenu }) => {
     if (!remoteLogoutNotice) return;
     const timer = setTimeout(() => {
       setRemoteLogoutNotice(null);
-    }, 5000);
+    }, 6000);
     return () => clearTimeout(timer);
   }, [remoteLogoutNotice]);
 
   const handleManualSync = () => {
     void SyncService.syncNow();
+  };
+
+  const handleConnectCloud = async () => {
+    setIsUserMenuOpen(false);
+    setIsConnectingCloud(true);
+    try {
+      const res = await connectCloudSync();
+      setRemoteLogoutNotice({
+        success: res.success,
+        message: res.message
+      });
+    } finally {
+      setIsConnectingCloud(false);
+    }
+  };
+
+  const handleSwitchCloudAccount = async () => {
+    setIsUserMenuOpen(false);
+    setIsConnectingCloud(true);
+    try {
+      await disconnectCloudSync();
+      const res = await connectCloudSync();
+      setRemoteLogoutNotice({
+        success: res.success,
+        message: res.message
+      });
+    } finally {
+      setIsConnectingCloud(false);
+    }
+  };
+
+  const handleDisconnectCloud = async () => {
+    setIsUserMenuOpen(false);
+    await disconnectCloudSync();
+    setRemoteLogoutNotice({
+      success: true,
+      message: 'Đã ngắt kết nối Đám mây Google trên trình duyệt này.'
+    });
   };
 
   const handleForceLogoutOtherDevices = async () => {
@@ -92,13 +141,39 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenMobileMenu }) => {
             </div>
           </div>
 
-          {/* Right: Sync + User Account */}
-          <div className="flex items-center gap-2 shrink-0 whitespace-nowrap">
+          {/* Right: Cloud Status + Sync + User Account */}
+          <div className="flex items-center gap-1.5 sm:gap-2 shrink-0 whitespace-nowrap">
+            {cloudState.status === 'connected' ? (
+              <button
+                type="button"
+                onClick={handleManualSync}
+                disabled={isSyncing}
+                title={`Đã kết nối Đám mây (${cloudState.cloudEmail || 'Google'}) — Bấm để đồng bộ ngay`}
+                className="min-h-[40px] flex items-center justify-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-xl text-xs font-semibold text-emerald-200 hover:text-white bg-emerald-950/70 hover:bg-emerald-900/70 border border-emerald-700/60 transition disabled:opacity-70 shrink-0"
+              >
+                <Cloud className="w-4 h-4 text-emerald-400 shrink-0" />
+                <span className="hidden md:inline">Đám mây</span>
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={handleConnectCloud}
+                disabled={isConnectingCloud}
+                title="Bấm để kết nối Đám mây Google — Tự động đồng bộ dữ liệu thời gian thực giữa Điện thoại & Máy tính"
+                className="min-h-[40px] flex items-center justify-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-xl text-xs font-bold text-amber-200 hover:text-white bg-amber-950/80 hover:bg-amber-900/80 border border-amber-600/70 transition disabled:opacity-70 shrink-0"
+              >
+                <CloudOff className="w-4 h-4 text-amber-400 shrink-0" />
+                <span className="hidden sm:inline">
+                  {isConnectingCloud ? 'Đang kết nối...' : 'Kết nối Đám mây'}
+                </span>
+              </button>
+            )}
+
             <button
               type="button"
               onClick={handleManualSync}
               disabled={isSyncing}
-              title="Đồng bộ cộng gộp dữ liệu mới nhất giữa các người dùng"
+              title="Đồng bộ cộng gộp dữ liệu mới nhất giữa các thiết bị"
               className="min-h-[40px] min-w-[40px] flex items-center justify-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-xl text-xs font-semibold text-slate-200 hover:text-white bg-slate-800 hover:bg-slate-700 border border-slate-700 transition disabled:opacity-70 shrink-0"
             >
               <RefreshCw className={`w-4 h-4 text-emerald-400 shrink-0 ${isSyncing ? 'animate-spin' : ''}`} />
@@ -137,11 +212,56 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenMobileMenu }) => {
                       className="fixed inset-0 z-40"
                       onClick={() => setIsUserMenuOpen(false)}
                     />
-                    <div className="absolute right-0 mt-2 w-64 max-w-[calc(100vw-1.5rem)] bg-white rounded-2xl shadow-xl border border-slate-200 py-1.5 text-slate-700 text-xs z-50">
+                    <div className="absolute right-0 mt-2 w-72 max-w-[calc(100vw-1.5rem)] bg-white rounded-2xl shadow-xl border border-slate-200 py-1.5 text-slate-700 text-xs z-50">
                       <div className="px-4 py-2.5 border-b border-slate-100 bg-slate-50">
                         <div className="font-bold text-slate-900 truncate">{currentUser.fullName}</div>
                         <div className="text-[11px] text-slate-500 font-mono truncate">@{currentUser.username}</div>
+                        {cloudState.status === 'connected' ? (
+                          <div className="mt-1.5 flex items-center gap-1.5 text-[11px] text-emerald-700 font-medium truncate">
+                            <Cloud className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                            <span className="truncate">Đám mây: {cloudState.cloudEmail}</span>
+                          </div>
+                        ) : (
+                          <div className="mt-1.5 flex items-center gap-1.5 text-[11px] text-amber-700 font-medium">
+                            <CloudOff className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+                            <span>Chưa kết nối Đám mây Google</span>
+                          </div>
+                        )}
                       </div>
+
+                      {cloudState.status === 'connected' ? (
+                        <>
+                          <button
+                            type="button"
+                            onClick={handleSwitchCloudAccount}
+                            disabled={isConnectingCloud}
+                            className="w-full min-h-[42px] px-4 py-2 text-left hover:bg-emerald-50 text-emerald-800 flex items-center gap-2.5 font-medium"
+                          >
+                            <Cloud className="w-4 h-4 text-emerald-600 shrink-0" />
+                            <span>Đổi tài khoản Google Đám mây</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={handleDisconnectCloud}
+                            className="w-full min-h-[40px] px-4 py-2 text-left hover:bg-slate-50 text-slate-600 flex items-center gap-2.5"
+                          >
+                            <CloudOff className="w-4 h-4 text-slate-400 shrink-0" />
+                            <span>Ngắt kết nối Đám mây trên máy này</span>
+                          </button>
+                        </>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={handleConnectCloud}
+                          disabled={isConnectingCloud}
+                          className="w-full min-h-[44px] px-4 py-2.5 text-left bg-amber-50/70 hover:bg-amber-100/80 text-amber-900 flex items-center gap-2.5 font-semibold"
+                        >
+                          <Cloud className="w-4 h-4 text-amber-600 shrink-0" />
+                          <span>Kết nối Đám mây Google (Đồng bộ Đa Thiết Bị)</span>
+                        </button>
+                      )}
+
+                      <div className="border-t border-slate-100 my-1" />
 
                       <button
                         type="button"

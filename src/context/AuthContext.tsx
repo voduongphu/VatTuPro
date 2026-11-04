@@ -2,6 +2,7 @@ import React, { createContext, useContext, useState, useEffect } from 'react';
 import { User, ActiveUserSession } from '../types/inventory';
 import { StorageService } from '../services/storage';
 import { SyncService, SessionInvalidationInfo } from '../services/syncService';
+import type { CloudSyncSnapshotState } from '../services/firestoreSync';
 import { normUserKey } from '../utils/additiveMerge';
 
 export interface SessionKickAlert extends SessionInvalidationInfo {
@@ -19,6 +20,8 @@ export interface LoginActionResult {
   success: boolean;
   message: string;
   conflict?: boolean;
+  cloudConnectedOnly?: boolean;
+  matchedUsername?: string;
   activeSession?: ActiveUserSession;
 }
 
@@ -58,6 +61,10 @@ function buildKickAlert(info: SessionInvalidationInfo): SessionKickAlert {
 interface AuthContextType {
   currentUser: User | null;
   users: User[];
+  cloudState: CloudSyncSnapshotState;
+  connectCloudSync: () => Promise<{ success: boolean; message: string; email?: string | null }>;
+  disconnectCloudSync: () => Promise<void>;
+  loginWithGoogle: (forceLogoutOtherDevice?: boolean) => Promise<LoginActionResult>;
   sessionKickNotice: string | null;
   sessionKickAlert: SessionKickAlert | null;
   isKickModalOpen: boolean;
@@ -90,6 +97,9 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [users, setUsers] = useState<User[]>(() => StorageService.getUsers());
+  const [cloudState, setCloudState] = useState<CloudSyncSnapshotState>(() =>
+    SyncService.getCloudState()
+  );
   const [currentUser, setCurrentUser] = useState<User | null>(() => {
     const unified = SyncService.getUnifiedSession();
     if (!unified) return null;
@@ -128,6 +138,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setUsers(list);
     return list;
   };
+
+  useEffect(() => {
+    return SyncService.subscribeCloudState(setCloudState);
+  }, []);
 
   useEffect(() => {
     refreshUsers();
@@ -170,6 +184,54 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       });
     });
   }, []);
+
+  const connectCloudSync = async (): Promise<{
+    success: boolean;
+    message: string;
+    email?: string | null;
+  }> => {
+    const res = await SyncService.connectCloudSync();
+    refreshUsers();
+    return res;
+  };
+
+  const disconnectCloudSync = async (): Promise<void> => {
+    await SyncService.disconnectCloudSync();
+  };
+
+  const loginWithGoogle = async (forceLogoutOtherDevice = false): Promise<LoginActionResult> => {
+    clearSessionKickNotice();
+    setReplacedOtherDeviceAlert(null);
+    const res = await SyncService.loginWithGoogleCloud({ forceLogoutOtherDevice });
+    const latestUsers = StorageService.getUsers();
+    setUsers(latestUsers);
+
+    if (!res.success || !res.user) {
+      return {
+        success: false,
+        cloudConnectedOnly: res.cloudConnectedOnly,
+        conflict: res.conflict,
+        activeSession: res.activeSession,
+        matchedUsername: res.user?.username,
+        message: res.message
+      };
+    }
+
+    if (res.replacedSession) {
+      const prevDevice = res.replacedSession.deviceLabel || 'Thiết bị khác';
+      setReplacedOtherDeviceAlert({
+        deviceLabel: prevDevice,
+        loginAt: res.replacedSession.loginAt,
+        message: `Đã yêu cầu đăng xuất thành công phiên đang mở trên "${prevDevice}" và chuyển sang thiết bị hiện tại.`
+      });
+    }
+
+    setCurrentUser(res.user);
+    return {
+      success: true,
+      message: res.message || 'Đăng nhập thành công!'
+    };
+  };
 
   const login = async (
     username: string,
@@ -292,6 +354,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       value={{
         currentUser,
         users,
+        cloudState,
+        connectCloudSync,
+        disconnectCloudSync,
+        loginWithGoogle,
         sessionKickNotice: sessionKickAlert?.message || null,
         sessionKickAlert,
         isKickModalOpen,

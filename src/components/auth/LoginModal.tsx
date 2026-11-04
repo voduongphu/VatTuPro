@@ -8,6 +8,8 @@ import {
   ShieldAlert,
   AlertCircle,
   CheckCircle2,
+  Cloud,
+  CloudOff,
   LogOut
 } from 'lucide-react';
 
@@ -17,7 +19,7 @@ interface LoginModalProps {
 }
 
 export const LoginModal: React.FC<LoginModalProps> = ({ isOpen, onClose }) => {
-  const { login, requestLogoutOtherDevice } = useAuth();
+  const { login, connectCloudSync, cloudState, requestLogoutOtherDevice } = useAuth();
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [errorMessage, setErrorMessage] = useState('');
@@ -25,9 +27,26 @@ export const LoginModal: React.FC<LoginModalProps> = ({ isOpen, onClose }) => {
   const [conflictSession, setConflictSession] = useState<ActiveUserSession | null>(null);
   const [conflictMessage, setConflictMessage] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isConnectingCloud, setIsConnectingCloud] = useState(false);
   const [isForcingLogout, setIsForcingLogout] = useState(false);
 
   if (!isOpen) return null;
+
+  const handleConnectCloud = async () => {
+    setErrorMessage('');
+    setSuccessMessage('');
+    setIsConnectingCloud(true);
+    try {
+      const res = await connectCloudSync();
+      if (res.success) {
+        setSuccessMessage(res.message);
+      } else {
+        setErrorMessage(res.message);
+      }
+    } finally {
+      setIsConnectingCloud(false);
+    }
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -121,6 +140,32 @@ export const LoginModal: React.FC<LoginModalProps> = ({ isOpen, onClose }) => {
         </div>
 
         <div className="p-5 sm:p-6">
+          {/* Trạng thái Đám mây */}
+          <div className="mb-4">
+            {cloudState.status === 'connected' ? (
+              <div className="px-3 py-2 bg-emerald-50 border border-emerald-200 rounded-xl text-emerald-800 text-xs flex items-center gap-2">
+                <Cloud className="w-4 h-4 text-emerald-600 shrink-0" />
+                <span className="truncate">
+                  Đã kết nối Đám mây ({cloudState.cloudEmail || 'Google'})
+                </span>
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={handleConnectCloud}
+                disabled={isConnectingCloud || isSubmitting}
+                className="w-full min-h-[40px] px-3 py-2 bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-xl text-blue-800 text-xs font-semibold flex items-center justify-center gap-2 transition disabled:opacity-60"
+              >
+                <CloudOff className="w-4 h-4 text-amber-600 shrink-0" />
+                <span>
+                  {isConnectingCloud
+                    ? 'Đang kết nối Đám mây...'
+                    : 'Kết nối Đám mây Google (Đồng bộ Đa Thiết Bị)'}
+                </span>
+              </button>
+            )}
+          </div>
+
           {conflictMessage && (
             <div className="mb-4 p-3.5 bg-amber-50 border border-amber-300 rounded-xl text-amber-900 text-xs space-y-2.5">
               <div className="flex items-start gap-2">

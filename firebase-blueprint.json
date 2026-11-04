@@ -1,0 +1,1295 @@
+{
+  "entities": {
+    "AdminRecord": {
+      "title": "AdminRecord",
+      "description": "Trusted administrator lookup document keyed by Firebase Auth UID.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "Firebase Auth UID of the administrator.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "note": {
+          "type": "string",
+          "description": "Administrative note.",
+          "minLength": 0,
+          "maxLength": 200
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server update timestamp."
+        }
+      },
+      "required": ["uid", "note", "createdAt", "updatedAt"]
+    },
+    "WorkspaceManifest": {
+      "title": "WorkspaceManifest",
+      "description": "Master gate and deterministic chunk manifest for multi-device synchronization.",
+      "type": "object",
+      "properties": {
+        "workspaceId": {
+          "type": "string",
+          "description": "Workspace identifier.",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "name": {
+          "type": "string",
+          "description": "Workspace display title.",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "ownerUid": {
+          "type": "string",
+          "description": "Original creator Firebase Auth UID (immutable).",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "updatedByUid": {
+          "type": "string",
+          "description": "Firebase Auth UID of the user performing the latest mutation.",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "status": {
+          "type": "string",
+          "description": "Lifecycle status of the workspace.",
+          "enum": ["active", "archived"],
+          "minLength": 1,
+          "maxLength": 32
+        },
+        "allowSelfJoin": {
+          "type": "boolean",
+          "description": "Whether verified Google accounts can register their device membership."
+        },
+        "serverRevision": {
+          "type": "number",
+          "description": "Monotonic workspace revision counter."
+        },
+        "metaRevision": {
+          "type": "number",
+          "description": "Monotonic revision for users, warehouses, and tombstones."
+        },
+        "materialsRevision": {
+          "type": "number",
+          "description": "Monotonic revision for material catalog chunks."
+        },
+        "materialsCount": {
+          "type": "number",
+          "description": "Total active material count."
+        },
+        "materialsChunkCount": {
+          "type": "number",
+          "description": "Total deterministic material chunk documents."
+        },
+        "materialsDigest": {
+          "type": "string",
+          "description": "Deterministic digest of all active materials.",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "metaDigest": {
+          "type": "string",
+          "description": "Deterministic digest of users, warehouses, and tombstones.",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "accountChunkCount": {
+          "type": "number",
+          "description": "Number of non-PII warehouse account chunks."
+        },
+        "warehouseChunkCount": {
+          "type": "number",
+          "description": "Number of non-PII warehouse chunks."
+        },
+        "tombstoneChunkCount": {
+          "type": "number",
+          "description": "Number of tombstone chunks."
+        },
+        "inboundIndexChunkCount": {
+          "type": "number",
+          "description": "Number of inbound receipt manifest index chunks."
+        },
+        "outboundIndexChunkCount": {
+          "type": "number",
+          "description": "Number of outbound receipt manifest index chunks."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server update timestamp."
+        }
+      },
+      "required": [
+        "workspaceId",
+        "name",
+        "ownerUid",
+        "updatedByUid",
+        "status",
+        "allowSelfJoin",
+        "serverRevision",
+        "metaRevision",
+        "materialsRevision",
+        "materialsCount",
+        "materialsChunkCount",
+        "materialsDigest",
+        "metaDigest",
+        "accountChunkCount",
+        "warehouseChunkCount",
+        "tombstoneChunkCount",
+        "inboundIndexChunkCount",
+        "outboundIndexChunkCount",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "WorkspaceMember": {
+      "title": "WorkspaceMember",
+      "description": "Relational membership document gating access to all workspace subcollections.",
+      "type": "object",
+      "properties": {
+        "workspaceId": {
+          "type": "string",
+          "description": "Parent workspace ID.",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "uid": {
+          "type": "string",
+          "description": "Firebase Auth UID of the member.",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "displayName": {
+          "type": "string",
+          "description": "Display label of the member device or operator.",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "memberRole": {
+          "type": "string",
+          "description": "Workspace access tier (self-join restricted to member).",
+          "enum": ["member", "admin"],
+          "minLength": 1,
+          "maxLength": 32
+        },
+        "status": {
+          "type": "string",
+          "description": "Membership status.",
+          "enum": ["active", "revoked"],
+          "minLength": 1,
+          "maxLength": 32
+        },
+        "updatedByUid": {
+          "type": "string",
+          "description": "UID of the actor updating membership.",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server update timestamp."
+        }
+      },
+      "required": [
+        "workspaceId",
+        "uid",
+        "displayName",
+        "memberRole",
+        "status",
+        "updatedByUid",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "MetaChunk": {
+      "title": "MetaChunk",
+      "description": "Bounded chunk (max 200 native maps) storing non-PII warehouse or internal account records.",
+      "type": "object",
+      "properties": {
+        "workspaceId": {
+          "type": "string",
+          "description": "Parent workspace ID.",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "chunkType": {
+          "type": "string",
+          "description": "Category of metadata stored in this chunk.",
+          "enum": ["accounts", "warehouses"],
+          "minLength": 1,
+          "maxLength": 32
+        },
+        "chunkIndex": {
+          "type": "number",
+          "description": "Zero-based chunk index."
+        },
+        "items": {
+          "type": "array",
+          "description": "Bounded list (<= 200) of native non-PII maps."
+        },
+        "updatedByUid": {
+          "type": "string",
+          "description": "UID of the authenticated writer.",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server update timestamp."
+        }
+      },
+      "required": [
+        "workspaceId",
+        "chunkType",
+        "chunkIndex",
+        "items",
+        "updatedByUid",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "AccountPrivatePii": {
+      "title": "AccountPrivatePii",
+      "description": "Split collection isolating warehouse user PII (email, phone) strictly to Administrators.",
+      "type": "object",
+      "properties": {
+        "workspaceId": {
+          "type": "string",
+          "description": "Parent workspace ID.",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "accountId": {
+          "type": "string",
+          "description": "Internal warehouse user ID.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "email": {
+          "type": "string",
+          "description": "User contact email address.",
+          "minLength": 0,
+          "maxLength": 200
+        },
+        "phone": {
+          "type": "string",
+          "description": "User contact phone number.",
+          "minLength": 0,
+          "maxLength": 64
+        },
+        "updatedByUid": {
+          "type": "string",
+          "description": "UID of the administrator writing PII.",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server update timestamp."
+        }
+      },
+      "required": [
+        "workspaceId",
+        "accountId",
+        "email",
+        "phone",
+        "updatedByUid",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "WarehousePrivatePii": {
+      "title": "WarehousePrivatePii",
+      "description": "Split collection isolating warehouse keeper phone contact strictly to Administrators.",
+      "type": "object",
+      "properties": {
+        "workspaceId": {
+          "type": "string",
+          "description": "Parent workspace ID.",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "warehouseId": {
+          "type": "string",
+          "description": "Warehouse record ID.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "phone": {
+          "type": "string",
+          "description": "Keeper contact phone number.",
+          "minLength": 0,
+          "maxLength": 64
+        },
+        "updatedByUid": {
+          "type": "string",
+          "description": "UID of the administrator writing contact info.",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server update timestamp."
+        }
+      },
+      "required": [
+        "workspaceId",
+        "warehouseId",
+        "phone",
+        "updatedByUid",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "TombstoneChunk": {
+      "title": "TombstoneChunk",
+      "description": "Bounded chunk (max 200 tombstone entries) propagating deletions across devices.",
+      "type": "object",
+      "properties": {
+        "workspaceId": {
+          "type": "string",
+          "description": "Parent workspace ID.",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "chunkIndex": {
+          "type": "number",
+          "description": "Zero-based tombstone chunk index."
+        },
+        "items": {
+          "type": "array",
+          "description": "Bounded list (<= 200) of native { bucket, key, deletedAtMs } maps."
+        },
+        "updatedByUid": {
+          "type": "string",
+          "description": "UID of the authenticated writer.",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server update timestamp."
+        }
+      },
+      "required": [
+        "workspaceId",
+        "chunkIndex",
+        "items",
+        "updatedByUid",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "MaterialChunk": {
+      "title": "MaterialChunk",
+      "description": "Bounded chunk (max 200 material catalog records) supporting 100k+ items.",
+      "type": "object",
+      "properties": {
+        "workspaceId": {
+          "type": "string",
+          "description": "Parent workspace ID.",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "chunkIndex": {
+          "type": "number",
+          "description": "Zero-based material chunk index."
+        },
+        "items": {
+          "type": "array",
+          "description": "Bounded list (<= 200) of MaterialItem maps."
+        },
+        "updatedByUid": {
+          "type": "string",
+          "description": "UID of the authenticated writer.",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server update timestamp."
+        }
+      },
+      "required": [
+        "workspaceId",
+        "chunkIndex",
+        "items",
+        "updatedByUid",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "ReceiptIndexChunk": {
+      "title": "ReceiptIndexChunk",
+      "description": "Bounded chunk (max 200 entries) indexing receipt document IDs and digests without list queries.",
+      "type": "object",
+      "properties": {
+        "workspaceId": {
+          "type": "string",
+          "description": "Parent workspace ID.",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "receiptKind": {
+          "type": "string",
+          "description": "Inbound or outbound index.",
+          "enum": ["inbound", "outbound"],
+          "minLength": 1,
+          "maxLength": 32
+        },
+        "chunkIndex": {
+          "type": "number",
+          "description": "Zero-based index chunk number."
+        },
+        "items": {
+          "type": "array",
+          "description": "Bounded list (<= 200) of receipt manifest summary maps."
+        },
+        "updatedByUid": {
+          "type": "string",
+          "description": "UID of the authenticated writer.",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server update timestamp."
+        }
+      },
+      "required": [
+        "workspaceId",
+        "receiptKind",
+        "chunkIndex",
+        "items",
+        "updatedByUid",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "InboundReceiptHeader": {
+      "title": "InboundReceiptHeader",
+      "description": "Header metadata for an Inbound Receipt (PNK QLVT) with chunked line items.",
+      "type": "object",
+      "properties": {
+        "workspaceId": {
+          "type": "string",
+          "description": "Parent workspace ID.",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "docId": {
+          "type": "string",
+          "description": "Deterministic Firestore document ID for this receipt.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "id": {
+          "type": "string",
+          "description": "Receipt internal ID.",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "receiptCode": {
+          "type": "string",
+          "description": "Receipt business code.",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "receiptDate": {
+          "type": "string",
+          "description": "Receipt date YYYY-MM-DD.",
+          "minLength": 0,
+          "maxLength": 40
+        },
+        "warehouseId": {
+          "type": "string",
+          "description": "Target warehouse ID.",
+          "minLength": 0,
+          "maxLength": 160
+        },
+        "warehouseName": {
+          "type": "string",
+          "description": "Target warehouse name.",
+          "minLength": 0,
+          "maxLength": 300
+        },
+        "departmentName": {
+          "type": "string",
+          "description": "Project/department name.",
+          "minLength": 0,
+          "maxLength": 300
+        },
+        "contractNo": {
+          "type": "string",
+          "description": "Contract reference number.",
+          "minLength": 0,
+          "maxLength": 200
+        },
+        "requestNo": {
+          "type": "string",
+          "description": "Request reference number.",
+          "minLength": 0,
+          "maxLength": 200
+        },
+        "inboundType": {
+          "type": "string",
+          "description": "Inbound classification.",
+          "enum": ["new", "return"],
+          "minLength": 1,
+          "maxLength": 32
+        },
+        "amountInWords": {
+          "type": "string",
+          "description": "Total amount written in Vietnamese words.",
+          "minLength": 0,
+          "maxLength": 500
+        },
+        "attachedDocs": {
+          "type": "string",
+          "description": "Attached supporting documents.",
+          "minLength": 0,
+          "maxLength": 500
+        },
+        "supplier": {
+          "type": "string",
+          "description": "Supplier name.",
+          "minLength": 0,
+          "maxLength": 300
+        },
+        "manufacturer": {
+          "type": "string",
+          "description": "Manufacturer name.",
+          "minLength": 0,
+          "maxLength": 300
+        },
+        "shipment": {
+          "type": "string",
+          "description": "Shipment or Bill of Lading.",
+          "minLength": 0,
+          "maxLength": 300
+        },
+        "packingListNo": {
+          "type": "string",
+          "description": "Packing list number.",
+          "minLength": 0,
+          "maxLength": 300
+        },
+        "delivererName": {
+          "type": "string",
+          "description": "Deliverer name.",
+          "minLength": 0,
+          "maxLength": 200
+        },
+        "receiverName": {
+          "type": "string",
+          "description": "Receiver name.",
+          "minLength": 0,
+          "maxLength": 200
+        },
+        "driverVehicleNo": {
+          "type": "string",
+          "description": "Vehicle or vessel number.",
+          "minLength": 0,
+          "maxLength": 200
+        },
+        "notes": {
+          "type": "string",
+          "description": "Inbound notes.",
+          "minLength": 0,
+          "maxLength": 2000
+        },
+        "packageCount": {
+          "type": "number",
+          "description": "Total package count."
+        },
+        "totalQuantity": {
+          "type": "number",
+          "description": "Total item quantity."
+        },
+        "totalWeightKg": {
+          "type": "number",
+          "description": "Total weight in kilograms."
+        },
+        "totalAmount": {
+          "type": "number",
+          "description": "Total monetary value."
+        },
+        "itemCount": {
+          "type": "number",
+          "description": "Number of line items."
+        },
+        "chunkCount": {
+          "type": "number",
+          "description": "Number of item chunk documents."
+        },
+        "digest": {
+          "type": "string",
+          "description": "Deterministic receipt digest.",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "createdBy": {
+          "type": "string",
+          "description": "Operator username who created the receipt.",
+          "minLength": 0,
+          "maxLength": 200
+        },
+        "createdAtIso": {
+          "type": "string",
+          "description": "Receipt creation ISO timestamp.",
+          "minLength": 0,
+          "maxLength": 64
+        },
+        "appUpdatedAt": {
+          "type": "number",
+          "description": "Application epoch millisecond update timestamp."
+        },
+        "itemsReplacedAt": {
+          "type": "number",
+          "description": "Epoch millisecond timestamp of last Admin full replacement."
+        },
+        "lastEditedBy": {
+          "type": "string",
+          "description": "Admin who last edited the receipt.",
+          "minLength": 0,
+          "maxLength": 200
+        },
+        "lastEditedAt": {
+          "type": "string",
+          "description": "ISO timestamp of last edit.",
+          "minLength": 0,
+          "maxLength": 64
+        },
+        "updatedByUid": {
+          "type": "string",
+          "description": "Firebase Auth UID of the writer.",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server update timestamp."
+        }
+      },
+      "required": [
+        "workspaceId",
+        "docId",
+        "id",
+        "receiptCode",
+        "receiptDate",
+        "warehouseId",
+        "warehouseName",
+        "departmentName",
+        "contractNo",
+        "requestNo",
+        "inboundType",
+        "amountInWords",
+        "attachedDocs",
+        "supplier",
+        "manufacturer",
+        "shipment",
+        "packingListNo",
+        "delivererName",
+        "receiverName",
+        "driverVehicleNo",
+        "notes",
+        "packageCount",
+        "totalQuantity",
+        "totalWeightKg",
+        "totalAmount",
+        "itemCount",
+        "chunkCount",
+        "digest",
+        "createdBy",
+        "createdAtIso",
+        "appUpdatedAt",
+        "itemsReplacedAt",
+        "lastEditedBy",
+        "lastEditedAt",
+        "updatedByUid",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "InboundItemChunk": {
+      "title": "InboundItemChunk",
+      "description": "Bounded chunk (max 200 items) of line items belonging to an InboundReceiptHeader.",
+      "type": "object",
+      "properties": {
+        "workspaceId": {
+          "type": "string",
+          "description": "Parent workspace ID.",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "receiptDocId": {
+          "type": "string",
+          "description": "Parent InboundReceiptHeader document ID.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "chunkIndex": {
+          "type": "number",
+          "description": "Zero-based chunk index."
+        },
+        "items": {
+          "type": "array",
+          "description": "Bounded list (<= 200) of InboundItemDetail maps."
+        },
+        "updatedByUid": {
+          "type": "string",
+          "description": "Firebase Auth UID of the writer.",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server update timestamp."
+        }
+      },
+      "required": [
+        "workspaceId",
+        "receiptDocId",
+        "chunkIndex",
+        "items",
+        "updatedByUid",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "OutboundReceiptHeader": {
+      "title": "OutboundReceiptHeader",
+      "description": "Header metadata for an Outbound Receipt (PXK QLVT) with chunked line items.",
+      "type": "object",
+      "properties": {
+        "workspaceId": {
+          "type": "string",
+          "description": "Parent workspace ID.",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "docId": {
+          "type": "string",
+          "description": "Deterministic Firestore document ID for this receipt.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "id": {
+          "type": "string",
+          "description": "Receipt internal ID.",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "issueCode": {
+          "type": "string",
+          "description": "Outbound receipt code.",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "issueDate": {
+          "type": "string",
+          "description": "Issue date YYYY-MM-DD.",
+          "minLength": 0,
+          "maxLength": 40
+        },
+        "warehouseId": {
+          "type": "string",
+          "description": "Source warehouse ID.",
+          "minLength": 0,
+          "maxLength": 160
+        },
+        "warehouseName": {
+          "type": "string",
+          "description": "Source warehouse name.",
+          "minLength": 0,
+          "maxLength": 300
+        },
+        "departmentName": {
+          "type": "string",
+          "description": "Department or project name.",
+          "minLength": 0,
+          "maxLength": 300
+        },
+        "requestNo": {
+          "type": "string",
+          "description": "Request code.",
+          "minLength": 0,
+          "maxLength": 200
+        },
+        "outboundType": {
+          "type": "string",
+          "description": "Outbound classification.",
+          "enum": ["issue", "transfer"],
+          "minLength": 1,
+          "maxLength": 32
+        },
+        "projectName": {
+          "type": "string",
+          "description": "Receiving project name.",
+          "minLength": 0,
+          "maxLength": 300
+        },
+        "recipientDepartment": {
+          "type": "string",
+          "description": "Receiving unit or team.",
+          "minLength": 0,
+          "maxLength": 300
+        },
+        "recipientName": {
+          "type": "string",
+          "description": "Recipient full name.",
+          "minLength": 0,
+          "maxLength": 200
+        },
+        "issuerName": {
+          "type": "string",
+          "description": "Warehouse keeper or issuer name.",
+          "minLength": 0,
+          "maxLength": 200
+        },
+        "notes": {
+          "type": "string",
+          "description": "Outbound reason or notes.",
+          "minLength": 0,
+          "maxLength": 2000
+        },
+        "packingListSummary": {
+          "type": "string",
+          "description": "Summary of packing lists.",
+          "minLength": 0,
+          "maxLength": 500
+        },
+        "totalQuantity": {
+          "type": "number",
+          "description": "Total outbound quantity."
+        },
+        "totalWeightKg": {
+          "type": "number",
+          "description": "Total outbound weight in kg."
+        },
+        "totalAmount": {
+          "type": "number",
+          "description": "Total monetary value."
+        },
+        "itemCount": {
+          "type": "number",
+          "description": "Number of line items."
+        },
+        "chunkCount": {
+          "type": "number",
+          "description": "Number of item chunk documents."
+        },
+        "digest": {
+          "type": "string",
+          "description": "Deterministic receipt digest.",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "createdBy": {
+          "type": "string",
+          "description": "Operator username who created the receipt.",
+          "minLength": 0,
+          "maxLength": 200
+        },
+        "createdAtIso": {
+          "type": "string",
+          "description": "Creation ISO string.",
+          "minLength": 0,
+          "maxLength": 64
+        },
+        "appUpdatedAt": {
+          "type": "number",
+          "description": "Application epoch millisecond update timestamp."
+        },
+        "itemsReplacedAt": {
+          "type": "number",
+          "description": "Epoch millisecond timestamp of last Admin full replacement."
+        },
+        "lastEditedBy": {
+          "type": "string",
+          "description": "Admin who last edited the receipt.",
+          "minLength": 0,
+          "maxLength": 200
+        },
+        "lastEditedAt": {
+          "type": "string",
+          "description": "ISO timestamp of last edit.",
+          "minLength": 0,
+          "maxLength": 64
+        },
+        "updatedByUid": {
+          "type": "string",
+          "description": "Firebase Auth UID of the writer.",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server update timestamp."
+        }
+      },
+      "required": [
+        "workspaceId",
+        "docId",
+        "id",
+        "issueCode",
+        "issueDate",
+        "warehouseId",
+        "warehouseName",
+        "departmentName",
+        "requestNo",
+        "outboundType",
+        "projectName",
+        "recipientDepartment",
+        "recipientName",
+        "issuerName",
+        "notes",
+        "packingListSummary",
+        "totalQuantity",
+        "totalWeightKg",
+        "totalAmount",
+        "itemCount",
+        "chunkCount",
+        "digest",
+        "createdBy",
+        "createdAtIso",
+        "appUpdatedAt",
+        "itemsReplacedAt",
+        "lastEditedBy",
+        "lastEditedAt",
+        "updatedByUid",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "OutboundItemChunk": {
+      "title": "OutboundItemChunk",
+      "description": "Bounded chunk (max 200 items) of line items belonging to an OutboundReceiptHeader.",
+      "type": "object",
+      "properties": {
+        "workspaceId": {
+          "type": "string",
+          "description": "Parent workspace ID.",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "receiptDocId": {
+          "type": "string",
+          "description": "Parent OutboundReceiptHeader document ID.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "chunkIndex": {
+          "type": "number",
+          "description": "Zero-based chunk index."
+        },
+        "items": {
+          "type": "array",
+          "description": "Bounded list (<= 200) of OutboundItemDetail maps."
+        },
+        "updatedByUid": {
+          "type": "string",
+          "description": "Firebase Auth UID of the writer.",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server update timestamp."
+        }
+      },
+      "required": [
+        "workspaceId",
+        "receiptDocId",
+        "chunkIndex",
+        "items",
+        "updatedByUid",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "ActiveDeviceSession": {
+      "title": "ActiveDeviceSession",
+      "description": "Single-device active session lock per internal warehouse account.",
+      "type": "object",
+      "properties": {
+        "workspaceId": {
+          "type": "string",
+          "description": "Parent workspace ID.",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "sessionDocId": {
+          "type": "string",
+          "description": "Deterministic session document ID.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "userKey": {
+          "type": "string",
+          "description": "Normalized warehouse username key.",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "userId": {
+          "type": "string",
+          "description": "Warehouse user ID.",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "username": {
+          "type": "string",
+          "description": "Warehouse display username.",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "sessionToken": {
+          "type": "string",
+          "description": "Active session token (empty string when logged out).",
+          "minLength": 0,
+          "maxLength": 200
+        },
+        "issuedAtMs": {
+          "type": "number",
+          "description": "Session issuance epoch milliseconds."
+        },
+        "deviceId": {
+          "type": "string",
+          "description": "Unique browser/device identifier.",
+          "minLength": 0,
+          "maxLength": 160
+        },
+        "deviceLabel": {
+          "type": "string",
+          "description": "Human-readable browser and OS label.",
+          "minLength": 0,
+          "maxLength": 200
+        },
+        "loginAt": {
+          "type": "string",
+          "description": "ISO timestamp of login.",
+          "minLength": 0,
+          "maxLength": 64
+        },
+        "lastSeenAt": {
+          "type": "number",
+          "description": "Latest heartbeat epoch milliseconds."
+        },
+        "revokedBeforeMs": {
+          "type": "number",
+          "description": "Force-logout watermark invalidating all older tokens."
+        },
+        "forceLogoutDeviceLabel": {
+          "type": "string",
+          "description": "Device label that requested remote force logout.",
+          "minLength": 0,
+          "maxLength": 200
+        },
+        "forceLogoutAt": {
+          "type": "string",
+          "description": "ISO timestamp of remote force logout.",
+          "minLength": 0,
+          "maxLength": 64
+        },
+        "updatedByUid": {
+          "type": "string",
+          "description": "Firebase Auth UID of the device updating session state.",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server update timestamp."
+        }
+      },
+      "required": [
+        "workspaceId",
+        "sessionDocId",
+        "userKey",
+        "userId",
+        "username",
+        "sessionToken",
+        "issuedAtMs",
+        "deviceId",
+        "deviceLabel",
+        "loginAt",
+        "lastSeenAt",
+        "revokedBeforeMs",
+        "forceLogoutDeviceLabel",
+        "forceLogoutAt",
+        "updatedByUid",
+        "createdAt",
+        "updatedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/admins/{adminUid}": {
+      "schema": "AdminRecord",
+      "description": "Trusted administrator lookup table."
+    },
+    "/workspaces/{workspaceId}": {
+      "schema": "WorkspaceManifest",
+      "description": "Master gate workspace document and chunk index counters."
+    },
+    "/workspaces/{workspaceId}/members/{memberUid}": {
+      "schema": "WorkspaceMember",
+      "description": "Workspace membership records for verified Google accounts."
+    },
+    "/workspaces/{workspaceId}/metaChunks/{chunkId}": {
+      "schema": "MetaChunk",
+      "description": "Bounded non-PII warehouse and account chunks."
+    },
+    "/workspaces/{workspaceId}/accountPrivate/{accountId}": {
+      "schema": "AccountPrivatePii",
+      "description": "Admin-isolated PII (email, phone) for warehouse accounts."
+    },
+    "/workspaces/{workspaceId}/warehousePrivate/{warehouseId}": {
+      "schema": "WarehousePrivatePii",
+      "description": "Admin-isolated phone contact info for warehouses."
+    },
+    "/workspaces/{workspaceId}/tombstoneChunks/{chunkId}": {
+      "schema": "TombstoneChunk",
+      "description": "Bounded deletion tombstone chunks."
+    },
+    "/workspaces/{workspaceId}/materialChunks/{chunkId}": {
+      "schema": "MaterialChunk",
+      "description": "Bounded material catalog chunks."
+    },
+    "/workspaces/{workspaceId}/inboundIndex/{chunkId}": {
+      "schema": "ReceiptIndexChunk",
+      "description": "Bounded inbound receipt manifest index chunks."
+    },
+    "/workspaces/{workspaceId}/inboundReceipts/{receiptDocId}": {
+      "schema": "InboundReceiptHeader",
+      "description": "Inbound receipt headers."
+    },
+    "/workspaces/{workspaceId}/inboundItems/{chunkDocId}": {
+      "schema": "InboundItemChunk",
+      "description": "Bounded inbound receipt item chunks."
+    },
+    "/workspaces/{workspaceId}/outboundIndex/{chunkId}": {
+      "schema": "ReceiptIndexChunk",
+      "description": "Bounded outbound receipt manifest index chunks."
+    },
+    "/workspaces/{workspaceId}/outboundReceipts/{receiptDocId}": {
+      "schema": "OutboundReceiptHeader",
+      "description": "Outbound receipt headers."
+    },
+    "/workspaces/{workspaceId}/outboundItems/{chunkDocId}": {
+      "schema": "OutboundItemChunk",
+      "description": "Bounded outbound receipt item chunks."
+    },
+    "/workspaces/{workspaceId}/sessions/{sessionDocId}": {
+      "schema": "ActiveDeviceSession",
+      "description": "Single-device active session lock records."
+    }
+  }
+}

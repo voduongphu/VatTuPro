@@ -1,0 +1,1013 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Pillar 0: Global Default-Deny Safety Net (First Rule Block)
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // =========================================================================
+    // Phase 3: Hardened Global Primitives
+    // =========================================================================
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isValidWorkspaceId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 64 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isBootstrappedAdmin() {
+      return isVerifiedUser() && request.auth.token.email == 'voduongphu@gmail.com';
+    }
+
+    function isAdmin() {
+      return isVerifiedUser() && (
+        request.auth.token.email == 'voduongphu@gmail.com' ||
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      );
+    }
+
+    function isWorkspaceActive(workspaceId) {
+      return exists(/databases/$(database)/documents/workspaces/$(workspaceId)) &&
+        get(/databases/$(database)/documents/workspaces/$(workspaceId)).data.status == 'active';
+    }
+
+    function isActiveMember(workspaceId) {
+      return isVerifiedUser() &&
+        isWorkspaceActive(workspaceId) && (
+          isAdmin() || (
+            exists(/databases/$(database)/documents/workspaces/$(workspaceId)/members/$(request.auth.uid)) &&
+            get(/databases/$(database)/documents/workspaces/$(workspaceId)/members/$(request.auth.uid)).data.status == 'active'
+          )
+        );
+    }
+
+    function isBoundedMapList(listVal) {
+      return listVal is list &&
+        listVal.size() <= 200 &&
+        (listVal.size() == 0 || (listVal.size() > 0 && listVal[0] is map && listVal[0].keys().size() <= 32));
+    }
+
+    function isNonNegNumber(n) {
+      return n is number && n >= 0 && n <= 100000000000000;
+    }
+
+    function isBoundedNumber(n) {
+      return n is number && n >= -100000000000000 && n <= 100000000000000;
+    }
+
+    // =========================================================================
+    // Validation Blueprints (Pillar 2: Anti-Update-Gap + Blueprint Synchronicity)
+    // =========================================================================
+    function isValidAdminRecord(data) {
+      return data.keys().hasAll(['uid', 'note', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['uid', 'note', 'createdAt', 'updatedAt']) &&
+        isValidId(data.uid) &&
+        data.note is string && data.note.size() <= 200 &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidWorkspaceManifest(data) {
+      return data.keys().hasAll([
+          'workspaceId', 'name', 'ownerUid', 'updatedByUid', 'status', 'allowSelfJoin',
+          'serverRevision', 'metaRevision', 'materialsRevision', 'materialsCount',
+          'materialsChunkCount', 'materialsDigest', 'metaDigest', 'accountChunkCount',
+          'warehouseChunkCount', 'tombstoneChunkCount', 'inboundIndexChunkCount',
+          'outboundIndexChunkCount', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'workspaceId', 'name', 'ownerUid', 'updatedByUid', 'status', 'allowSelfJoin',
+          'serverRevision', 'metaRevision', 'materialsRevision', 'materialsCount',
+          'materialsChunkCount', 'materialsDigest', 'metaDigest', 'accountChunkCount',
+          'warehouseChunkCount', 'tombstoneChunkCount', 'inboundIndexChunkCount',
+          'outboundIndexChunkCount', 'createdAt', 'updatedAt'
+        ]) &&
+        isValidWorkspaceId(data.workspaceId) &&
+        data.name is string && data.name.size() >= 1 && data.name.size() <= 200 &&
+        data.ownerUid is string && data.ownerUid.size() >= 1 && data.ownerUid.size() <= 128 &&
+        data.updatedByUid is string && data.updatedByUid.size() >= 1 && data.updatedByUid.size() <= 128 &&
+        data.updatedByUid == request.auth.uid &&
+        data.status is string && data.status.size() >= 1 && data.status.size() <= 32 &&
+        (data.status == 'active' || data.status == 'archived') &&
+        data.allowSelfJoin is bool &&
+        isNonNegNumber(data.serverRevision) &&
+        isNonNegNumber(data.metaRevision) &&
+        isNonNegNumber(data.materialsRevision) &&
+        isNonNegNumber(data.materialsCount) &&
+        data.materialsChunkCount is number && data.materialsChunkCount >= 0 && data.materialsChunkCount <= 2000 &&
+        data.materialsDigest is string && data.materialsDigest.size() >= 1 && data.materialsDigest.size() <= 128 &&
+        data.metaDigest is string && data.metaDigest.size() >= 1 && data.metaDigest.size() <= 128 &&
+        data.accountChunkCount is number && data.accountChunkCount >= 0 && data.accountChunkCount <= 50 &&
+        data.warehouseChunkCount is number && data.warehouseChunkCount >= 0 && data.warehouseChunkCount <= 50 &&
+        data.tombstoneChunkCount is number && data.tombstoneChunkCount >= 0 && data.tombstoneChunkCount <= 500 &&
+        data.inboundIndexChunkCount is number && data.inboundIndexChunkCount >= 0 && data.inboundIndexChunkCount <= 500 &&
+        data.outboundIndexChunkCount is number && data.outboundIndexChunkCount >= 0 && data.outboundIndexChunkCount <= 500 &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidWorkspaceMember(data) {
+      return data.keys().hasAll([
+          'workspaceId', 'uid', 'displayName', 'memberRole', 'status',
+          'updatedByUid', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'workspaceId', 'uid', 'displayName', 'memberRole', 'status',
+          'updatedByUid', 'createdAt', 'updatedAt'
+        ]) &&
+        isValidWorkspaceId(data.workspaceId) &&
+        data.uid is string && data.uid.size() >= 1 && data.uid.size() <= 128 &&
+        data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 160 &&
+        data.memberRole is string && data.memberRole.size() >= 1 && data.memberRole.size() <= 32 &&
+        (data.memberRole == 'member' || data.memberRole == 'admin') &&
+        data.status is string && data.status.size() >= 1 && data.status.size() <= 32 &&
+        (data.status == 'active' || data.status == 'revoked') &&
+        data.updatedByUid is string && data.updatedByUid.size() >= 1 && data.updatedByUid.size() <= 128 &&
+        data.updatedByUid == request.auth.uid &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidMetaChunk(data) {
+      return data.keys().hasAll([
+          'workspaceId', 'chunkType', 'chunkIndex', 'items', 'updatedByUid', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'workspaceId', 'chunkType', 'chunkIndex', 'items', 'updatedByUid', 'createdAt', 'updatedAt'
+        ]) &&
+        isValidWorkspaceId(data.workspaceId) &&
+        data.chunkType is string && data.chunkType.size() >= 1 && data.chunkType.size() <= 32 &&
+        (data.chunkType == 'accounts' || data.chunkType == 'warehouses') &&
+        data.chunkIndex is number && data.chunkIndex >= 0 && data.chunkIndex <= 50 &&
+        isBoundedMapList(data.items) &&
+        data.updatedByUid is string && data.updatedByUid.size() >= 1 && data.updatedByUid.size() <= 128 &&
+        data.updatedByUid == request.auth.uid &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidAccountPrivatePii(data) {
+      return data.keys().hasAll([
+          'workspaceId', 'accountId', 'email', 'phone', 'updatedByUid', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'workspaceId', 'accountId', 'email', 'phone', 'updatedByUid', 'createdAt', 'updatedAt'
+        ]) &&
+        isValidWorkspaceId(data.workspaceId) &&
+        isValidId(data.accountId) &&
+        data.email is string && data.email.size() <= 200 &&
+        data.phone is string && data.phone.size() <= 64 &&
+        data.updatedByUid is string && data.updatedByUid.size() >= 1 && data.updatedByUid.size() <= 128 &&
+        data.updatedByUid == request.auth.uid &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidWarehousePrivatePii(data) {
+      return data.keys().hasAll([
+          'workspaceId', 'warehouseId', 'phone', 'updatedByUid', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'workspaceId', 'warehouseId', 'phone', 'updatedByUid', 'createdAt', 'updatedAt'
+        ]) &&
+        isValidWorkspaceId(data.workspaceId) &&
+        isValidId(data.warehouseId) &&
+        data.phone is string && data.phone.size() <= 64 &&
+        data.updatedByUid is string && data.updatedByUid.size() >= 1 && data.updatedByUid.size() <= 128 &&
+        data.updatedByUid == request.auth.uid &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidTombstoneChunk(data) {
+      return data.keys().hasAll([
+          'workspaceId', 'chunkIndex', 'items', 'updatedByUid', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'workspaceId', 'chunkIndex', 'items', 'updatedByUid', 'createdAt', 'updatedAt'
+        ]) &&
+        isValidWorkspaceId(data.workspaceId) &&
+        data.chunkIndex is number && data.chunkIndex >= 0 && data.chunkIndex <= 500 &&
+        isBoundedMapList(data.items) &&
+        data.updatedByUid is string && data.updatedByUid.size() >= 1 && data.updatedByUid.size() <= 128 &&
+        data.updatedByUid == request.auth.uid &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidMaterialChunk(data) {
+      return data.keys().hasAll([
+          'workspaceId', 'chunkIndex', 'items', 'updatedByUid', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'workspaceId', 'chunkIndex', 'items', 'updatedByUid', 'createdAt', 'updatedAt'
+        ]) &&
+        isValidWorkspaceId(data.workspaceId) &&
+        data.chunkIndex is number && data.chunkIndex >= 0 && data.chunkIndex <= 2000 &&
+        isBoundedMapList(data.items) &&
+        data.updatedByUid is string && data.updatedByUid.size() >= 1 && data.updatedByUid.size() <= 128 &&
+        data.updatedByUid == request.auth.uid &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidReceiptIndexChunk(data) {
+      return data.keys().hasAll([
+          'workspaceId', 'receiptKind', 'chunkIndex', 'items', 'updatedByUid', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'workspaceId', 'receiptKind', 'chunkIndex', 'items', 'updatedByUid', 'createdAt', 'updatedAt'
+        ]) &&
+        isValidWorkspaceId(data.workspaceId) &&
+        data.receiptKind is string && data.receiptKind.size() >= 1 && data.receiptKind.size() <= 32 &&
+        (data.receiptKind == 'inbound' || data.receiptKind == 'outbound') &&
+        data.chunkIndex is number && data.chunkIndex >= 0 && data.chunkIndex <= 500 &&
+        isBoundedMapList(data.items) &&
+        data.updatedByUid is string && data.updatedByUid.size() >= 1 && data.updatedByUid.size() <= 128 &&
+        data.updatedByUid == request.auth.uid &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidInboundReceiptHeader(data) {
+      return data.keys().hasAll([
+          'workspaceId', 'docId', 'id', 'receiptCode', 'receiptDate', 'warehouseId',
+          'warehouseName', 'departmentName', 'contractNo', 'requestNo', 'inboundType',
+          'amountInWords', 'attachedDocs', 'supplier', 'manufacturer', 'shipment',
+          'packingListNo', 'delivererName', 'receiverName', 'driverVehicleNo', 'notes',
+          'packageCount', 'totalQuantity', 'totalWeightKg', 'totalAmount', 'itemCount',
+          'chunkCount', 'digest', 'createdBy', 'createdAtIso', 'appUpdatedAt',
+          'itemsReplacedAt', 'lastEditedBy', 'lastEditedAt', 'updatedByUid', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'workspaceId', 'docId', 'id', 'receiptCode', 'receiptDate', 'warehouseId',
+          'warehouseName', 'departmentName', 'contractNo', 'requestNo', 'inboundType',
+          'amountInWords', 'attachedDocs', 'supplier', 'manufacturer', 'shipment',
+          'packingListNo', 'delivererName', 'receiverName', 'driverVehicleNo', 'notes',
+          'packageCount', 'totalQuantity', 'totalWeightKg', 'totalAmount', 'itemCount',
+          'chunkCount', 'digest', 'createdBy', 'createdAtIso', 'appUpdatedAt',
+          'itemsReplacedAt', 'lastEditedBy', 'lastEditedAt', 'updatedByUid', 'createdAt', 'updatedAt'
+        ]) &&
+        isValidWorkspaceId(data.workspaceId) &&
+        isValidId(data.docId) &&
+        data.id is string && data.id.size() >= 1 && data.id.size() <= 160 &&
+        data.receiptCode is string && data.receiptCode.size() >= 1 && data.receiptCode.size() <= 160 &&
+        data.receiptDate is string && data.receiptDate.size() <= 40 &&
+        data.warehouseId is string && data.warehouseId.size() <= 160 &&
+        data.warehouseName is string && data.warehouseName.size() <= 300 &&
+        data.departmentName is string && data.departmentName.size() <= 300 &&
+        data.contractNo is string && data.contractNo.size() <= 200 &&
+        data.requestNo is string && data.requestNo.size() <= 200 &&
+        data.inboundType is string && data.inboundType.size() >= 1 && data.inboundType.size() <= 32 &&
+        (data.inboundType == 'new' || data.inboundType == 'return') &&
+        data.amountInWords is string && data.amountInWords.size() <= 500 &&
+        data.attachedDocs is string && data.attachedDocs.size() <= 500 &&
+        data.supplier is string && data.supplier.size() <= 300 &&
+        data.manufacturer is string && data.manufacturer.size() <= 300 &&
+        data.shipment is string && data.shipment.size() <= 300 &&
+        data.packingListNo is string && data.packingListNo.size() <= 300 &&
+        data.delivererName is string && data.delivererName.size() <= 200 &&
+        data.receiverName is string && data.receiverName.size() <= 200 &&
+        data.driverVehicleNo is string && data.driverVehicleNo.size() <= 200 &&
+        data.notes is string && data.notes.size() <= 2000 &&
+        isNonNegNumber(data.packageCount) &&
+        isBoundedNumber(data.totalQuantity) &&
+        isBoundedNumber(data.totalWeightKg) &&
+        isBoundedNumber(data.totalAmount) &&
+        isNonNegNumber(data.itemCount) &&
+        data.chunkCount is number && data.chunkCount >= 0 && data.chunkCount <= 1000 &&
+        data.digest is string && data.digest.size() >= 1 && data.digest.size() <= 128 &&
+        data.createdBy is string && data.createdBy.size() <= 200 &&
+        data.createdAtIso is string && data.createdAtIso.size() <= 64 &&
+        isNonNegNumber(data.appUpdatedAt) &&
+        isNonNegNumber(data.itemsReplacedAt) &&
+        data.lastEditedBy is string && data.lastEditedBy.size() <= 200 &&
+        data.lastEditedAt is string && data.lastEditedAt.size() <= 64 &&
+        data.updatedByUid is string && data.updatedByUid.size() >= 1 && data.updatedByUid.size() <= 128 &&
+        data.updatedByUid == request.auth.uid &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidInboundItemChunk(data) {
+      return data.keys().hasAll([
+          'workspaceId', 'receiptDocId', 'chunkIndex', 'items', 'updatedByUid', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'workspaceId', 'receiptDocId', 'chunkIndex', 'items', 'updatedByUid', 'createdAt', 'updatedAt'
+        ]) &&
+        isValidWorkspaceId(data.workspaceId) &&
+        isValidId(data.receiptDocId) &&
+        data.chunkIndex is number && data.chunkIndex >= 0 && data.chunkIndex <= 1000 &&
+        isBoundedMapList(data.items) &&
+        data.updatedByUid is string && data.updatedByUid.size() >= 1 && data.updatedByUid.size() <= 128 &&
+        data.updatedByUid == request.auth.uid &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidOutboundReceiptHeader(data) {
+      return data.keys().hasAll([
+          'workspaceId', 'docId', 'id', 'issueCode', 'issueDate', 'warehouseId',
+          'warehouseName', 'departmentName', 'requestNo', 'outboundType', 'projectName',
+          'recipientDepartment', 'recipientName', 'issuerName', 'notes', 'packingListSummary',
+          'totalQuantity', 'totalWeightKg', 'totalAmount', 'itemCount', 'chunkCount',
+          'digest', 'createdBy', 'createdAtIso', 'appUpdatedAt', 'itemsReplacedAt',
+          'lastEditedBy', 'lastEditedAt', 'updatedByUid', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'workspaceId', 'docId', 'id', 'issueCode', 'issueDate', 'warehouseId',
+          'warehouseName', 'departmentName', 'requestNo', 'outboundType', 'projectName',
+          'recipientDepartment', 'recipientName', 'issuerName', 'notes', 'packingListSummary',
+          'totalQuantity', 'totalWeightKg', 'totalAmount', 'itemCount', 'chunkCount',
+          'digest', 'createdBy', 'createdAtIso', 'appUpdatedAt', 'itemsReplacedAt',
+          'lastEditedBy', 'lastEditedAt', 'updatedByUid', 'createdAt', 'updatedAt'
+        ]) &&
+        isValidWorkspaceId(data.workspaceId) &&
+        isValidId(data.docId) &&
+        data.id is string && data.id.size() >= 1 && data.id.size() <= 160 &&
+        data.issueCode is string && data.issueCode.size() >= 1 && data.issueCode.size() <= 160 &&
+        data.issueDate is string && data.issueDate.size() <= 40 &&
+        data.warehouseId is string && data.warehouseId.size() <= 160 &&
+        data.warehouseName is string && data.warehouseName.size() <= 300 &&
+        data.departmentName is string && data.departmentName.size() <= 300 &&
+        data.requestNo is string && data.requestNo.size() <= 200 &&
+        data.outboundType is string && data.outboundType.size() >= 1 && data.outboundType.size() <= 32 &&
+        (data.outboundType == 'issue' || data.outboundType == 'transfer') &&
+        data.projectName is string && data.projectName.size() <= 300 &&
+        data.recipientDepartment is string && data.recipientDepartment.size() <= 300 &&
+        data.recipientName is string && data.recipientName.size() <= 200 &&
+        data.issuerName is string && data.issuerName.size() <= 200 &&
+        data.notes is string && data.notes.size() <= 2000 &&
+        data.packingListSummary is string && data.packingListSummary.size() <= 500 &&
+        isBoundedNumber(data.totalQuantity) &&
+        isBoundedNumber(data.totalWeightKg) &&
+        isBoundedNumber(data.totalAmount) &&
+        isNonNegNumber(data.itemCount) &&
+        data.chunkCount is number && data.chunkCount >= 0 && data.chunkCount <= 1000 &&
+        data.digest is string && data.digest.size() >= 1 && data.digest.size() <= 128 &&
+        data.createdBy is string && data.createdBy.size() <= 200 &&
+        data.createdAtIso is string && data.createdAtIso.size() <= 64 &&
+        isNonNegNumber(data.appUpdatedAt) &&
+        isNonNegNumber(data.itemsReplacedAt) &&
+        data.lastEditedBy is string && data.lastEditedBy.size() <= 200 &&
+        data.lastEditedAt is string && data.lastEditedAt.size() <= 64 &&
+        data.updatedByUid is string && data.updatedByUid.size() >= 1 && data.updatedByUid.size() <= 128 &&
+        data.updatedByUid == request.auth.uid &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidOutboundItemChunk(data) {
+      return data.keys().hasAll([
+          'workspaceId', 'receiptDocId', 'chunkIndex', 'items', 'updatedByUid', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'workspaceId', 'receiptDocId', 'chunkIndex', 'items', 'updatedByUid', 'createdAt', 'updatedAt'
+        ]) &&
+        isValidWorkspaceId(data.workspaceId) &&
+        isValidId(data.receiptDocId) &&
+        data.chunkIndex is number && data.chunkIndex >= 0 && data.chunkIndex <= 1000 &&
+        isBoundedMapList(data.items) &&
+        data.updatedByUid is string && data.updatedByUid.size() >= 1 && data.updatedByUid.size() <= 128 &&
+        data.updatedByUid == request.auth.uid &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidActiveDeviceSession(data) {
+      return data.keys().hasAll([
+          'workspaceId', 'sessionDocId', 'userKey', 'userId', 'username',
+          'sessionToken', 'issuedAtMs', 'deviceId', 'deviceLabel', 'loginAt',
+          'lastSeenAt', 'revokedBeforeMs', 'forceLogoutDeviceLabel', 'forceLogoutAt',
+          'updatedByUid', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'workspaceId', 'sessionDocId', 'userKey', 'userId', 'username',
+          'sessionToken', 'issuedAtMs', 'deviceId', 'deviceLabel', 'loginAt',
+          'lastSeenAt', 'revokedBeforeMs', 'forceLogoutDeviceLabel', 'forceLogoutAt',
+          'updatedByUid', 'createdAt', 'updatedAt'
+        ]) &&
+        isValidWorkspaceId(data.workspaceId) &&
+        isValidId(data.sessionDocId) &&
+        data.userKey is string && data.userKey.size() >= 1 && data.userKey.size() <= 160 &&
+        data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 160 &&
+        data.username is string && data.username.size() >= 1 && data.username.size() <= 160 &&
+        data.sessionToken is string && data.sessionToken.size() <= 200 &&
+        isNonNegNumber(data.issuedAtMs) &&
+        data.deviceId is string && data.deviceId.size() <= 160 &&
+        data.deviceLabel is string && data.deviceLabel.size() <= 200 &&
+        data.loginAt is string && data.loginAt.size() <= 64 &&
+        isNonNegNumber(data.lastSeenAt) &&
+        isNonNegNumber(data.revokedBeforeMs) &&
+        data.forceLogoutDeviceLabel is string && data.forceLogoutDeviceLabel.size() <= 200 &&
+        data.forceLogoutAt is string && data.forceLogoutAt.size() <= 64 &&
+        data.updatedByUid is string && data.updatedByUid.size() >= 1 && data.updatedByUid.size() <= 128 &&
+        data.updatedByUid == request.auth.uid &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    // =========================================================================
+    // 1. /admins/{adminUid}
+    // =========================================================================
+    match /admins/{adminUid} {
+      allow get: if isVerifiedUser() && isValidId(adminUid) && (request.auth.uid == adminUid || isBootstrappedAdmin());
+      allow list: if false;
+      allow create: if isBootstrappedAdmin() &&
+        isValidId(adminUid) &&
+        isValidAdminRecord(incoming()) &&
+        incoming().uid == adminUid &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+      allow update: if (
+        isBootstrappedAdmin() &&
+        isValidId(adminUid) &&
+        isValidAdminRecord(incoming()) &&
+        incoming().uid == existing().uid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['note', 'updatedAt'])
+      );
+      allow delete: if isBootstrappedAdmin() && isValidId(adminUid);
+    }
+
+    // =========================================================================
+    // 2. /workspaces/{workspaceId} (Master Gate)
+    // =========================================================================
+    match /workspaces/{workspaceId} {
+      allow get: if isVerifiedUser() &&
+        isValidWorkspaceId(workspaceId) &&
+        (resource == null || isAdmin() || isActiveMember(workspaceId));
+      allow list: if false;
+
+      allow create: if isVerifiedUser() &&
+        isValidWorkspaceId(workspaceId) &&
+        workspaceId == 'vtp_main' &&
+        isValidWorkspaceManifest(incoming()) &&
+        incoming().workspaceId == workspaceId &&
+        incoming().ownerUid == request.auth.uid &&
+        incoming().status == 'active' &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        existsAfter(/databases/$(database)/documents/workspaces/$(workspaceId)/members/$(request.auth.uid));
+
+      allow update: if (
+        isVerifiedUser() &&
+        isValidWorkspaceId(workspaceId) &&
+        isValidWorkspaceManifest(incoming()) &&
+        incoming().workspaceId == existing().workspaceId &&
+        incoming().ownerUid == existing().ownerUid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time && (
+          isAdmin() || (
+            existing().status != 'archived' &&
+            incoming().status == existing().status &&
+            incoming().allowSelfJoin == existing().allowSelfJoin &&
+            incoming().name == existing().name &&
+            isActiveMember(workspaceId) &&
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'updatedByUid', 'serverRevision', 'metaRevision', 'materialsRevision',
+              'materialsCount', 'materialsChunkCount', 'materialsDigest', 'metaDigest',
+              'accountChunkCount', 'warehouseChunkCount', 'tombstoneChunkCount',
+              'inboundIndexChunkCount', 'outboundIndexChunkCount', 'updatedAt'
+            ])
+          )
+        )
+      );
+
+      allow delete: if false;
+
+      // =======================================================================
+      // 3. /workspaces/{workspaceId}/members/{memberUid}
+      // =======================================================================
+      match /members/{memberUid} {
+        allow get: if isVerifiedUser() &&
+          isValidWorkspaceId(workspaceId) &&
+          isValidId(memberUid) &&
+          (request.auth.uid == memberUid || isAdmin());
+        allow list: if false;
+
+        allow create: if isVerifiedUser() &&
+          isValidWorkspaceId(workspaceId) &&
+          isValidId(memberUid) &&
+          isValidWorkspaceMember(incoming()) &&
+          incoming().workspaceId == workspaceId &&
+          incoming().uid == memberUid &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time && (
+            isAdmin() || (
+              memberUid == request.auth.uid &&
+              incoming().memberRole == 'member' &&
+              incoming().status == 'active' && (
+                (exists(/databases/$(database)/documents/workspaces/$(workspaceId)) &&
+                  get(/databases/$(database)/documents/workspaces/$(workspaceId)).data.status == 'active' &&
+                  get(/databases/$(database)/documents/workspaces/$(workspaceId)).data.allowSelfJoin == true) ||
+                (existsAfter(/databases/$(database)/documents/workspaces/$(workspaceId)) &&
+                  getAfter(/databases/$(database)/documents/workspaces/$(workspaceId)).data.status == 'active' &&
+                  getAfter(/databases/$(database)/documents/workspaces/$(workspaceId)).data.allowSelfJoin == true)
+              )
+            )
+          );
+
+        allow update: if (
+          isVerifiedUser() &&
+          isValidWorkspaceId(workspaceId) &&
+          isValidId(memberUid) &&
+          isValidWorkspaceMember(incoming()) &&
+          incoming().workspaceId == existing().workspaceId &&
+          incoming().uid == existing().uid &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time && (
+            isAdmin() || (
+              memberUid == request.auth.uid &&
+              existing().status != 'revoked' &&
+              incoming().status == existing().status &&
+              incoming().memberRole == existing().memberRole &&
+              isWorkspaceActive(workspaceId) &&
+              incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'updatedByUid', 'updatedAt'])
+            )
+          )
+        );
+
+        allow delete: if isVerifiedUser() && isValidWorkspaceId(workspaceId) && isValidId(memberUid) && isAdmin();
+      }
+
+      // =======================================================================
+      // 4. /workspaces/{workspaceId}/metaChunks/{chunkId} (Non-PII Only)
+      // =======================================================================
+      match /metaChunks/{chunkId} {
+        allow get: if isVerifiedUser() && isValidWorkspaceId(workspaceId) && isValidId(chunkId) && isActiveMember(workspaceId);
+        allow list: if false;
+
+        allow create: if isVerifiedUser() &&
+          isValidWorkspaceId(workspaceId) &&
+          isValidId(chunkId) &&
+          isValidMetaChunk(incoming()) &&
+          incoming().workspaceId == workspaceId &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time &&
+          isActiveMember(workspaceId);
+
+        allow update: if (
+          isVerifiedUser() &&
+          isValidWorkspaceId(workspaceId) &&
+          isValidId(chunkId) &&
+          isValidMetaChunk(incoming()) &&
+          incoming().workspaceId == existing().workspaceId &&
+          incoming().chunkType == existing().chunkType &&
+          incoming().chunkIndex == existing().chunkIndex &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time && (
+            isAdmin() || (
+              isActiveMember(workspaceId) &&
+              incoming().diff(existing()).affectedKeys().hasOnly(['items', 'updatedByUid', 'updatedAt'])
+            )
+          )
+        );
+
+        allow delete: if isVerifiedUser() && isValidWorkspaceId(workspaceId) && isValidId(chunkId) && isAdmin();
+      }
+
+      // =======================================================================
+      // 5. /workspaces/{workspaceId}/accountPrivate/{accountId} (PII Isolated to Admin)
+      // =======================================================================
+      match /accountPrivate/{accountId} {
+        allow get: if isVerifiedUser() && isValidWorkspaceId(workspaceId) && isValidId(accountId) && isAdmin();
+        allow list: if false;
+
+        allow create: if isVerifiedUser() &&
+          isValidWorkspaceId(workspaceId) &&
+          isValidId(accountId) &&
+          isValidAccountPrivatePii(incoming()) &&
+          incoming().workspaceId == workspaceId &&
+          incoming().accountId == accountId &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time &&
+          isAdmin() &&
+          isWorkspaceActive(workspaceId);
+
+        allow update: if (
+          isVerifiedUser() &&
+          isValidWorkspaceId(workspaceId) &&
+          isValidId(accountId) &&
+          isValidAccountPrivatePii(incoming()) &&
+          incoming().workspaceId == existing().workspaceId &&
+          incoming().accountId == existing().accountId &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time &&
+          isAdmin() &&
+          isWorkspaceActive(workspaceId) &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['email', 'phone', 'updatedByUid', 'updatedAt'])
+        );
+
+        allow delete: if isVerifiedUser() && isValidWorkspaceId(workspaceId) && isValidId(accountId) && isAdmin();
+      }
+
+      // =======================================================================
+      // 6. /workspaces/{workspaceId}/warehousePrivate/{warehouseId} (PII Isolated to Admin)
+      // =======================================================================
+      match /warehousePrivate/{warehouseId} {
+        allow get: if isVerifiedUser() && isValidWorkspaceId(workspaceId) && isValidId(warehouseId) && isAdmin();
+        allow list: if false;
+
+        allow create: if isVerifiedUser() &&
+          isValidWorkspaceId(workspaceId) &&
+          isValidId(warehouseId) &&
+          isValidWarehousePrivatePii(incoming()) &&
+          incoming().workspaceId == workspaceId &&
+          incoming().warehouseId == warehouseId &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time &&
+          isAdmin() &&
+          isWorkspaceActive(workspaceId);
+
+        allow update: if (
+          isVerifiedUser() &&
+          isValidWorkspaceId(workspaceId) &&
+          isValidId(warehouseId) &&
+          isValidWarehousePrivatePii(incoming()) &&
+          incoming().workspaceId == existing().workspaceId &&
+          incoming().warehouseId == existing().warehouseId &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time &&
+          isAdmin() &&
+          isWorkspaceActive(workspaceId) &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['phone', 'updatedByUid', 'updatedAt'])
+        );
+
+        allow delete: if isVerifiedUser() && isValidWorkspaceId(workspaceId) && isValidId(warehouseId) && isAdmin();
+      }
+
+      // =======================================================================
+      // 7. /workspaces/{workspaceId}/tombstoneChunks/{chunkId}
+      // =======================================================================
+      match /tombstoneChunks/{chunkId} {
+        allow get: if isVerifiedUser() && isValidWorkspaceId(workspaceId) && isValidId(chunkId) && isActiveMember(workspaceId);
+        allow list: if false;
+
+        allow create: if isVerifiedUser() &&
+          isValidWorkspaceId(workspaceId) &&
+          isValidId(chunkId) &&
+          isValidTombstoneChunk(incoming()) &&
+          incoming().workspaceId == workspaceId &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time &&
+          isActiveMember(workspaceId);
+
+        allow update: if (
+          isVerifiedUser() &&
+          isValidWorkspaceId(workspaceId) &&
+          isValidId(chunkId) &&
+          isValidTombstoneChunk(incoming()) &&
+          incoming().workspaceId == existing().workspaceId &&
+          incoming().chunkIndex == existing().chunkIndex &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time && (
+            isAdmin() || (
+              isActiveMember(workspaceId) &&
+              incoming().diff(existing()).affectedKeys().hasOnly(['items', 'updatedByUid', 'updatedAt'])
+            )
+          )
+        );
+
+        allow delete: if isVerifiedUser() && isValidWorkspaceId(workspaceId) && isValidId(chunkId) && isAdmin();
+      }
+
+      // =======================================================================
+      // 8. /workspaces/{workspaceId}/materialChunks/{chunkId}
+      // =======================================================================
+      match /materialChunks/{chunkId} {
+        allow get: if isVerifiedUser() && isValidWorkspaceId(workspaceId) && isValidId(chunkId) && isActiveMember(workspaceId);
+        allow list: if false;
+
+        allow create: if isVerifiedUser() &&
+          isValidWorkspaceId(workspaceId) &&
+          isValidId(chunkId) &&
+          isValidMaterialChunk(incoming()) &&
+          incoming().workspaceId == workspaceId &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time &&
+          isActiveMember(workspaceId);
+
+        allow update: if (
+          isVerifiedUser() &&
+          isValidWorkspaceId(workspaceId) &&
+          isValidId(chunkId) &&
+          isValidMaterialChunk(incoming()) &&
+          incoming().workspaceId == existing().workspaceId &&
+          incoming().chunkIndex == existing().chunkIndex &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time && (
+            isAdmin() || (
+              isActiveMember(workspaceId) &&
+              incoming().diff(existing()).affectedKeys().hasOnly(['items', 'updatedByUid', 'updatedAt'])
+            )
+          )
+        );
+
+        allow delete: if isVerifiedUser() && isValidWorkspaceId(workspaceId) && isValidId(chunkId) && isAdmin();
+      }
+
+      // =======================================================================
+      // 9. /workspaces/{workspaceId}/inboundIndex/{chunkId}
+      // =======================================================================
+      match /inboundIndex/{chunkId} {
+        allow get: if isVerifiedUser() && isValidWorkspaceId(workspaceId) && isValidId(chunkId) && isActiveMember(workspaceId);
+        allow list: if false;
+
+        allow create: if isVerifiedUser() &&
+          isValidWorkspaceId(workspaceId) &&
+          isValidId(chunkId) &&
+          isValidReceiptIndexChunk(incoming()) &&
+          incoming().workspaceId == workspaceId &&
+          incoming().receiptKind == 'inbound' &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time &&
+          isActiveMember(workspaceId);
+
+        allow update: if (
+          isVerifiedUser() &&
+          isValidWorkspaceId(workspaceId) &&
+          isValidId(chunkId) &&
+          isValidReceiptIndexChunk(incoming()) &&
+          incoming().workspaceId == existing().workspaceId &&
+          incoming().receiptKind == existing().receiptKind &&
+          incoming().chunkIndex == existing().chunkIndex &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time && (
+            isAdmin() || (
+              isActiveMember(workspaceId) &&
+              incoming().diff(existing()).affectedKeys().hasOnly(['items', 'updatedByUid', 'updatedAt'])
+            )
+          )
+        );
+
+        allow delete: if isVerifiedUser() && isValidWorkspaceId(workspaceId) && isValidId(chunkId) && isAdmin();
+      }
+
+      // =======================================================================
+      // 10. /workspaces/{workspaceId}/inboundReceipts/{receiptDocId}
+      // =======================================================================
+      match /inboundReceipts/{receiptDocId} {
+        allow get: if isVerifiedUser() && isValidWorkspaceId(workspaceId) && isValidId(receiptDocId) && isActiveMember(workspaceId);
+        allow list: if false;
+
+        allow create: if isVerifiedUser() &&
+          isValidWorkspaceId(workspaceId) &&
+          isValidId(receiptDocId) &&
+          isValidInboundReceiptHeader(incoming()) &&
+          incoming().workspaceId == workspaceId &&
+          incoming().docId == receiptDocId &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time &&
+          isActiveMember(workspaceId);
+
+        allow update: if (
+          isVerifiedUser() &&
+          isValidWorkspaceId(workspaceId) &&
+          isValidId(receiptDocId) &&
+          isValidInboundReceiptHeader(incoming()) &&
+          incoming().workspaceId == existing().workspaceId &&
+          incoming().docId == existing().docId &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time && (
+            isAdmin() || (
+              isActiveMember(workspaceId) &&
+              incoming().diff(existing()).affectedKeys().hasOnly([
+                'id', 'receiptCode', 'receiptDate', 'warehouseId', 'warehouseName',
+                'departmentName', 'contractNo', 'requestNo', 'inboundType', 'amountInWords',
+                'attachedDocs', 'supplier', 'manufacturer', 'shipment', 'packingListNo',
+                'delivererName', 'receiverName', 'driverVehicleNo', 'notes', 'packageCount',
+                'totalQuantity', 'totalWeightKg', 'totalAmount', 'itemCount', 'chunkCount',
+                'digest', 'createdBy', 'createdAtIso', 'appUpdatedAt', 'itemsReplacedAt',
+                'lastEditedBy', 'lastEditedAt', 'updatedByUid', 'updatedAt'
+              ])
+            )
+          )
+        );
+
+        allow delete: if isVerifiedUser() && isValidWorkspaceId(workspaceId) && isValidId(receiptDocId) && isAdmin();
+      }
+
+      // =======================================================================
+      // 11. /workspaces/{workspaceId}/inboundItems/{chunkDocId}
+      // =======================================================================
+      match /inboundItems/{chunkDocId} {
+        allow get: if isVerifiedUser() && isValidWorkspaceId(workspaceId) && isValidId(chunkDocId) && isActiveMember(workspaceId);
+        allow list: if false;
+
+        allow create: if isVerifiedUser() &&
+          isValidWorkspaceId(workspaceId) &&
+          isValidId(chunkDocId) &&
+          isValidInboundItemChunk(incoming()) &&
+          incoming().workspaceId == workspaceId &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time &&
+          isActiveMember(workspaceId) && (
+            exists(/databases/$(database)/documents/workspaces/$(workspaceId)/inboundReceipts/$(incoming().receiptDocId)) ||
+            existsAfter(/databases/$(database)/documents/workspaces/$(workspaceId)/inboundReceipts/$(incoming().receiptDocId))
+          );
+
+        allow update: if (
+          isVerifiedUser() &&
+          isValidWorkspaceId(workspaceId) &&
+          isValidId(chunkDocId) &&
+          isValidInboundItemChunk(incoming()) &&
+          incoming().workspaceId == existing().workspaceId &&
+          incoming().receiptDocId == existing().receiptDocId &&
+          incoming().chunkIndex == existing().chunkIndex &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time && (
+            isAdmin() || (
+              isActiveMember(workspaceId) &&
+              incoming().diff(existing()).affectedKeys().hasOnly(['items', 'updatedByUid', 'updatedAt'])
+            )
+          )
+        );
+
+        allow delete: if isVerifiedUser() && isValidWorkspaceId(workspaceId) && isValidId(chunkDocId) && isAdmin();
+      }
+
+      // =======================================================================
+      // 12. /workspaces/{workspaceId}/outboundIndex/{chunkId}
+      // =======================================================================
+      match /outboundIndex/{chunkId} {
+        allow get: if isVerifiedUser() && isValidWorkspaceId(workspaceId) && isValidId(chunkId) && isActiveMember(workspaceId);
+        allow list: if false;
+
+        allow create: if isVerifiedUser() &&
+          isValidWorkspaceId(workspaceId) &&
+          isValidId(chunkId) &&
+          isValidReceiptIndexChunk(incoming()) &&
+          incoming().workspaceId == workspaceId &&
+          incoming().receiptKind == 'outbound' &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time &&
+          isActiveMember(workspaceId);
+
+        allow update: if (
+          isVerifiedUser() &&
+          isValidWorkspaceId(workspaceId) &&
+          isValidId(chunkId) &&
+          isValidReceiptIndexChunk(incoming()) &&
+          incoming().workspaceId == existing().workspaceId &&
+          incoming().receiptKind == existing().receiptKind &&
+          incoming().chunkIndex == existing().chunkIndex &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time && (
+            isAdmin() || (
+              isActiveMember(workspaceId) &&
+              incoming().diff(existing()).affectedKeys().hasOnly(['items', 'updatedByUid', 'updatedAt'])
+            )
+          )
+        );
+
+        allow delete: if isVerifiedUser() && isValidWorkspaceId(workspaceId) && isValidId(chunkId) && isAdmin();
+      }
+
+      // =======================================================================
+      // 13. /workspaces/{workspaceId}/outboundReceipts/{receiptDocId}
+      // =======================================================================
+      match /outboundReceipts/{receiptDocId} {
+        allow get: if isVerifiedUser() && isValidWorkspaceId(workspaceId) && isValidId(receiptDocId) && isActiveMember(workspaceId);
+        allow list: if false;
+
+        allow create: if isVerifiedUser() &&
+          isValidWorkspaceId(workspaceId) &&
+          isValidId(receiptDocId) &&
+          isValidOutboundReceiptHeader(incoming()) &&
+          incoming().workspaceId == workspaceId &&
+          incoming().docId == receiptDocId &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time &&
+          isActiveMember(workspaceId);
+
+        allow update: if (
+          isVerifiedUser() &&
+          isValidWorkspaceId(workspaceId) &&
+          isValidId(receiptDocId) &&
+          isValidOutboundReceiptHeader(incoming()) &&
+          incoming().workspaceId == existing().workspaceId &&
+          incoming().docId == existing().docId &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time && (
+            isAdmin() || (
+              isActiveMember(workspaceId) &&
+              incoming().diff(existing()).affectedKeys().hasOnly([
+                'id', 'issueCode', 'issueDate', 'warehouseId', 'warehouseName',
+                'departmentName', 'requestNo', 'outboundType', 'projectName',
+                'recipientDepartment', 'recipientName', 'issuerName', 'notes',
+                'packingListSummary', 'totalQuantity', 'totalWeightKg', 'totalAmount',
+                'itemCount', 'chunkCount', 'digest', 'createdBy', 'createdAtIso',
+                'appUpdatedAt', 'itemsReplacedAt', 'lastEditedBy', 'lastEditedAt',
+                'updatedByUid', 'updatedAt'
+              ])
+            )
+          )
+        );
+
+        allow delete: if isVerifiedUser() && isValidWorkspaceId(workspaceId) && isValidId(receiptDocId) && isAdmin();
+      }
+
+      // =======================================================================
+      // 14. /workspaces/{workspaceId}/outboundItems/{chunkDocId}
+      // =======================================================================
+      match /outboundItems/{chunkDocId} {
+        allow get: if isVerifiedUser() && isValidWorkspaceId(workspaceId) && isValidId(chunkDocId) && isActiveMember(workspaceId);
+        allow list: if false;
+
+        allow create: if isVerifiedUser() &&
+          isValidWorkspaceId(workspaceId) &&
+          isValidId(chunkDocId) &&
+          isValidOutboundItemChunk(incoming()) &&
+          incoming().workspaceId == workspaceId &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time &&
+          isActiveMember(workspaceId) && (
+            exists(/databases/$(database)/documents/workspaces/$(workspaceId)/outboundReceipts/$(incoming().receiptDocId)) ||
+            existsAfter(/databases/$(database)/documents/workspaces/$(workspaceId)/outboundReceipts/$(incoming().receiptDocId))
+          );
+
+        allow update: if (
+          isVerifiedUser() &&
+          isValidWorkspaceId(workspaceId) &&
+          isValidId(chunkDocId) &&
+          isValidOutboundItemChunk(incoming()) &&
+          incoming().workspaceId == existing().workspaceId &&
+          incoming().receiptDocId == existing().receiptDocId &&
+          incoming().chunkIndex == existing().chunkIndex &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time && (
+            isAdmin() || (
+              isActiveMember(workspaceId) &&
+              incoming().diff(existing()).affectedKeys().hasOnly(['items', 'updatedByUid', 'updatedAt'])
+            )
+          )
+        );
+
+        allow delete: if isVerifiedUser() && isValidWorkspaceId(workspaceId) && isValidId(chunkDocId) && isAdmin();
+      }
+
+      // =======================================================================
+      // 15. /workspaces/{workspaceId}/sessions/{sessionDocId}
+      // =======================================================================
+      match /sessions/{sessionDocId} {
+        allow get: if isVerifiedUser() && isValidWorkspaceId(workspaceId) && isValidId(sessionDocId) && isActiveMember(workspaceId);
+        allow list: if false;
+
+        allow create: if isVerifiedUser() &&
+          isValidWorkspaceId(workspaceId) &&
+          isValidId(sessionDocId) &&
+          isValidActiveDeviceSession(incoming()) &&
+          incoming().workspaceId == workspaceId &&
+          incoming().sessionDocId == sessionDocId &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time &&
+          isActiveMember(workspaceId);
+
+        allow update: if (
+          isVerifiedUser() &&
+          isValidWorkspaceId(workspaceId) &&
+          isValidId(sessionDocId) &&
+          isValidActiveDeviceSession(incoming()) &&
+          incoming().workspaceId == existing().workspaceId &&
+          incoming().sessionDocId == existing().sessionDocId &&
+          incoming().userKey == existing().userKey &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time && (
+            isAdmin() || (
+              isActiveMember(workspaceId) &&
+              incoming().diff(existing()).affectedKeys().hasOnly([
+                'userId', 'username', 'sessionToken', 'issuedAtMs', 'deviceId',
+                'deviceLabel', 'loginAt', 'lastSeenAt', 'revokedBeforeMs',
+                'forceLogoutDeviceLabel', 'forceLogoutAt', 'updatedByUid', 'updatedAt'
+              ])
+            )
+          )
+        );
+
+        allow delete: if isVerifiedUser() && isValidWorkspaceId(workspaceId) && isValidId(sessionDocId) && isAdmin();
+      }
+    }
+  }
+}

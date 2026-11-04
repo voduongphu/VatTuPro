@@ -18,6 +18,9 @@ import {
   MonitorSmartphone,
   LogOut,
   Clock,
+  Cloud,
+  CloudOff,
+  RefreshCw,
   X
 } from 'lucide-react';
 
@@ -41,6 +44,10 @@ function formatKickTime(iso?: string): string {
 export const LoginScreen: React.FC = () => {
   const {
     login,
+    loginWithGoogle,
+    connectCloudSync,
+    disconnectCloudSync,
+    cloudState,
     requestLogoutOtherDevice,
     sessionKickNotice,
     sessionKickAlert,
@@ -55,7 +62,9 @@ export const LoginScreen: React.FC = () => {
   const [successMessage, setSuccessMessage] = useState('');
   const [conflictSession, setConflictSession] = useState<ActiveUserSession | null>(null);
   const [conflictMessage, setConflictMessage] = useState('');
+  const [conflictViaGoogle, setConflictViaGoogle] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
+  const [isCloudConnecting, setIsCloudConnecting] = useState(false);
   const [isRequestingRemoteLogout, setIsRequestingRemoteLogout] = useState(false);
 
   const handleAcknowledgeModal = () => {
@@ -77,12 +86,81 @@ export const LoginScreen: React.FC = () => {
     return true;
   };
 
+  const handleConnectCloudOnly = async () => {
+    setErrorMessage('');
+    setSuccessMessage('');
+    clearSessionKickNotice();
+    setIsCloudConnecting(true);
+    try {
+      const res = await connectCloudSync();
+      if (res.success) {
+        setSuccessMessage(res.message);
+      } else {
+        setErrorMessage(res.message);
+      }
+    } finally {
+      setIsCloudConnecting(false);
+    }
+  };
+
+  const handleGoogleLogin = async (forceLogoutOtherDevice = false) => {
+    setErrorMessage('');
+    setSuccessMessage('');
+    if (!forceLogoutOtherDevice) {
+      setConflictSession(null);
+      setConflictMessage('');
+      setConflictViaGoogle(false);
+    }
+    clearSessionKickNotice();
+    setIsCloudConnecting(true);
+    try {
+      const res = await loginWithGoogle(forceLogoutOtherDevice);
+      if (res.success) {
+        setConflictSession(null);
+        setConflictMessage('');
+        setConflictViaGoogle(false);
+        setSuccessMessage(res.message || 'Đăng nhập thành công! Đang chuyển vào hệ thống...');
+      } else if (res.cloudConnectedOnly) {
+        setSuccessMessage(res.message);
+      } else if (res.conflict) {
+        if (res.matchedUsername) {
+          setUsername(res.matchedUsername);
+        }
+        setConflictViaGoogle(true);
+        setConflictSession(res.activeSession || null);
+        setConflictMessage(res.message);
+      } else {
+        setErrorMessage(res.message);
+      }
+    } finally {
+      setIsCloudConnecting(false);
+    }
+  };
+
+  const handleSwitchGoogleAccount = async () => {
+    setErrorMessage('');
+    setSuccessMessage('');
+    setIsCloudConnecting(true);
+    try {
+      await disconnectCloudSync();
+      const res = await connectCloudSync();
+      if (res.success) {
+        setSuccessMessage(res.message);
+      } else if (res.message) {
+        setErrorMessage(res.message);
+      }
+    } finally {
+      setIsCloudConnecting(false);
+    }
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMessage('');
     setSuccessMessage('');
     setConflictSession(null);
     setConflictMessage('');
+    setConflictViaGoogle(false);
     clearSessionKickNotice();
 
     if (!validateInputs()) return;
@@ -93,6 +171,7 @@ export const LoginScreen: React.FC = () => {
       if (res.success) {
         setSuccessMessage('Đăng nhập thành công! Đang chuyển vào hệ thống...');
       } else if (res.conflict) {
+        setConflictViaGoogle(false);
         setConflictSession(res.activeSession || null);
         setConflictMessage(res.message);
       } else {
@@ -104,6 +183,11 @@ export const LoginScreen: React.FC = () => {
   };
 
   const handleForceLogoutAndLogin = async () => {
+    if (conflictViaGoogle && !password) {
+      await handleGoogleLogin(true);
+      return;
+    }
+
     setErrorMessage('');
     setSuccessMessage('');
     clearSessionKickNotice();
@@ -116,6 +200,7 @@ export const LoginScreen: React.FC = () => {
       if (res.success) {
         setConflictSession(null);
         setConflictMessage('');
+        setConflictViaGoogle(false);
         setSuccessMessage(res.message || 'Đã đăng xuất thiết bị kia và đăng nhập thành công!');
       } else {
         setErrorMessage(res.message);
@@ -138,6 +223,7 @@ export const LoginScreen: React.FC = () => {
       if (res.success) {
         setConflictSession(null);
         setConflictMessage('');
+        setConflictViaGoogle(false);
         setSuccessMessage(res.message);
       } else {
         setErrorMessage(res.message);
@@ -184,6 +270,95 @@ export const LoginScreen: React.FC = () => {
                   Nhập tên người sử dụng và mật khẩu đăng nhập đã được cấp. Mỗi tài khoản chỉ hoạt động trên 1 thiết bị tại một thời điểm.
                 </p>
               </div>
+
+              {/* Khối Trạng Thái Đồng Bộ Đám Mây Đa Thiết Bị (Firebase Cloud Firestore) */}
+              {cloudState.status === 'connected' ? (
+                <div className="p-3.5 bg-emerald-950/60 border border-emerald-700/60 rounded-2xl text-xs space-y-2.5">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="flex items-start gap-2.5 min-w-0">
+                      <Cloud className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+                      <div className="min-w-0">
+                        <div className="font-bold text-emerald-300">
+                          Đã kết nối Đám mây Đa Thiết Bị
+                        </div>
+                        <div className="text-[11px] text-emerald-100/80 truncate">
+                          {cloudState.cloudEmail || 'Google Cloud Firestore'} • Tự động đồng bộ thời gian thực
+                        </div>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleSwitchGoogleAccount}
+                      disabled={isCloudConnecting || isLoading}
+                      className="px-2.5 py-1 rounded-lg bg-slate-900/80 hover:bg-slate-800 border border-emerald-700/50 text-[11px] font-semibold text-emerald-200 transition shrink-0 disabled:opacity-60"
+                    >
+                      Đổi Google
+                    </button>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => handleGoogleLogin(false)}
+                    disabled={isCloudConnecting || isLoading}
+                    className="w-full min-h-[40px] px-3 py-2 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs rounded-xl transition flex items-center justify-center gap-2 disabled:opacity-60"
+                  >
+                    {isCloudConnecting ? (
+                      <>
+                        <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                        <span>Đang đồng bộ & đăng nhập...</span>
+                      </>
+                    ) : (
+                      <>
+                        <ShieldCheck className="w-4 h-4 shrink-0" />
+                        <span>Đăng nhập nhanh bằng tài khoản Google này</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              ) : (
+                <div className="p-3.5 bg-blue-950/50 border border-blue-700/50 rounded-2xl text-xs space-y-2.5">
+                  <div className="flex items-start gap-2.5">
+                    <CloudOff className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+                    <div className="leading-relaxed">
+                      <div className="font-bold text-blue-200">
+                        Kết nối Đám mây để đồng bộ giữa Điện thoại & Máy tính
+                      </div>
+                      <p className="text-[11px] text-slate-300 mt-0.5">
+                        Bấm kết nối Google 1 lần trên mỗi thiết bị để tự động đồng bộ kho, vật tư, phiếu nhập/xuất và tài khoản theo thời gian thực.
+                      </p>
+                    </div>
+                  </div>
+
+                  {cloudState.errorMessage && (
+                    <div className="p-2.5 rounded-xl bg-rose-950/80 border border-rose-800/70 text-[11px] text-rose-200 leading-relaxed">
+                      {cloudState.errorMessage}
+                    </div>
+                  )}
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={handleConnectCloudOnly}
+                      disabled={isCloudConnecting || isLoading}
+                      className="min-h-[40px] px-3 py-2 bg-slate-900 hover:bg-slate-800 border border-blue-500/50 text-blue-200 font-bold text-xs rounded-xl transition flex items-center justify-center gap-1.5 disabled:opacity-60"
+                    >
+                      <Cloud className="w-4 h-4 text-blue-400 shrink-0" />
+                      <span>
+                        {isCloudConnecting ? 'Đang kết nối...' : 'Kết nối Google Đám mây'}
+                      </span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleGoogleLogin(false)}
+                      disabled={isCloudConnecting || isLoading}
+                      className="min-h-[40px] px-3 py-2 bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs rounded-xl transition flex items-center justify-center gap-1.5 disabled:opacity-60"
+                    >
+                      <ShieldCheck className="w-4 h-4 shrink-0" />
+                      <span>Đăng nhập với Google</span>
+                    </button>
+                  </div>
+                </div>
+              )}
 
               {/* Cảnh báo khi bị đăng xuất tự động do đăng nhập ở thiết bị khác */}
               {sessionKickNotice && (
@@ -246,24 +421,26 @@ export const LoginScreen: React.FC = () => {
                     <button
                       type="button"
                       onClick={handleForceLogoutAndLogin}
-                      disabled={isRequestingRemoteLogout || isLoading}
+                      disabled={isRequestingRemoteLogout || isLoading || isCloudConnecting}
                       className="flex-1 min-h-[42px] px-3.5 py-2.5 bg-amber-500 hover:bg-amber-400 text-slate-950 font-extrabold text-xs rounded-xl shadow-md transition flex items-center justify-center gap-1.5 disabled:opacity-70"
                     >
                       <LogOut className="w-4 h-4 shrink-0" />
                       <span>
-                        {isRequestingRemoteLogout
+                        {isRequestingRemoteLogout || isCloudConnecting
                           ? 'Đang xử lý...'
                           : 'Yêu cầu đăng xuất thiết bị kia & Đăng nhập'}
                       </span>
                     </button>
-                    <button
-                      type="button"
-                      onClick={handleRequestLogoutOtherOnly}
-                      disabled={isRequestingRemoteLogout || isLoading}
-                      className="min-h-[42px] px-3.5 py-2.5 bg-slate-900 hover:bg-slate-800 border border-amber-600/60 text-amber-200 font-semibold text-xs rounded-xl transition flex items-center justify-center gap-1.5 disabled:opacity-70"
-                    >
-                      <span>Chỉ đăng xuất thiết bị kia</span>
-                    </button>
+                    {!conflictViaGoogle && (
+                      <button
+                        type="button"
+                        onClick={handleRequestLogoutOtherOnly}
+                        disabled={isRequestingRemoteLogout || isLoading || isCloudConnecting}
+                        className="min-h-[42px] px-3.5 py-2.5 bg-slate-900 hover:bg-slate-800 border border-amber-600/60 text-amber-200 font-semibold text-xs rounded-xl transition flex items-center justify-center gap-1.5 disabled:opacity-70"
+                      >
+                        <span>Chỉ đăng xuất thiết bị kia</span>
+                      </button>
+                    )}
                   </div>
                 </div>
               )}
