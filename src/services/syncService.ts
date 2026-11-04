@@ -183,27 +183,168 @@ let memoryUnifiedSession: UnifiedAuthSession | null = null;
 let memoryKickNotice: SessionInvalidationInfo | null = null;
 let memoryStaticSessions: Record<string, ActiveUserSession> = {};
 
+const revokedLocalTokens = new Set<string>();
+let inFlightLogoutPromise: Promise<void> | null = null;
+
+function rememberRevokedLocalToken(token?: string | null): void {
+  const clean = String(token || '').trim();
+  if (!clean) return;
+  if (revokedLocalTokens.size > 500) {
+    const oldest = revokedLocalTokens.values().next().value;
+    if (oldest) revokedLocalTokens.delete(oldest);
+  }
+  revokedLocalTokens.add(clean);
+  FirestoreSyncService.markTokenRevoked(clean);
+}
+
+async function awaitPendingLogout(timeoutMs = 1800): Promise<void> {
+  if (!inFlightLogoutPromise) return;
+  await Promise.race([
+    inFlightLogoutPromise.catch(() => {}),
+    new Promise<void>((resolve) => setTimeout(resolve, timeoutMs))
+  ]);
+}
+
+const APP_AUTH_COOKIE_PATTERN = /^(vtp|auth|session|token|login|user|g_state|g_csrf|firebase)/i;
+
+function clearBrowserAuthCookiesAndArtifacts(userKeyToClear?: string): void {
+  pendingInvalidation = null;
+  memoryKickNotice = null;
+  memoryUnifiedSession = null;
+
+  if (typeof document !== 'undefined') {
+    try {
+      const rawCookies = document.cookie || '';
+      const cookieNames = rawCookies
+        .split(';')
+        .map((part) => part.split('=')[0]?.trim() || '')
+        .filter((name) => Boolean(name) && APP_AUTH_COOKIE_PATTERN.test(name));
+
+      if (cookieNames.length > 0) {
+        const paths = new Set<string>(['/']);
+        if (typeof window !== 'undefined' && window.location?.pathname) {
+          const segments = window.location.pathname.split('/').filter(Boolean);
+          let acc = '';
+          for (const seg of segments) {
+            acc += `/${seg}`;
+            paths.add(acc);
+          }
+        }
+        const expired = 'Thu, 01 Jan 1970 00:00:00 GMT';
+        const attrVariants = [
+          '',
+          '; SameSite=Lax',
+          '; SameSite=None; Secure',
+          '; SameSite=None; Secure; Partitioned'
+        ];
+        for (const name of cookieNames) {
+          for (const p of paths) {
+            for (const attr of attrVariants) {
+              try {
+                document.cookie = `${name}=; expires=${expired}; Max-Age=0; path=${p}${attr}`;
+              } catch {
+                // ignore cookie attribute restriction
+              }
+            }
+          }
+        }
+      }
+    } catch {
+      // ignore document.cookie restriction in strict sandbox
+    }
+  }
+
+  if (typeof window !== 'undefined') {
+    const keysToPurge = [
+      UNIFIED_SESSION_STORAGE_KEY,
+      KICK_NOTICE_STORAGE_KEY,
+      ...LEGACY_SESSION_KEYS
+    ];
+    for (const k of keysToPurge) {
+      try {
+        sessionStorage.removeItem(k);
+      } catch {
+        // ignore
+      }
+      try {
+        localStorage.removeItem(k);
+      } catch {
+        // ignore
+      }
+    }
+
+    try {
+      const map = getStaticSessionsMap();
+      let mutated = false;
+      const nowMs = Date.now();
+      const targetNorm = userKeyToClear ? normUserKey(userKeyToClear) : '';
+      for (const [k, sess] of Object.entries(map)) {
+        if (
+          (targetNorm && normUserKey(k) === targetNorm) ||
+          !sess ||
+          revokedLocalTokens.has(sess.sessionToken) ||
+          !isSessionHeartbeatFresh(nowMs, sess.lastSeenAt, STATIC_TTL_MS)
+        ) {
+          delete map[k];
+          mutated = true;
+        }
+      }
+      if (mutated) {
+        memoryStaticSessions = map;
+        localStorage.setItem(STATIC_SESSIONS_STORAGE_KEY, JSON.stringify(map));
+      }
+    } catch {
+      // ignore
+    }
+  }
+}
+
 export function getDeviceId(): string {
   if (memoryDeviceId) return memoryDeviceId;
+  let existing: string | null = null;
   try {
-    const existing = localStorage.getItem(DEVICE_ID_STORAGE_KEY);
-    if (existing) {
-      memoryDeviceId = existing;
-      return existing;
-    }
-    const created =
-      typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
-        ? `dev-${crypto.randomUUID()}`
-        : `dev-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-    memoryDeviceId = created;
-    localStorage.setItem(DEVICE_ID_STORAGE_KEY, created);
-    return created;
+    existing = localStorage.getItem(DEVICE_ID_STORAGE_KEY);
   } catch {
-    if (!memoryDeviceId) {
-      memoryDeviceId = CLIENT_ID;
-    }
-    return memoryDeviceId;
+    // ignore
   }
+  if (!existing) {
+    try {
+      existing = sessionStorage.getItem(DEVICE_ID_STORAGE_KEY);
+    } catch {
+      // ignore
+    }
+  }
+  if (existing) {
+    memoryDeviceId = existing;
+    try {
+      localStorage.setItem(DEVICE_ID_STORAGE_KEY, existing);
+    } catch {
+      // ignore
+    }
+    try {
+      sessionStorage.setItem(DEVICE_ID_STORAGE_KEY, existing);
+    } catch {
+      // ignore
+    }
+    return existing;
+  }
+
+  const created =
+    typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+      ? `dev-${crypto.randomUUID()}`
+      : `dev-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  memoryDeviceId = created;
+  try {
+    localStorage.setItem(DEVICE_ID_STORAGE_KEY, created);
+  } catch {
+    // ignore
+  }
+  try {
+    sessionStorage.setItem(DEVICE_ID_STORAGE_KEY, created);
+  } catch {
+    // ignore
+  }
+  return created;
 }
 
 export function getDeviceLabel(): string {
@@ -631,28 +772,51 @@ function inspectManifestActiveSessions(
     return true;
   }
 
-  if (current.session.sessionToken.startsWith('static-')) {
-    triggerLocalKickOut({ reason: 'expired' });
-    return false;
-  }
-
   const mySession = current.session;
   const myIssuedAt = getClientSessionIssuedAtMs(mySession);
+  const remote = activeSessions?.[mySession.userKey];
 
+  let matchedUser: User | undefined;
   if (Array.isArray(manifestUsers)) {
-    const matchedUser = manifestUsers.find(
+    matchedUser = manifestUsers.find(
       (u) => normUserKey(u.username) === normUserKey(mySession.userKey) || u.id === mySession.userId
     );
     if (matchedUser && !matchedUser.isActive) {
       triggerLocalKickOut({ reason: 'disabled' });
       return false;
     }
-    const revokedAt = Number(matchedUser?.sessionRevokedAt) || 0;
+  }
+
+  // Cho phép phiên static- hoạt động ổn định nếu máy chủ không từ chối hoặc chưa có phiên mới hơn thay thế
+  if (mySession.sessionToken.startsWith('static-')) {
+    if (
+      remote &&
+      remote.sessionToken !== mySession.sessionToken &&
+      !revokedLocalTokens.has(remote.sessionToken) &&
+      getClientSessionIssuedAtMs(remote) > myIssuedAt
+    ) {
+      triggerLocalKickOut({
+        reason: 'replaced',
+        deviceLabel: remote.deviceLabel,
+        loginAt: remote.loginAt
+      });
+      return false;
+    }
+    return true;
+  }
+
+  // Nếu máy chủ xác nhận đúng mã phiên hiện tại đang hoạt động thì giữ nguyên phiên (tránh lệch múi giờ/đồng hồ sessionRevokedAt)
+  if (remote && remote.sessionToken === mySession.sessionToken) {
+    return true;
+  }
+
+  if (matchedUser) {
+    const revokedAt = Number(matchedUser.sessionRevokedAt) || 0;
     if (revokedAt > 0 && myIssuedAt > 0 && myIssuedAt <= revokedAt) {
-      const remote = activeSessions?.[mySession.userKey];
       if (
         remote &&
         remote.sessionToken !== mySession.sessionToken &&
+        !revokedLocalTokens.has(remote.sessionToken) &&
         getClientSessionIssuedAtMs(remote) > myIssuedAt
       ) {
         triggerLocalKickOut({
@@ -667,9 +831,7 @@ function inspectManifestActiveSessions(
     }
   }
 
-  if (!activeSessions) return true;
-  const remote = activeSessions[mySession.userKey];
-  if (!remote || remote.sessionToken === mySession.sessionToken) {
+  if (!remote || revokedLocalTokens.has(remote.sessionToken)) {
     return true;
   }
 
@@ -1096,6 +1258,8 @@ function setupBroadcastChannel(): void {
         const current = getStoredUnifiedSession();
         if (
           current &&
+          data.activeSessionToken &&
+          !revokedLocalTokens.has(String(data.activeSessionToken)) &&
           normUserKey(current.session.userKey) === normUserKey(data.userKey) &&
           current.session.sessionToken !== data.activeSessionToken
         ) {
@@ -1167,6 +1331,8 @@ function connectWebSocket(force = false): void {
           const current = getStoredUnifiedSession();
           if (
             current &&
+            msg.activeSessionToken &&
+            !revokedLocalTokens.has(String(msg.activeSessionToken)) &&
             normUserKey(current.session.userKey) === normUserKey(msg.userKey) &&
             current.session.sessionToken !== msg.activeSessionToken
           ) {
@@ -1286,9 +1452,15 @@ export const SyncService = {
     setupBroadcastChannel();
 
     FirestoreSyncService.init({
+      isLocalSessionStillActive: (token: string) =>
+        Boolean(
+          token &&
+            !revokedLocalTokens.has(token) &&
+            getStoredUnifiedSession()?.session.sessionToken === token
+        ),
       onRemoteWorkspaceChange: () => {
         const current = getStoredUnifiedSession();
-        if (current) {
+        if (current && !revokedLocalTokens.has(current.session.sessionToken)) {
           void FirestoreSyncService.syncActiveSessionToCloudIfConnected(current.session).catch(() => {});
         }
         void reconcileInternal();
@@ -1305,6 +1477,7 @@ export const SyncService = {
         const myIssued = getClientSessionIssuedAtMs(current.session);
 
         if (remoteToken === current.session.sessionToken) return;
+        if (remoteToken && revokedLocalTokens.has(remoteToken)) return;
 
         if (!remoteToken && revokedBefore > 0 && myIssued > 0 && myIssued <= revokedBefore) {
           triggerLocalKickOut({
@@ -1443,9 +1616,25 @@ export const SyncService = {
 
   async loginWithGoogleCloud(options?: {
     forceLogoutOtherDevice?: boolean;
+    forceSelectAccount?: boolean;
   }): Promise<LoginServerResult> {
     authTransitionCount++;
     try {
+      await awaitPendingLogout(1800);
+      await StorageService.init();
+
+      const prevUnified = getStoredUnifiedSession();
+      if (prevUnified) {
+        rememberRevokedLocalToken(prevUnified.session.sessionToken);
+        clearStoredUnifiedSession();
+        await FirestoreSyncService.logoutFromCloud(prevUnified.session).catch(() => {});
+      }
+      clearBrowserAuthCookiesAndArtifacts();
+
+      if (options?.forceSelectAccount) {
+        await FirestoreSyncService.disconnectGoogleAccount().catch(() => {});
+      }
+
       let cloudEmail = FirestoreSyncService.getState().cloudEmail;
       let cloudName = FirestoreSyncService.getState().cloudDisplayName;
 
@@ -1484,13 +1673,37 @@ export const SyncService = {
 
       const deviceId = getDeviceId();
       const deviceLabel = getDeviceLabel();
-      const cloudRes = await FirestoreSyncService.loginWithCloud(
+      const forceFlag = Boolean(options?.forceLogoutOtherDevice);
+      let cloudRes = await FirestoreSyncService.loginWithCloud(
         matched.username,
         matched.password || '',
         deviceId,
         deviceLabel,
-        Boolean(options?.forceLogoutOtherDevice)
+        forceFlag
       );
+
+      if (
+        cloudRes.handled &&
+        cloudRes.conflict &&
+        !forceFlag &&
+        cloudRes.activeSession &&
+        (cloudRes.activeSession.deviceId === deviceId ||
+          revokedLocalTokens.has(cloudRes.activeSession.sessionToken))
+      ) {
+        cloudRes = await FirestoreSyncService.loginWithCloud(
+          matched.username,
+          matched.password || '',
+          deviceId,
+          deviceLabel,
+          true
+        );
+      }
+
+      if (!cloudRes.handled) {
+        return await this.loginWithServer(matched.username, matched.password || '', {
+          forceLogoutOtherDevice: forceFlag
+        });
+      }
 
       if (!cloudRes.success || !cloudRes.user || !cloudRes.session) {
         return {
@@ -1560,69 +1773,119 @@ export const SyncService = {
     options?: { forceLogoutOtherDevice?: boolean }
   ): Promise<LoginServerResult> {
     authTransitionCount++;
+    const cleanUsername = String(username || '').normalize('NFC').trim();
     const deviceId = getDeviceId();
     const deviceLabel = getDeviceLabel();
     const forceLogoutOtherDevice = Boolean(options?.forceLogoutOtherDevice);
 
     try {
+      await awaitPendingLogout(1800);
+
+      // Nếu trình duyệt còn kẹt phiên cũ trong RAM/sessionStorage, thu hồi ngay trước khi tạo phiên mới
+      const prevUnified = getStoredUnifiedSession();
+      if (prevUnified) {
+        rememberRevokedLocalToken(prevUnified.session.sessionToken);
+        FirestoreSyncService.watchActiveSession(null);
+        clearStoredUnifiedSession();
+        void FirestoreSyncService.logoutFromCloud(prevUnified.session).catch(() => {});
+        if (
+          !prevUnified.session.sessionToken.startsWith('static-') &&
+          !prevUnified.session.sessionToken.startsWith('cloud.')
+        ) {
+          await fetch('/api/auth/logout', {
+            method: 'POST',
+            keepalive: true,
+            cache: 'no-store',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              userKey: prevUnified.session.userKey,
+              sessionToken: prevUnified.session.sessionToken,
+              deviceId: prevUnified.session.deviceId
+            })
+          }).catch(() => {});
+        }
+      }
+
+      clearBrowserAuthCookiesAndArtifacts(cleanUsername);
+
       // Đảm bảo IndexedDB cục bộ và phiên Google Cloud trên trình duyệt Chrome đã sẵn sàng trước khi xác thực
       await StorageService.init();
       await FirestoreSyncService.ensureReadyForAuth(2500);
 
-      // Ưu tiên tuyệt đối Cloud Firestore nếu thiết bị có phiên Google Đám mây hợp lệ
+      // Ưu tiên Cloud Firestore nếu thiết bị có phiên Google Đám mây hợp lệ; nếu lỗi tự động chuyển tiếp xuống /api/auth/login
       if (FirestoreSyncService.canAttemptCloudAuth()) {
-        const cloudRes = await FirestoreSyncService.loginWithCloud(
-          username,
-          password,
-          deviceId,
-          deviceLabel,
-          forceLogoutOtherDevice
-        );
-        if (cloudRes.handled) {
-          if (!cloudRes.success || !cloudRes.user || !cloudRes.session) {
+        try {
+          let cloudRes = await FirestoreSyncService.loginWithCloud(
+            cleanUsername,
+            password,
+            deviceId,
+            deviceLabel,
+            forceLogoutOtherDevice
+          );
+          if (
+            cloudRes.handled &&
+            cloudRes.conflict &&
+            !forceLogoutOtherDevice &&
+            cloudRes.activeSession &&
+            (cloudRes.activeSession.deviceId === deviceId ||
+              revokedLocalTokens.has(cloudRes.activeSession.sessionToken))
+          ) {
+            cloudRes = await FirestoreSyncService.loginWithCloud(
+              cleanUsername,
+              password,
+              deviceId,
+              deviceLabel,
+              true
+            );
+          }
+          if (cloudRes.handled) {
+            if (!cloudRes.success || !cloudRes.user || !cloudRes.session) {
+              return {
+                success: false,
+                conflict: Boolean(cloudRes.conflict),
+                activeSession: cloudRes.activeSession,
+                message: cloudRes.message || 'Đăng nhập không thành công.'
+              };
+            }
+
+            pendingInvalidation = null;
+            clearPersistedKickNotice();
+            saveStoredUnifiedSession({
+              user: cloudRes.user,
+              session: cloudRes.session
+            });
+
+            try {
+              authChannel?.postMessage({
+                type: 'auth:session_replaced',
+                userKey: cloudRes.session.userKey,
+                activeSessionToken: cloudRes.session.sessionToken,
+                issuedAtMs: cloudRes.session.issuedAtMs,
+                deviceLabel: cloudRes.session.deviceLabel,
+                loginAt: cloudRes.session.loginAt
+              });
+            } catch {
+              // ignore
+            }
+
+            queueMicrotask(() => {
+              void reconcileInternal();
+            });
+
             return {
-              success: false,
-              conflict: Boolean(cloudRes.conflict),
-              activeSession: cloudRes.activeSession,
-              message: cloudRes.message || 'Đăng nhập không thành công.'
+              success: true,
+              message: cloudRes.message,
+              user: cloudRes.user,
+              replacedSession: cloudRes.replacedSession
             };
           }
-
-          pendingInvalidation = null;
-          clearPersistedKickNotice();
-          saveStoredUnifiedSession({
-            user: cloudRes.user,
-            session: cloudRes.session
-          });
-
-          try {
-            authChannel?.postMessage({
-              type: 'auth:session_replaced',
-              userKey: cloudRes.session.userKey,
-              activeSessionToken: cloudRes.session.sessionToken,
-              issuedAtMs: cloudRes.session.issuedAtMs,
-              deviceLabel: cloudRes.session.deviceLabel,
-              loginAt: cloudRes.session.loginAt
-            });
-          } catch {
-            // ignore
-          }
-
-          queueMicrotask(() => {
-            void reconcileInternal();
-          });
-
-          return {
-            success: true,
-            message: cloudRes.message,
-            user: cloudRes.user,
-            replacedSession: cloudRes.replacedSession
-          };
+        } catch (cloudLoginErr) {
+          console.warn('Cloud login skipped, falling back to /api/auth/login:', cloudLoginErr);
         }
       }
 
       const localUsers = StorageService.getUsers();
-      const attemptLogin = () =>
+      const attemptLogin = (forceFlag: boolean) =>
         fetchJson<{
           success: boolean;
           conflict?: boolean;
@@ -1637,24 +1900,35 @@ export const SyncService = {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            username,
+            username: cleanUsername,
             password,
             deviceId,
             deviceLabel,
             localUsers,
-            forceLogoutOtherDevice
+            forceLogoutOtherDevice: forceFlag
           })
         });
 
       let res;
       try {
-        res = await attemptLogin();
+        res = await attemptLogin(forceLogoutOtherDevice);
       } catch (firstErr) {
         if (firstErr instanceof ApiRouteMissingError) {
           throw firstErr;
         }
         await new Promise((r) => setTimeout(r, 450));
-        res = await attemptLogin();
+        res = await attemptLogin(forceLogoutOtherDevice);
+      }
+
+      // Nếu máy chủ còn giữ mã phiên vừa bấm Đăng xuất của chính trình duyệt này, tự động giải phóng và cấp phiên mới ngay
+      if (
+        res.conflict &&
+        !forceLogoutOtherDevice &&
+        res.activeSession &&
+        (res.activeSession.deviceId === deviceId ||
+          revokedLocalTokens.has(res.activeSession.sessionToken))
+      ) {
+        res = await attemptLogin(true);
       }
 
       if (!res.success || !res.user || !res.session) {
@@ -1668,7 +1942,7 @@ export const SyncService = {
           return {
             success: false,
             needsCloudConnect: true,
-            message: `Tài khoản "${username}" chưa được đồng bộ về trình duyệt Chrome này. Hãy nhấn nút "Kết nối Đám mây & Đăng nhập ngay" bên dưới (chỉ cần 1 lần trên máy tính này) để tải danh sách tài khoản mới nhất từ đám mây và tự động đăng nhập!`
+            message: `Tài khoản "${cleanUsername}" chưa được đồng bộ về trình duyệt Chrome này. Hãy nhấn nút "Kết nối Đám mây & Đăng nhập ngay" bên dưới (chỉ cần 1 lần trên máy tính này) để tải danh sách tài khoản mới nhất từ đám mây và tự động đăng nhập!`
           };
         }
 
@@ -1721,12 +1995,12 @@ export const SyncService = {
     } catch {
       // Fallback xác thực an toàn trên dữ liệu cục bộ nếu máy chủ /api chưa phản hồi (vd: môi trường tĩnh hoặc mạng chập chờn)
       const localUsers = StorageService.getUsers();
-      const matched = findMatchingUser(localUsers, username);
+      const matched = findMatchingUser(localUsers, cleanUsername);
       if (!matched) {
         return {
           success: false,
           needsCloudConnect: !FirestoreSyncService.isCloudConnected(),
-          message: `Tài khoản "${username}" chưa có trên trình duyệt Chrome này. Hãy nhấn "Kết nối Đám mây & Đăng nhập ngay" bên dưới để tải danh sách tài khoản từ đám mây về máy tính!`
+          message: `Tài khoản "${cleanUsername}" chưa có trên trình duyệt Chrome này. Hãy nhấn "Kết nối Đám mây & Đăng nhập ngay" bên dưới để tải danh sách tài khoản từ đám mây về máy tính!`
         };
       }
       if (!matched.isActive) {
@@ -1750,6 +2024,7 @@ export const SyncService = {
       if (
         prevStatic &&
         prevStatic.deviceId !== deviceId &&
+        !revokedLocalTokens.has(prevStatic.sessionToken) &&
         isSessionHeartbeatFresh(nowMs, prevStatic.lastSeenAt, STATIC_TTL_MS) &&
         !forceLogoutOtherDevice
       ) {
@@ -2060,34 +2335,84 @@ export const SyncService = {
 
   async logoutFromServer(): Promise<void> {
     const current = getStoredUnifiedSession();
+    if (current?.session.sessionToken) {
+      rememberRevokedLocalToken(current.session.sessionToken);
+    }
+    FirestoreSyncService.watchActiveSession(null);
     clearStoredUnifiedSession();
+    clearBrowserAuthCookiesAndArtifacts(current?.session.userKey);
+
     if (!current) return;
 
-    authTransitionCount++;
-    try {
-      await FirestoreSyncService.logoutFromCloud(current.session);
+    let releaseTask: Promise<void> | null = null;
+    releaseTask = (async () => {
+      authTransitionCount++;
+      try {
+        await FirestoreSyncService.logoutFromCloud(current.session);
 
-      if (current.session.sessionToken.startsWith('static-') || current.session.sessionToken.startsWith('cloud.')) {
         const staticMap = getStaticSessionsMap();
         if (staticMap[current.session.userKey]?.sessionToken === current.session.sessionToken) {
           saveStaticSessionEntry(current.session.userKey, null);
         }
-        return;
+
+        if (
+          current.session.sessionToken.startsWith('static-') ||
+          current.session.sessionToken.startsWith('cloud.')
+        ) {
+          return;
+        }
+
+        try {
+          await fetch('/api/auth/logout', {
+            method: 'POST',
+            keepalive: true,
+            cache: 'no-store',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              userKey: current.session.userKey,
+              sessionToken: current.session.sessionToken,
+              deviceId: current.session.deviceId
+            })
+          });
+        } catch {
+          // ignore network error on logout
+        }
+      } finally {
+        authTransitionCount = Math.max(0, authTransitionCount - 1);
+        if (releaseTask && inFlightLogoutPromise === releaseTask) {
+          inFlightLogoutPromise = null;
+        }
+      }
+    })();
+
+    inFlightLogoutPromise = releaseTask;
+    await releaseTask;
+  },
+
+  async resetBrowserAuthState(): Promise<{ success: boolean; message: string }> {
+    authTransitionCount++;
+    try {
+      await this.logoutFromServer();
+      memoryStaticSessions = {};
+      if (typeof window !== 'undefined') {
+        try {
+          localStorage.removeItem(STATIC_SESSIONS_STORAGE_KEY);
+        } catch {
+          // ignore
+        }
+      }
+      clearBrowserAuthCookiesAndArtifacts();
+
+      if (FirestoreSyncService.getState().status === 'error') {
+        await FirestoreSyncService.disconnectGoogleAccount().catch(() => {});
       }
 
-      try {
-        await fetchJson('/api/auth/logout', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            userKey: current.session.userKey,
-            sessionToken: current.session.sessionToken,
-            deviceId: current.session.deviceId
-          })
-        });
-      } catch {
-        // ignore network error on logout
-      }
+      await reconcileInternal().catch(() => {});
+      return {
+        success: true,
+        message:
+          'Đã làm mới phiên trình duyệt và dọn sạch cookies đăng nhập cũ. Bạn có thể đăng nhập lại ngay!'
+      };
     } finally {
       authTransitionCount = Math.max(0, authTransitionCount - 1);
     }

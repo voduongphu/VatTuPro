@@ -932,14 +932,16 @@ export function createSyncBackend(options: SyncBackendOptions = {}): SyncBackend
     const prevIssuedAt = getSessionIssuedAtMs(prevSession);
     const prevRevoked = getRevokedBeforeMs(userKey, user);
     const issuedAtMs = Math.max(nowMs, prevIssuedAt + 2, prevRevoked + 2);
-    const revokedAt = issuedAtMs - 1;
-    const nowIso = new Date(issuedAtMs).toISOString();
+    const forceRevokedAt = issuedAtMs - 1;
+    const nowIso = new Date(nowMs).toISOString();
     const sessionToken = createSignedSessionToken(userKey, cleanDeviceId, issuedAtMs);
 
     if (prevSession && prevSession.sessionToken) {
       store.revokedTokens[prevSession.sessionToken] = issuedAtMs;
     }
-    store.sessionRevokedBefore[userKey] = revokedAt;
+    if (forceLogoutOtherDevice) {
+      store.sessionRevokedBefore[userKey] = forceRevokedAt;
+    }
     delete store.forceLogoutMeta[userKey];
 
     const replacedPrevious =
@@ -950,8 +952,10 @@ export function createSyncBackend(options: SyncBackendOptions = {}): SyncBackend
     const updatedUser: User = {
       ...user,
       lastLogin: nowIso,
-      sessionRevokedAt: revokedAt,
-      updatedAt: Math.max(issuedAtMs, Number(user.updatedAt || 0) + 1)
+      sessionRevokedAt: forceLogoutOtherDevice
+        ? Math.max(Number(user.sessionRevokedAt) || 0, forceRevokedAt)
+        : user.sessionRevokedAt,
+      updatedAt: Math.max(nowMs, Number(user.updatedAt || 0) + 1)
     };
     store.users[matchedIdx] = updatedUser;
 
@@ -1004,37 +1008,23 @@ export function createSyncBackend(options: SyncBackendOptions = {}): SyncBackend
     const nowMs = Date.now();
 
     if (token) {
-      store.revokedTokens[token] = nowMs;
+      const sigCheck = key ? verifySignedSessionToken(token, key, deviceId) : null;
+      const tokenIssuedAtMs = sigCheck?.validSignature ? sigCheck.issuedAtMs : 0;
+      store.revokedTokens[token] = Math.max(nowMs, tokenIssuedAtMs || 1);
     }
 
     if (key) {
-      const userIdx = store.users.findIndex((u) => normUserKey(u.username) === key);
-      const user = userIdx >= 0 ? store.users[userIdx] : undefined;
-      const sigCheck = token ? verifySignedSessionToken(token, key, deviceId) : null;
-      const tokenIssuedAtMs = sigCheck?.validSignature ? sigCheck.issuedAtMs : 0;
-
       const currentActive = store.activeSessions[key];
-      const activeMatchesToken = Boolean(token && currentActive && currentActive.sessionToken === token);
-      const activeIsOlderOrEqual =
-        tokenIssuedAtMs > 0 &&
+      const activeMatchesToken = Boolean(
         currentActive &&
-        getSessionIssuedAtMs(currentActive) <= tokenIssuedAtMs;
+          ((token && currentActive.sessionToken === token) ||
+            (!token && deviceId && currentActive.deviceId === String(deviceId)))
+      );
 
-      if (activeMatchesToken || activeIsOlderOrEqual) {
+      // Chỉ giải phóng đúng phiên vừa đăng xuất; tuyệt đối không xóa phiên mới nếu người dùng vừa đăng nhập lại ngay lập tức
+      // và không nâng user.sessionRevokedAt khi thoát chủ động để tránh xung đột lệch đồng hồ giữa các thiết bị
+      if (activeMatchesToken) {
         delete store.activeSessions[key];
-      }
-
-      // Chỉ nâng mốc thu hồi đến đúng thời điểm cấp của phiên vừa thoát để không bao giờ ảnh hưởng tới phiên mới hơn
-      if (tokenIssuedAtMs > 0) {
-        const nextRevoked = Math.max(getRevokedBeforeMs(key, user), tokenIssuedAtMs);
-        store.sessionRevokedBefore[key] = nextRevoked;
-        if (userIdx >= 0 && user && (Number(user.sessionRevokedAt) || 0) < nextRevoked) {
-          store.users[userIdx] = {
-            ...user,
-            sessionRevokedAt: nextRevoked,
-            updatedAt: Math.max(nowMs, Number(user.updatedAt || 0) + 1)
-          };
-        }
       }
 
       store.serverRevision++;

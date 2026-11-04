@@ -134,8 +134,67 @@ let cloudMaterialsDirty = false;
 
 let externalOnRemoteWorkspaceChange: (() => void) | null = null;
 let externalOnRemoteSessionSnapshot: ((remoteData: Record<string, any>) => void) | null = null;
+let externalIsLocalSessionStillActive: ((sessionToken: string) => boolean) | null = null;
 
+const revokedCloudSessionTokens = new Set<string>();
 const authReadyWaiters = new Set<() => void>();
+
+function rememberRevokedCloudToken(token?: string | null): void {
+  const clean = String(token || '').trim();
+  if (!clean) return;
+  if (revokedCloudSessionTokens.size > 500) {
+    const oldest = revokedCloudSessionTokens.values().next().value;
+    if (oldest) revokedCloudSessionTokens.delete(oldest);
+  }
+  revokedCloudSessionTokens.add(clean);
+}
+
+function isSessionStillValidLocally(token?: string | null): boolean {
+  const clean = String(token || '').trim();
+  if (!clean) return false;
+  if (revokedCloudSessionTokens.has(clean)) return false;
+  if (externalIsLocalSessionStillActive && !externalIsLocalSessionStillActive(clean)) {
+    return false;
+  }
+  return true;
+}
+
+async function ensureValidFirebaseAuthToken(fbUser: FirebaseUser): Promise<boolean> {
+  try {
+    await fbUser.getIdToken(false);
+    return true;
+  } catch (err: any) {
+    const code = String(err?.code || '');
+    const msg = String(err?.message || '');
+    const isStaleOrRevoked =
+      code === 'auth/user-token-expired' ||
+      code === 'auth/invalid-user-token' ||
+      code === 'auth/user-disabled' ||
+      code === 'auth/user-not-found' ||
+      code === 'auth/invalid-credential' ||
+      msg.includes('TOKEN_EXPIRED') ||
+      msg.includes('USER_DISABLED') ||
+      msg.includes('INVALID_REFRESH_TOKEN');
+    if (isStaleOrRevoked) {
+      try {
+        detachAllListeners();
+        workspaceReadyPromise = null;
+        workspaceReadyUid = null;
+        await signOut(auth);
+        emitCloudState({
+          status: 'disconnected',
+          cloudEmail: null,
+          cloudDisplayName: null,
+          cloudUid: null,
+          errorMessage: null
+        });
+      } catch {
+        // ignore signOut cleanup error
+      }
+    }
+    return false;
+  }
+}
 
 function resolveAuthReadyWaiters(): void {
   if (authReadyWaiters.size === 0) return;
@@ -1508,9 +1567,11 @@ export const FirestoreSyncService = {
   init(callbacks: {
     onRemoteWorkspaceChange: () => void;
     onRemoteSessionSnapshot: (remoteData: Record<string, any>) => void;
+    isLocalSessionStillActive?: (sessionToken: string) => boolean;
   }): void {
     externalOnRemoteWorkspaceChange = callbacks.onRemoteWorkspaceChange;
     externalOnRemoteSessionSnapshot = callbacks.onRemoteSessionSnapshot;
+    externalIsLocalSessionStillActive = callbacks.isLocalSessionStillActive || null;
 
     onAuthStateChanged(auth, async (fbUser) => {
       if (!fbUser) {
@@ -1587,6 +1648,8 @@ export const FirestoreSyncService = {
     }
     if (currentState.status !== 'connected') {
       try {
+        const tokenOk = await ensureValidFirebaseAuthToken(fbUser);
+        if (!tokenOk) return false;
         const ok = await ensureWorkspaceReady(fbUser);
         if (ok) {
           attachWorkspaceRealtimeListener();
@@ -1594,10 +1657,14 @@ export const FirestoreSyncService = {
           return true;
         }
       } catch {
-        // fall through
+        return false;
       }
     }
-    return Boolean(auth.currentUser && auth.currentUser.emailVerified);
+    return Boolean(auth.currentUser && auth.currentUser.emailVerified && currentState.status === 'connected');
+  },
+
+  markTokenRevoked(sessionToken?: string | null): void {
+    rememberRevokedCloudToken(sessionToken);
   },
 
   subscribeState(listener: (state: CloudSyncSnapshotState) => void): () => void {
@@ -1992,23 +2059,41 @@ export const FirestoreSyncService = {
   // Cloud Single-Device Session Lock Operations
   // ==========================================================================
   async syncActiveSessionToCloudIfConnected(session: ActiveUserSession): Promise<void> {
+    if (!isSessionStillValidLocally(session.sessionToken)) return;
     const fbUser = auth.currentUser;
     if (!fbUser || !fbUser.emailVerified) return;
     const ok = await ensureWorkspaceReady(fbUser);
-    if (!ok) return;
+    if (!ok || !isSessionStillValidLocally(session.sessionToken)) return;
 
     const userKey = normUserKey(session.userKey || session.username);
     const sessionDocId = makeSafeDocId('sess', userKey);
     const sessPath = `workspaces/${WORKSPACE_ID}/sessions/${sessionDocId}`;
     const sessRef = doc(db, 'workspaces', WORKSPACE_ID, 'sessions', sessionDocId);
     const existingSnap = await safeGetDoc(sessRef, sessPath);
+    if (!isSessionStillValidLocally(session.sessionToken)) return;
+
     const prev = existingSnap.exists() ? existingSnap.data() : null;
     const nowMs = Date.now();
-    const monotonicIssued = Math.max(
-      Number(session.issuedAtMs) || nowMs,
-      (Number(prev?.issuedAtMs) || 0) + 1,
-      (Number(prev?.revokedBeforeMs) || 0) + 1
-    );
+    const prevToken = String(prev?.sessionToken || '');
+
+    // Nếu đám mây đã ghi nhận đúng mã phiên này và nhịp tim còn rất mới thì không cần ghi lặp lại
+    if (prevToken === session.sessionToken) {
+      if (isSessionHeartbeatFresh(nowMs, Number(prev?.lastSeenAt) || 0, 25_000)) {
+        this.watchActiveSession(userKey);
+        return;
+      }
+    }
+
+    const monotonicIssued =
+      prevToken === session.sessionToken
+        ? Number(prev?.issuedAtMs) || Number(session.issuedAtMs) || nowMs
+        : Math.max(
+            Number(session.issuedAtMs) || nowMs,
+            (Number(prev?.issuedAtMs) || 0) + 1,
+            (Number(prev?.revokedBeforeMs) || 0) + 1
+          );
+
+    if (!isSessionStillValidLocally(session.sessionToken)) return;
 
     await writeSingleProtectedDoc(
       sessRef,
@@ -2032,7 +2117,9 @@ export const FirestoreSyncService = {
         forceLogoutAt: cleanStr(prev?.forceLogoutAt, 64, '')
       }
     );
-    this.watchActiveSession(userKey);
+    if (isSessionStillValidLocally(session.sessionToken)) {
+      this.watchActiveSession(userKey);
+    }
   },
 
   async loginWithCloud(
@@ -2051,157 +2138,172 @@ export const FirestoreSyncService = {
     replacedSession?: ActiveUserSession;
     message: string;
   }> {
-    const fbUser = auth.currentUser;
-    if (!fbUser || !fbUser.emailVerified) {
-      return { handled: false, success: false, message: '' };
-    }
+    try {
+      const fbUser = auth.currentUser;
+      if (!fbUser || !fbUser.emailVerified) {
+        return { handled: false, success: false, message: '' };
+      }
 
-    const ok = await ensureWorkspaceReady(fbUser);
-    if (!ok) {
-      return { handled: false, success: false, message: '' };
-    }
+      const tokenOk = await ensureValidFirebaseAuthToken(fbUser);
+      if (!tokenOk) {
+        return { handled: false, success: false, message: '' };
+      }
 
-    // Đồng bộ nhanh danh sách tài khoản mới nhất từ Cloud trước khi kiểm tra mật khẩu
-    const wsRef = doc(db, 'workspaces', WORKSPACE_ID);
-    const wsSnap = await safeGetDoc(wsRef, `workspaces/${WORKSPACE_ID}`);
-    if (wsSnap.exists()) {
-      await pullMetaFromCloud(wsSnap.data() as WorkspaceManifestDoc, fbUser);
-    }
+      const ok = await ensureWorkspaceReady(fbUser);
+      if (!ok) {
+        return { handled: false, success: false, message: '' };
+      }
 
-    const users = StorageService.getUsers();
-    const matched = findMatchingUser(users, username);
+      // Đồng bộ nhanh danh sách tài khoản mới nhất từ Cloud trước khi kiểm tra mật khẩu
+      const wsRef = doc(db, 'workspaces', WORKSPACE_ID);
+      const wsSnap = await safeGetDoc(wsRef, `workspaces/${WORKSPACE_ID}`);
+      if (wsSnap.exists()) {
+        await pullMetaFromCloud(wsSnap.data() as WorkspaceManifestDoc, fbUser);
+      }
 
-    if (!matched) {
-      return {
-        handled: true,
-        success: false,
-        message: `Tài khoản "${username}" không tồn tại trong hệ thống. Vui lòng kiểm tra lại tên đăng nhập!`
-      };
-    }
+      const users = StorageService.getUsers();
+      const matched = findMatchingUser(users, username);
 
-    if (!matched.isActive) {
-      return {
-        handled: true,
-        success: false,
-        message: 'Tài khoản này hiện đang bị khóa hoặc ngừng kích hoạt. Vui lòng liên hệ Admin.'
-      };
-    }
-
-    if (!isPasswordMatch(matched.password, password)) {
-      return {
-        handled: true,
-        success: false,
-        message: 'Mật khẩu đăng nhập không chính xác. Vui lòng kiểm tra lại.'
-      };
-    }
-
-    const userKey = normUserKey(matched.username);
-    const sessionDocId = makeSafeDocId('sess', userKey);
-    const sessPath = `workspaces/${WORKSPACE_ID}/sessions/${sessionDocId}`;
-    const sessRef = doc(db, 'workspaces', WORKSPACE_ID, 'sessions', sessionDocId);
-    const sessSnap = await safeGetDoc(sessRef, sessPath);
-    const nowMs = Date.now();
-    const nowIso = new Date(nowMs).toISOString();
-
-    let prevActive: ActiveUserSession | undefined;
-    let prevIssued = 0;
-    let prevRevoked = Number(matched.sessionRevokedAt) || 0;
-
-    if (sessSnap.exists()) {
-      const d = sessSnap.data();
-      prevIssued = Number(d.issuedAtMs) || 0;
-      prevRevoked = Math.max(prevRevoked, Number(d.revokedBeforeMs) || 0);
-      const hasToken = Boolean(d.sessionToken);
-      const isFresh = isSessionHeartbeatFresh(nowMs, Number(d.lastSeenAt) || 0, ACTIVE_SESSION_TTL_MS);
-      if (hasToken && isFresh) {
-        prevActive = {
-          userId: String(d.userId || matched.id),
-          username: String(d.username || matched.username),
-          userKey,
-          sessionToken: String(d.sessionToken),
-          issuedAtMs: prevIssued,
-          deviceId: String(d.deviceId || ''),
-          deviceLabel: String(d.deviceLabel || 'Thiết bị khác'),
-          loginAt: String(d.loginAt || nowIso),
-          lastSeenAt: Number(d.lastSeenAt) || nowMs
+      if (!matched) {
+        return {
+          handled: true,
+          success: false,
+          message: `Tài khoản "${username}" không tồn tại trong hệ thống. Vui lòng kiểm tra lại tên đăng nhập!`
         };
       }
-    }
 
-    if (prevActive && prevActive.deviceId !== deviceId && !forceLogoutOtherDevice) {
-      return {
-        handled: true,
-        success: false,
-        conflict: true,
-        activeSession: prevActive,
-        message: `Tài khoản "${matched.username}" hiện đang đăng nhập trên ${prevActive.deviceLabel || 'thiết bị khác'}. Vui lòng nhấn "Yêu cầu đăng xuất thiết bị kia & Đăng nhập" để chuyển phiên sang thiết bị này.`
-      };
-    }
+      if (!matched.isActive) {
+        return {
+          handled: true,
+          success: false,
+          message: 'Tài khoản này hiện đang bị khóa hoặc ngừng kích hoạt. Vui lòng liên hệ Admin.'
+        };
+      }
 
-    const monotonicIssued = Math.max(nowMs, prevIssued + 1, prevRevoked + 1);
-    const newToken = `cloud.${monotonicIssued}.${Math.random().toString(36).slice(2, 12)}`;
-    const nextRevokedBefore = forceLogoutOtherDevice ? monotonicIssued - 1 : prevRevoked;
+      if (!isPasswordMatch(matched.password, password)) {
+        return {
+          handled: true,
+          success: false,
+          message: 'Mật khẩu đăng nhập không chính xác. Vui lòng kiểm tra lại.'
+        };
+      }
 
-    const newSession: ActiveUserSession = {
-      userId: matched.id,
-      username: matched.username,
-      userKey,
-      sessionToken: newToken,
-      issuedAtMs: monotonicIssued,
-      deviceId,
-      deviceLabel,
-      loginAt: nowIso,
-      lastSeenAt: nowMs
-    };
+      const userKey = normUserKey(matched.username);
+      const sessionDocId = makeSafeDocId('sess', userKey);
+      const sessPath = `workspaces/${WORKSPACE_ID}/sessions/${sessionDocId}`;
+      const sessRef = doc(db, 'workspaces', WORKSPACE_ID, 'sessions', sessionDocId);
+      const sessSnap = await safeGetDoc(sessRef, sessPath);
+      const nowMs = Date.now();
+      const nowIso = new Date(nowMs).toISOString();
 
-    await writeSingleProtectedDoc(
-      sessRef,
-      sessPath,
-      {
-        workspaceId: WORKSPACE_ID,
-        sessionDocId,
-        userKey: cleanStr(userKey, 160, 'user')
-      },
-      {
-        userId: cleanStr(matched.id, 160, 'user-0'),
-        username: cleanStr(matched.username, 160, 'user'),
+      let prevActive: ActiveUserSession | undefined;
+      let prevIssued = 0;
+      let prevRevoked = Number(matched.sessionRevokedAt) || 0;
+
+      if (sessSnap.exists()) {
+        const d = sessSnap.data();
+        prevIssued = Number(d.issuedAtMs) || 0;
+        prevRevoked = Math.max(prevRevoked, Number(d.revokedBeforeMs) || 0);
+        const existingToken = String(d.sessionToken || '');
+        const hasToken = Boolean(existingToken) && !revokedCloudSessionTokens.has(existingToken);
+        const isFresh = isSessionHeartbeatFresh(nowMs, Number(d.lastSeenAt) || 0, ACTIVE_SESSION_TTL_MS);
+        if (hasToken && isFresh) {
+          prevActive = {
+            userId: String(d.userId || matched.id),
+            username: String(d.username || matched.username),
+            userKey,
+            sessionToken: existingToken,
+            issuedAtMs: prevIssued,
+            deviceId: String(d.deviceId || ''),
+            deviceLabel: String(d.deviceLabel || 'Thiết bị khác'),
+            loginAt: String(d.loginAt || nowIso),
+            lastSeenAt: Number(d.lastSeenAt) || nowMs
+          };
+        }
+      }
+
+      if (prevActive && prevActive.deviceId !== deviceId && !forceLogoutOtherDevice) {
+        return {
+          handled: true,
+          success: false,
+          conflict: true,
+          activeSession: prevActive,
+          message: `Tài khoản "${matched.username}" hiện đang đăng nhập trên ${prevActive.deviceLabel || 'thiết bị khác'}. Vui lòng nhấn "Yêu cầu đăng xuất thiết bị kia & Đăng nhập" để chuyển phiên sang thiết bị này.`
+        };
+      }
+
+      if (prevActive?.sessionToken) {
+        rememberRevokedCloudToken(prevActive.sessionToken);
+      }
+
+      const monotonicIssued = Math.max(nowMs, prevIssued + 2, prevRevoked + 2);
+      const newToken = `cloud.${monotonicIssued}.${Math.random().toString(36).slice(2, 12)}`;
+      const nextRevokedBefore = forceLogoutOtherDevice ? monotonicIssued - 1 : prevRevoked;
+
+      const newSession: ActiveUserSession = {
+        userId: matched.id,
+        username: matched.username,
+        userKey,
         sessionToken: newToken,
         issuedAtMs: monotonicIssued,
-        deviceId: cleanStr(deviceId, 160, ''),
-        deviceLabel: cleanStr(deviceLabel, 200, 'Thiết bị Web'),
+        deviceId,
+        deviceLabel,
         loginAt: nowIso,
-        lastSeenAt: nowMs,
-        revokedBeforeMs: cleanNum(nextRevokedBefore, 0),
-        forceLogoutDeviceLabel: forceLogoutOtherDevice ? cleanStr(deviceLabel, 200, '') : '',
-        forceLogoutAt: forceLogoutOtherDevice ? nowIso : ''
-      }
-    );
-
-    const nextUserUpdatedAt = Math.max(nowMs, (Number(matched.updatedAt) || 0) + 1);
-    const updatedFromStore =
-      StorageService.updateUser(matched.id, {
-        lastLogin: nowIso,
-        sessionRevokedAt: forceLogoutOtherDevice
-          ? Math.max(Number(matched.sessionRevokedAt) || 0, nextRevokedBefore)
-          : matched.sessionRevokedAt,
-        updatedAt: nextUserUpdatedAt
-      }) || {
-        ...matched,
-        lastLogin: nowIso,
-        updatedAt: nextUserUpdatedAt
+        lastSeenAt: nowMs
       };
 
-    emitCloudState({ status: 'connected', errorMessage: null });
-    this.watchActiveSession(userKey);
+      await writeSingleProtectedDoc(
+        sessRef,
+        sessPath,
+        {
+          workspaceId: WORKSPACE_ID,
+          sessionDocId,
+          userKey: cleanStr(userKey, 160, 'user')
+        },
+        {
+          userId: cleanStr(matched.id, 160, 'user-0'),
+          username: cleanStr(matched.username, 160, 'user'),
+          sessionToken: newToken,
+          issuedAtMs: monotonicIssued,
+          deviceId: cleanStr(deviceId, 160, ''),
+          deviceLabel: cleanStr(deviceLabel, 200, 'Thiết bị Web'),
+          loginAt: nowIso,
+          lastSeenAt: nowMs,
+          revokedBeforeMs: cleanNum(nextRevokedBefore, 0),
+          forceLogoutDeviceLabel: forceLogoutOtherDevice ? cleanStr(deviceLabel, 200, '') : '',
+          forceLogoutAt: forceLogoutOtherDevice ? nowIso : ''
+        }
+      );
 
-    return {
-      handled: true,
-      success: true,
-      user: updatedFromStore,
-      session: newSession,
-      replacedSession: prevActive && prevActive.deviceId !== deviceId ? prevActive : undefined,
-      message: 'Đăng nhập & đồng bộ đám mây thành công!'
-    };
+      const nextUserUpdatedAt = Math.max(nowMs, (Number(matched.updatedAt) || 0) + 1);
+      const updatedFromStore =
+        StorageService.updateUser(matched.id, {
+          lastLogin: nowIso,
+          sessionRevokedAt: forceLogoutOtherDevice
+            ? Math.max(Number(matched.sessionRevokedAt) || 0, nextRevokedBefore)
+            : matched.sessionRevokedAt,
+          updatedAt: nextUserUpdatedAt
+        }) || {
+          ...matched,
+          lastLogin: nowIso,
+          updatedAt: nextUserUpdatedAt
+        };
+
+      emitCloudState({ status: 'connected', errorMessage: null });
+      this.watchActiveSession(userKey);
+
+      return {
+        handled: true,
+        success: true,
+        user: updatedFromStore,
+        session: newSession,
+        replacedSession: prevActive && prevActive.deviceId !== deviceId ? prevActive : undefined,
+        message: 'Đăng nhập & đồng bộ đám mây thành công!'
+      };
+    } catch (err) {
+      console.warn('Cloud login unavailable, falling back to server authentication:', err);
+      return { handled: false, success: false, message: '' };
+    }
   },
 
   async verifySessionWithCloud(mySession: ActiveUserSession): Promise<{
@@ -2211,105 +2313,115 @@ export const FirestoreSyncService = {
     replacedBy?: ActiveUserSession;
     forceLogoutBy?: { deviceLabel?: string; at?: string };
   }> {
-    const fbUser = auth.currentUser;
-    if (!fbUser || !fbUser.emailVerified || currentState.status !== 'connected') {
-      return { handled: false, valid: true };
-    }
-
-    const users = StorageService.getUsers();
-    const matched = users.find(
-      (u) => normUserKey(u.username) === normUserKey(mySession.userKey) || u.id === mySession.userId
-    );
-    if (matched && !matched.isActive) {
-      return { handled: true, valid: false, reason: 'disabled' };
-    }
-
-    const userKey = normUserKey(mySession.userKey || mySession.username);
-    const sessionDocId = makeSafeDocId('sess', userKey);
-    const sessPath = `workspaces/${WORKSPACE_ID}/sessions/${sessionDocId}`;
-    const sessRef = doc(db, 'workspaces', WORKSPACE_ID, 'sessions', sessionDocId);
-    const snap = await safeGetDoc(sessRef, sessPath);
-
-    if (!snap.exists()) {
-      await this.syncActiveSessionToCloudIfConnected(mySession);
-      return { handled: true, valid: true };
-    }
-
-    const d = snap.data();
-    const remoteToken = String(d.sessionToken || '');
-    const remoteIssued = Number(d.issuedAtMs) || 0;
-    const revokedBefore = Number(d.revokedBeforeMs) || 0;
-    const myIssued = Number(mySession.issuedAtMs) || 0;
-
-    if (remoteToken === mySession.sessionToken) {
-      // Gia hạn nhịp tim nếu đã quá 20 giây (hoặc lệch đồng hồ giữa các thiết bị) để tiết kiệm hạn mức ghi Firestore
-      const nowMs = Date.now();
-      if (Math.abs(nowMs - (Number(d.lastSeenAt) || 0)) >= 20_000) {
-        await writeSingleProtectedDoc(
-          sessRef,
-          sessPath,
-          {
-            workspaceId: WORKSPACE_ID,
-            sessionDocId,
-            userKey: cleanStr(userKey, 160, 'user')
-          },
-          {
-            userId: cleanStr(d.userId || mySession.userId, 160, 'user-0'),
-            username: cleanStr(d.username || mySession.username, 160, 'user'),
-            sessionToken: remoteToken,
-            issuedAtMs: remoteIssued || myIssued || nowMs,
-            deviceId: cleanStr(mySession.deviceId, 160, ''),
-            deviceLabel: cleanStr(mySession.deviceLabel, 200, 'Thiết bị Web'),
-            loginAt: cleanStr(d.loginAt || mySession.loginAt, 64, ''),
-            lastSeenAt: nowMs,
-            revokedBeforeMs: cleanNum(revokedBefore, 0),
-            forceLogoutDeviceLabel: cleanStr(d.forceLogoutDeviceLabel, 200, ''),
-            forceLogoutAt: cleanStr(d.forceLogoutAt, 64, '')
-          }
-        );
+    try {
+      if (!isSessionStillValidLocally(mySession.sessionToken)) {
+        return { handled: false, valid: true };
       }
-      return { handled: true, valid: true };
-    }
+      const fbUser = auth.currentUser;
+      if (!fbUser || !fbUser.emailVerified || currentState.status !== 'connected') {
+        return { handled: false, valid: true };
+      }
 
-    if (!remoteToken) {
-      if (revokedBefore > 0 && myIssued > 0 && myIssued <= revokedBefore) {
+      const users = StorageService.getUsers();
+      const matched = users.find(
+        (u) => normUserKey(u.username) === normUserKey(mySession.userKey) || u.id === mySession.userId
+      );
+      if (matched && !matched.isActive) {
+        return { handled: true, valid: false, reason: 'disabled' };
+      }
+
+      const userKey = normUserKey(mySession.userKey || mySession.username);
+      const sessionDocId = makeSafeDocId('sess', userKey);
+      const sessPath = `workspaces/${WORKSPACE_ID}/sessions/${sessionDocId}`;
+      const sessRef = doc(db, 'workspaces', WORKSPACE_ID, 'sessions', sessionDocId);
+      const snap = await safeGetDoc(sessRef, sessPath);
+      if (!isSessionStillValidLocally(mySession.sessionToken)) {
+        return { handled: false, valid: true };
+      }
+
+      if (!snap.exists()) {
+        await this.syncActiveSessionToCloudIfConnected(mySession);
+        return { handled: true, valid: true };
+      }
+
+      const d = snap.data();
+      const remoteToken = String(d.sessionToken || '');
+      const remoteIssued = Number(d.issuedAtMs) || 0;
+      const revokedBefore = Number(d.revokedBeforeMs) || 0;
+      const myIssued = Number(mySession.issuedAtMs) || 0;
+
+      if (remoteToken === mySession.sessionToken) {
+        // Gia hạn nhịp tim nếu đã quá 20 giây (hoặc lệch đồng hồ giữa các thiết bị) để tiết kiệm hạn mức ghi Firestore
+        const nowMs = Date.now();
+        if (Math.abs(nowMs - (Number(d.lastSeenAt) || 0)) >= 20_000 && isSessionStillValidLocally(mySession.sessionToken)) {
+          await writeSingleProtectedDoc(
+            sessRef,
+            sessPath,
+            {
+              workspaceId: WORKSPACE_ID,
+              sessionDocId,
+              userKey: cleanStr(userKey, 160, 'user')
+            },
+            {
+              userId: cleanStr(d.userId || mySession.userId, 160, 'user-0'),
+              username: cleanStr(d.username || mySession.username, 160, 'user'),
+              sessionToken: remoteToken,
+              issuedAtMs: remoteIssued || myIssued || nowMs,
+              deviceId: cleanStr(mySession.deviceId, 160, ''),
+              deviceLabel: cleanStr(mySession.deviceLabel, 200, 'Thiết bị Web'),
+              loginAt: cleanStr(d.loginAt || mySession.loginAt, 64, ''),
+              lastSeenAt: nowMs,
+              revokedBeforeMs: cleanNum(revokedBefore, 0),
+              forceLogoutDeviceLabel: cleanStr(d.forceLogoutDeviceLabel, 200, ''),
+              forceLogoutAt: cleanStr(d.forceLogoutAt, 64, '')
+            }
+          );
+        }
+        return { handled: true, valid: true };
+      }
+
+      if (!remoteToken) {
+        if (revokedBefore > 0 && myIssued > 0 && myIssued <= revokedBefore) {
+          return {
+            handled: true,
+            valid: false,
+            reason: 'force_logout',
+            forceLogoutBy: {
+              deviceLabel: String(d.forceLogoutDeviceLabel || ''),
+              at: String(d.forceLogoutAt || '')
+            }
+          };
+        }
+        // Phiên địa phương mới đăng nhập trước khi kết nối đám mây -> ghi nhận lên đám mây
+        await this.syncActiveSessionToCloudIfConnected(mySession);
+        return { handled: true, valid: true };
+      }
+
+      if (remoteIssued >= myIssued && !revokedCloudSessionTokens.has(remoteToken)) {
         return {
           handled: true,
           valid: false,
-          reason: 'force_logout',
-          forceLogoutBy: {
-            deviceLabel: String(d.forceLogoutDeviceLabel || ''),
-            at: String(d.forceLogoutAt || '')
+          reason: 'replaced',
+          replacedBy: {
+            userId: String(d.userId || mySession.userId),
+            username: String(d.username || mySession.username),
+            userKey,
+            sessionToken: remoteToken,
+            issuedAtMs: remoteIssued,
+            deviceId: String(d.deviceId || ''),
+            deviceLabel: String(d.deviceLabel || 'Thiết bị khác'),
+            loginAt: String(d.loginAt || ''),
+            lastSeenAt: Number(d.lastSeenAt) || Date.now()
           }
         };
       }
-      // Phiên địa phương mới đăng nhập trước khi kết nối đám mây -> ghi nhận lên đám mây
+
+      // Phiên địa phương mới hơn phiên cũ trên đám mây -> nâng cấp đám mây
       await this.syncActiveSessionToCloudIfConnected(mySession);
       return { handled: true, valid: true };
+    } catch {
+      return { handled: false, valid: true };
     }
-
-    if (remoteIssued >= myIssued) {
-      return {
-        handled: true,
-        valid: false,
-        reason: 'replaced',
-        replacedBy: {
-          userId: String(d.userId || mySession.userId),
-          username: String(d.username || mySession.username),
-          userKey,
-          sessionToken: remoteToken,
-          issuedAtMs: remoteIssued,
-          deviceId: String(d.deviceId || ''),
-          deviceLabel: String(d.deviceLabel || 'Thiết bị khác'),
-          loginAt: String(d.loginAt || ''),
-          lastSeenAt: Number(d.lastSeenAt) || Date.now()
-        }
-      };
-    }
-
-    // Phiên địa phương mới hơn phiên cũ trên đám mây -> nâng cấp đám mây
-    await this.syncActiveSessionToCloudIfConnected(mySession);
-    return { handled: true, valid: true };
   },
 
   async requestLogoutOtherDeviceWithCloud(
@@ -2317,155 +2429,176 @@ export const FirestoreSyncService = {
     password: string,
     deviceLabel: string
   ): Promise<{ handled: boolean; success: boolean; message: string }> {
-    const fbUser = auth.currentUser;
-    if (!fbUser || !fbUser.emailVerified) {
+    try {
+      const fbUser = auth.currentUser;
+      if (!fbUser || !fbUser.emailVerified) {
+        return { handled: false, success: false, message: '' };
+      }
+
+      const tokenOk = await ensureValidFirebaseAuthToken(fbUser);
+      if (!tokenOk) return { handled: false, success: false, message: '' };
+
+      const ok = await ensureWorkspaceReady(fbUser);
+      if (!ok) return { handled: false, success: false, message: '' };
+
+      const wsRef = doc(db, 'workspaces', WORKSPACE_ID);
+      const wsSnap = await safeGetDoc(wsRef, `workspaces/${WORKSPACE_ID}`);
+      if (wsSnap.exists()) {
+        await pullMetaFromCloud(wsSnap.data() as WorkspaceManifestDoc, fbUser);
+      }
+
+      const matched = findMatchingUser(StorageService.getUsers(), username);
+      if (!matched) {
+        return {
+          handled: true,
+          success: false,
+          message: `Tài khoản "${username}" không tồn tại trong hệ thống.`
+        };
+      }
+      if (!isPasswordMatch(matched.password, password)) {
+        return {
+          handled: true,
+          success: false,
+          message: 'Mật khẩu xác thực không chính xác.'
+        };
+      }
+
+      const userKey = normUserKey(matched.username);
+      const sessionDocId = makeSafeDocId('sess', userKey);
+      const sessPath = `workspaces/${WORKSPACE_ID}/sessions/${sessionDocId}`;
+      const sessRef = doc(db, 'workspaces', WORKSPACE_ID, 'sessions', sessionDocId);
+      const prevSnap = await safeGetDoc(sessRef, sessPath);
+      const prev = prevSnap.exists() ? prevSnap.data() : null;
+      if (prev?.sessionToken) {
+        rememberRevokedCloudToken(String(prev.sessionToken));
+      }
+      const nowMs = Date.now();
+      const nowIso = new Date(nowMs).toISOString();
+      const revokeMark = Math.max(
+        nowMs,
+        Number(matched.sessionRevokedAt) || 0,
+        Number(prev?.issuedAtMs) || 0,
+        Number(prev?.revokedBeforeMs) || 0
+      );
+
+      await writeSingleProtectedDoc(
+        sessRef,
+        sessPath,
+        {
+          workspaceId: WORKSPACE_ID,
+          sessionDocId,
+          userKey: cleanStr(userKey, 160, 'user')
+        },
+        {
+          userId: cleanStr(matched.id, 160, 'user-0'),
+          username: cleanStr(matched.username, 160, 'user'),
+          sessionToken: '',
+          issuedAtMs: revokeMark,
+          deviceId: '',
+          deviceLabel: '',
+          loginAt: '',
+          lastSeenAt: 0,
+          revokedBeforeMs: revokeMark,
+          forceLogoutDeviceLabel: cleanStr(deviceLabel, 200, 'Thiết bị khác'),
+          forceLogoutAt: nowIso
+        }
+      );
+
+      StorageService.updateUser(matched.id, { sessionRevokedAt: revokeMark });
+      void this.reconcileWithCloud();
+
+      return {
+        handled: true,
+        success: true,
+        message: 'Đã gửi yêu cầu đăng xuất trên thiết bị kia qua Đám mây thành công! Bạn có thể đăng nhập ngay.'
+      };
+    } catch (err) {
+      console.warn('Cloud remote logout fallback to server:', err);
       return { handled: false, success: false, message: '' };
     }
-
-    const ok = await ensureWorkspaceReady(fbUser);
-    if (!ok) return { handled: false, success: false, message: '' };
-
-    const wsRef = doc(db, 'workspaces', WORKSPACE_ID);
-    const wsSnap = await safeGetDoc(wsRef, `workspaces/${WORKSPACE_ID}`);
-    if (wsSnap.exists()) {
-      await pullMetaFromCloud(wsSnap.data() as WorkspaceManifestDoc, fbUser);
-    }
-
-    const matched = findMatchingUser(StorageService.getUsers(), username);
-    if (!matched) {
-      return {
-        handled: true,
-        success: false,
-        message: `Tài khoản "${username}" không tồn tại trong hệ thống.`
-      };
-    }
-    if (!isPasswordMatch(matched.password, password)) {
-      return {
-        handled: true,
-        success: false,
-        message: 'Mật khẩu xác thực không chính xác.'
-      };
-    }
-
-    const userKey = normUserKey(matched.username);
-    const sessionDocId = makeSafeDocId('sess', userKey);
-    const sessPath = `workspaces/${WORKSPACE_ID}/sessions/${sessionDocId}`;
-    const sessRef = doc(db, 'workspaces', WORKSPACE_ID, 'sessions', sessionDocId);
-    const prevSnap = await safeGetDoc(sessRef, sessPath);
-    const prev = prevSnap.exists() ? prevSnap.data() : null;
-    const nowMs = Date.now();
-    const nowIso = new Date(nowMs).toISOString();
-    const revokeMark = Math.max(
-      nowMs,
-      Number(matched.sessionRevokedAt) || 0,
-      Number(prev?.issuedAtMs) || 0,
-      Number(prev?.revokedBeforeMs) || 0
-    );
-
-    await writeSingleProtectedDoc(
-      sessRef,
-      sessPath,
-      {
-        workspaceId: WORKSPACE_ID,
-        sessionDocId,
-        userKey: cleanStr(userKey, 160, 'user')
-      },
-      {
-        userId: cleanStr(matched.id, 160, 'user-0'),
-        username: cleanStr(matched.username, 160, 'user'),
-        sessionToken: '',
-        issuedAtMs: revokeMark,
-        deviceId: '',
-        deviceLabel: '',
-        loginAt: '',
-        lastSeenAt: 0,
-        revokedBeforeMs: revokeMark,
-        forceLogoutDeviceLabel: cleanStr(deviceLabel, 200, 'Thiết bị khác'),
-        forceLogoutAt: nowIso
-      }
-    );
-
-    StorageService.updateUser(matched.id, { sessionRevokedAt: revokeMark });
-    void this.reconcileWithCloud();
-
-    return {
-      handled: true,
-      success: true,
-      message: 'Đã gửi yêu cầu đăng xuất trên thiết bị kia qua Đám mây thành công! Bạn có thể đăng nhập ngay.'
-    };
   },
 
   async forceLogoutOthersKeepCurrentWithCloud(
     current: { user: User; session: ActiveUserSession }
   ): Promise<{ handled: boolean; success: boolean; session?: ActiveUserSession; message: string }> {
-    const fbUser = auth.currentUser;
-    if (!fbUser || !fbUser.emailVerified) {
-      return { handled: false, success: false, message: '' };
-    }
+    try {
+      const fbUser = auth.currentUser;
+      if (!fbUser || !fbUser.emailVerified) {
+        return { handled: false, success: false, message: '' };
+      }
 
-    const ok = await ensureWorkspaceReady(fbUser);
-    if (!ok) return { handled: false, success: false, message: '' };
+      const tokenOk = await ensureValidFirebaseAuthToken(fbUser);
+      if (!tokenOk) return { handled: false, success: false, message: '' };
 
-    const userKey = normUserKey(current.session.userKey || current.user.username);
-    const sessionDocId = makeSafeDocId('sess', userKey);
-    const sessPath = `workspaces/${WORKSPACE_ID}/sessions/${sessionDocId}`;
-    const sessRef = doc(db, 'workspaces', WORKSPACE_ID, 'sessions', sessionDocId);
-    const prevSnap = await safeGetDoc(sessRef, sessPath);
-    const prev = prevSnap.exists() ? prevSnap.data() : null;
-    const nowMs = Date.now();
-    const nowIso = new Date(nowMs).toISOString();
+      const ok = await ensureWorkspaceReady(fbUser);
+      if (!ok) return { handled: false, success: false, message: '' };
 
-    const revokeMark = Math.max(
-      nowMs,
-      Number(current.session.issuedAtMs) || 0,
-      Number(prev?.issuedAtMs) || 0,
-      Number(prev?.revokedBeforeMs) || 0
-    );
-    const nextIssued = revokeMark + 1;
-    const nextToken = `cloud.${nextIssued}.${Math.random().toString(36).slice(2, 12)}`;
+      const userKey = normUserKey(current.session.userKey || current.user.username);
+      const sessionDocId = makeSafeDocId('sess', userKey);
+      const sessPath = `workspaces/${WORKSPACE_ID}/sessions/${sessionDocId}`;
+      const sessRef = doc(db, 'workspaces', WORKSPACE_ID, 'sessions', sessionDocId);
+      const prevSnap = await safeGetDoc(sessRef, sessPath);
+      const prev = prevSnap.exists() ? prevSnap.data() : null;
+      const nowMs = Date.now();
+      const nowIso = new Date(nowMs).toISOString();
 
-    const refreshedSession: ActiveUserSession = {
-      ...current.session,
-      sessionToken: nextToken,
-      issuedAtMs: nextIssued,
-      lastSeenAt: nowMs
-    };
+      const revokeMark = Math.max(
+        nowMs,
+        Number(current.session.issuedAtMs) || 0,
+        Number(prev?.issuedAtMs) || 0,
+        Number(prev?.revokedBeforeMs) || 0
+      );
+      const nextIssued = revokeMark + 1;
+      const nextToken = `cloud.${nextIssued}.${Math.random().toString(36).slice(2, 12)}`;
+      rememberRevokedCloudToken(current.session.sessionToken);
 
-    await writeSingleProtectedDoc(
-      sessRef,
-      sessPath,
-      {
-        workspaceId: WORKSPACE_ID,
-        sessionDocId,
-        userKey: cleanStr(userKey, 160, 'user')
-      },
-      {
-        userId: cleanStr(current.user.id, 160, 'user-0'),
-        username: cleanStr(current.user.username, 160, 'user'),
+      const refreshedSession: ActiveUserSession = {
+        ...current.session,
         sessionToken: nextToken,
         issuedAtMs: nextIssued,
-        deviceId: cleanStr(current.session.deviceId, 160, ''),
-        deviceLabel: cleanStr(current.session.deviceLabel, 200, 'Thiết bị Web'),
-        loginAt: cleanStr(current.session.loginAt, 64, nowIso),
-        lastSeenAt: nowMs,
-        revokedBeforeMs: revokeMark,
-        forceLogoutDeviceLabel: cleanStr(current.session.deviceLabel, 200, 'Thiết bị hiện tại'),
-        forceLogoutAt: nowIso
-      }
-    );
+        lastSeenAt: nowMs
+      };
 
-    StorageService.updateUser(current.user.id, { sessionRevokedAt: revokeMark });
-    void this.reconcileWithCloud();
+      await writeSingleProtectedDoc(
+        sessRef,
+        sessPath,
+        {
+          workspaceId: WORKSPACE_ID,
+          sessionDocId,
+          userKey: cleanStr(userKey, 160, 'user')
+        },
+        {
+          userId: cleanStr(current.user.id, 160, 'user-0'),
+          username: cleanStr(current.user.username, 160, 'user'),
+          sessionToken: nextToken,
+          issuedAtMs: nextIssued,
+          deviceId: cleanStr(current.session.deviceId, 160, ''),
+          deviceLabel: cleanStr(current.session.deviceLabel, 200, 'Thiết bị Web'),
+          loginAt: cleanStr(current.session.loginAt, 64, nowIso),
+          lastSeenAt: nowMs,
+          revokedBeforeMs: revokeMark,
+          forceLogoutDeviceLabel: cleanStr(current.session.deviceLabel, 200, 'Thiết bị hiện tại'),
+          forceLogoutAt: nowIso
+        }
+      );
 
-    return {
-      handled: true,
-      success: true,
-      session: refreshedSession,
-      message: 'Đã đăng xuất mọi phiên trên thiết bị khác qua Đám mây thành công!'
-    };
+      StorageService.updateUser(current.user.id, { sessionRevokedAt: revokeMark });
+      void this.reconcileWithCloud();
+
+      return {
+        handled: true,
+        success: true,
+        session: refreshedSession,
+        message: 'Đã đăng xuất mọi phiên trên thiết bị khác qua Đám mây thành công!'
+      };
+    } catch (err) {
+      console.warn('Cloud force-logout-keep-current fallback to server:', err);
+      return { handled: false, success: false, message: '' };
+    }
   },
 
   async logoutFromCloud(mySession: ActiveUserSession): Promise<void> {
+    rememberRevokedCloudToken(mySession.sessionToken);
     this.watchActiveSession(null);
     const fbUser = auth.currentUser;
     if (!fbUser || !fbUser.emailVerified) return;
@@ -2478,7 +2611,7 @@ export const FirestoreSyncService = {
       const snap = await safeGetDoc(sessRef, sessPath);
       if (!snap.exists()) return;
       const d = snap.data();
-      // Chỉ giải phóng khóa nếu đúng mã phiên của thiết bị này đang giữ khóa
+      // Chỉ giải phóng khóa nếu đúng mã phiên của thiết bị này đang giữ khóa (không bao giờ xóa nhầm phiên mới vừa đăng nhập lại)
       if (String(d.sessionToken || '') !== mySession.sessionToken) return;
 
       await writeSingleProtectedDoc(

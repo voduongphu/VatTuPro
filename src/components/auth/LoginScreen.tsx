@@ -46,9 +46,9 @@ export const LoginScreen: React.FC = () => {
     login,
     loginWithGoogle,
     connectCloudSync,
-    disconnectCloudSync,
     cloudState,
     requestLogoutOtherDevice,
+    resetBrowserAuthState,
     sessionKickNotice,
     sessionKickAlert,
     isKickModalOpen,
@@ -67,6 +67,7 @@ export const LoginScreen: React.FC = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [isCloudConnecting, setIsCloudConnecting] = useState(false);
   const [isRequestingRemoteLogout, setIsRequestingRemoteLogout] = useState(false);
+  const [isResettingCookies, setIsResettingCookies] = useState(false);
 
   const handleAcknowledgeModal = () => {
     if (!username.trim() && sessionKickAlert?.username) {
@@ -144,7 +145,7 @@ export const LoginScreen: React.FC = () => {
     }
   };
 
-  const handleGoogleLogin = async (forceLogoutOtherDevice = false) => {
+  const handleGoogleLogin = async (forceLogoutOtherDevice = false, forceSelectAccount = false) => {
     setErrorMessage('');
     setNeedsCloudConnect(false);
     setSuccessMessage('');
@@ -156,7 +157,7 @@ export const LoginScreen: React.FC = () => {
     clearSessionKickNotice();
     setIsCloudConnecting(true);
     try {
-      const res = await loginWithGoogle(forceLogoutOtherDevice);
+      const res = await loginWithGoogle(forceLogoutOtherDevice, forceSelectAccount);
       if (res.success) {
         setConflictSession(null);
         setConflictMessage('');
@@ -180,20 +181,23 @@ export const LoginScreen: React.FC = () => {
   };
 
   const handleSwitchGoogleAccount = async () => {
+    await handleGoogleLogin(false, true);
+  };
+
+  const handleResetBrowserCookies = async () => {
     setErrorMessage('');
     setNeedsCloudConnect(false);
     setSuccessMessage('');
-    setIsCloudConnecting(true);
+    setConflictSession(null);
+    setConflictMessage('');
+    setConflictViaGoogle(false);
+    clearSessionKickNotice();
+    setIsResettingCookies(true);
     try {
-      await disconnectCloudSync();
-      const res = await connectCloudSync();
-      if (res.success) {
-        setSuccessMessage(res.message);
-      } else if (res.message) {
-        setErrorMessage(res.message);
-      }
+      const res = await resetBrowserAuthState();
+      setSuccessMessage(res.message);
     } finally {
-      setIsCloudConnecting(false);
+      setIsResettingCookies(false);
     }
   };
 
@@ -211,7 +215,7 @@ export const LoginScreen: React.FC = () => {
 
     setIsLoading(true);
     try {
-      const res = await login(username.trim(), password, false);
+      const res = await login(username.normalize('NFC').trim(), password, false);
       if (res.success) {
         setSuccessMessage('Đăng nhập thành công! Đang chuyển vào hệ thống...');
       } else if (res.conflict) {
@@ -501,21 +505,36 @@ export const LoginScreen: React.FC = () => {
                     <AlertCircle className="w-4 h-4 shrink-0 text-rose-400 mt-0.5" />
                     <span className="font-medium leading-relaxed">{errorMessage}</span>
                   </div>
-                  {needsCloudConnect && (
+                  <div className="flex flex-col gap-2">
+                    {needsCloudConnect && (
+                      <button
+                        type="button"
+                        onClick={handleConnectCloudAndAutoLogin}
+                        disabled={isCloudConnecting || isLoading || isResettingCookies}
+                        className="w-full min-h-[40px] px-3 py-2 bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs rounded-xl shadow-md transition flex items-center justify-center gap-2 disabled:opacity-60"
+                      >
+                        <Cloud className="w-4 h-4 shrink-0" />
+                        <span>
+                          {isCloudConnecting
+                            ? 'Đang kết nối Đám mây & tự động đăng nhập...'
+                            : 'Kết nối Đám mây & Đăng nhập ngay'}
+                        </span>
+                      </button>
+                    )}
                     <button
                       type="button"
-                      onClick={handleConnectCloudAndAutoLogin}
-                      disabled={isCloudConnecting || isLoading}
-                      className="w-full min-h-[40px] px-3 py-2 bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs rounded-xl shadow-md transition flex items-center justify-center gap-2 disabled:opacity-60"
+                      onClick={handleResetBrowserCookies}
+                      disabled={isResettingCookies || isLoading || isCloudConnecting}
+                      className="w-full min-h-[38px] px-3 py-2 bg-slate-900/90 hover:bg-slate-800 border border-rose-700/60 text-rose-100 font-semibold text-xs rounded-xl transition flex items-center justify-center gap-1.5 disabled:opacity-60"
                     >
-                      <Cloud className="w-4 h-4 shrink-0" />
+                      <RefreshCw className={`w-3.5 h-3.5 shrink-0 ${isResettingCookies ? 'animate-spin' : ''}`} />
                       <span>
-                        {isCloudConnecting
-                          ? 'Đang kết nối Đám mây & tự động đăng nhập...'
-                          : 'Kết nối Đám mây & Đăng nhập ngay'}
+                        {isResettingCookies
+                          ? 'Đang dọn cookies phiên cũ...'
+                          : 'Làm mới phiên & Xóa cookies đăng nhập cũ'}
                       </span>
                     </button>
-                  )}
+                  </div>
                 </div>
               )}
 
@@ -596,7 +615,7 @@ export const LoginScreen: React.FC = () => {
                   <button
                     type="button"
                     onClick={handleRequestLogoutOtherOnly}
-                    disabled={isLoading || isRequestingRemoteLogout}
+                    disabled={isLoading || isRequestingRemoteLogout || isResettingCookies}
                     title="Nhập tên người sử dụng và mật khẩu rồi bấm nút này để đăng xuất phiên đang mở trên thiết bị khác"
                     className="w-full min-h-[44px] py-2.5 px-4 bg-slate-950/90 hover:bg-slate-800 border border-slate-700 hover:border-amber-500/60 text-amber-300 font-semibold text-xs sm:text-sm rounded-xl transition flex items-center justify-center gap-2 disabled:opacity-60"
                   >
@@ -605,6 +624,21 @@ export const LoginScreen: React.FC = () => {
                       {isRequestingRemoteLogout
                         ? 'Đang gửi yêu cầu đăng xuất thiết bị kia...'
                         : 'Yêu cầu đăng xuất trên thiết bị kia'}
+                    </span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={handleResetBrowserCookies}
+                    disabled={isLoading || isRequestingRemoteLogout || isResettingCookies}
+                    title="Dùng khi trình duyệt bị kẹt cookies hoặc phiên cũ sau khi đã bấm Đăng xuất trước đó"
+                    className="w-full min-h-[38px] py-2 px-3 bg-slate-900/60 hover:bg-slate-800/80 border border-slate-800 hover:border-slate-700 text-slate-300 font-medium text-xs rounded-xl transition flex items-center justify-center gap-1.5 disabled:opacity-60"
+                  >
+                    <RefreshCw className={`w-3.5 h-3.5 shrink-0 text-blue-400 ${isResettingCookies ? 'animate-spin' : ''}`} />
+                    <span>
+                      {isResettingCookies
+                        ? 'Đang làm mới phiên & xóa cookies...'
+                        : 'Làm mới phiên / Xóa cookies đăng nhập cũ'}
                     </span>
                   </button>
                 </div>

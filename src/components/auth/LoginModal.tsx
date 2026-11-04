@@ -11,6 +11,7 @@ import {
   Cloud,
   CloudOff,
   LogOut,
+  RefreshCw,
   Eye,
   EyeOff
 } from 'lucide-react';
@@ -21,7 +22,13 @@ interface LoginModalProps {
 }
 
 export const LoginModal: React.FC<LoginModalProps> = ({ isOpen, onClose }) => {
-  const { login, connectCloudSync, cloudState, requestLogoutOtherDevice } = useAuth();
+  const {
+    login,
+    connectCloudSync,
+    cloudState,
+    requestLogoutOtherDevice,
+    resetBrowserAuthState
+  } = useAuth();
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
@@ -33,6 +40,7 @@ export const LoginModal: React.FC<LoginModalProps> = ({ isOpen, onClose }) => {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isConnectingCloud, setIsConnectingCloud] = useState(false);
   const [isForcingLogout, setIsForcingLogout] = useState(false);
+  const [isResettingCookies, setIsResettingCookies] = useState(false);
 
   if (!isOpen) return null;
 
@@ -91,6 +99,21 @@ export const LoginModal: React.FC<LoginModalProps> = ({ isOpen, onClose }) => {
     }
   };
 
+  const handleResetCookies = async () => {
+    setErrorMessage('');
+    setNeedsCloudConnect(false);
+    setSuccessMessage('');
+    setConflictSession(null);
+    setConflictMessage('');
+    setIsResettingCookies(true);
+    try {
+      const res = await resetBrowserAuthState();
+      setSuccessMessage(res.message);
+    } finally {
+      setIsResettingCookies(false);
+    }
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMessage('');
@@ -106,7 +129,7 @@ export const LoginModal: React.FC<LoginModalProps> = ({ isOpen, onClose }) => {
 
     setIsSubmitting(true);
     try {
-      const res = await login(username.trim(), password, false);
+      const res = await login(username.normalize('NFC').trim(), password, false);
       if (res.success) {
         setSuccessMessage(res.message);
         setTimeout(() => {
@@ -250,7 +273,7 @@ export const LoginModal: React.FC<LoginModalProps> = ({ isOpen, onClose }) => {
                 <button
                   type="button"
                   onClick={handleConnectCloudAndAutoLogin}
-                  disabled={isConnectingCloud || isSubmitting}
+                  disabled={isConnectingCloud || isSubmitting || isResettingCookies}
                   className="w-full min-h-[38px] px-3 py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-lg transition flex items-center justify-center gap-1.5 disabled:opacity-70"
                 >
                   <Cloud className="w-3.5 h-3.5 shrink-0" />
@@ -261,6 +284,19 @@ export const LoginModal: React.FC<LoginModalProps> = ({ isOpen, onClose }) => {
                   </span>
                 </button>
               )}
+              <button
+                type="button"
+                onClick={handleResetCookies}
+                disabled={isResettingCookies || isSubmitting || isConnectingCloud}
+                className="w-full min-h-[36px] px-3 py-1.5 bg-white hover:bg-rose-100/60 border border-rose-300 text-rose-800 font-semibold rounded-lg transition flex items-center justify-center gap-1.5 disabled:opacity-70"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 shrink-0 ${isResettingCookies ? 'animate-spin' : ''}`} />
+                <span>
+                  {isResettingCookies
+                    ? 'Đang xóa cookies phiên cũ...'
+                    : 'Xóa cookies phiên cũ & Thử lại'}
+                </span>
+              </button>
             </div>
           )}
 

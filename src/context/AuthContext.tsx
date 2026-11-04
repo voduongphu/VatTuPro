@@ -65,7 +65,10 @@ interface AuthContextType {
   cloudState: CloudSyncSnapshotState;
   connectCloudSync: () => Promise<{ success: boolean; message: string; email?: string | null }>;
   disconnectCloudSync: () => Promise<void>;
-  loginWithGoogle: (forceLogoutOtherDevice?: boolean) => Promise<LoginActionResult>;
+  loginWithGoogle: (
+    forceLogoutOtherDevice?: boolean,
+    forceSelectAccount?: boolean
+  ) => Promise<LoginActionResult>;
   sessionKickNotice: string | null;
   sessionKickAlert: SessionKickAlert | null;
   isKickModalOpen: boolean;
@@ -83,6 +86,7 @@ interface AuthContextType {
     pass: string
   ) => Promise<{ success: boolean; message: string }>;
   forceLogoutOtherDevicesFromCurrent: () => Promise<{ success: boolean; message: string }>;
+  resetBrowserAuthState: () => Promise<{ success: boolean; message: string }>;
   logout: () => void;
   isAdmin: boolean;
   isManager: boolean;
@@ -223,10 +227,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     await SyncService.disconnectCloudSync();
   };
 
-  const loginWithGoogle = async (forceLogoutOtherDevice = false): Promise<LoginActionResult> => {
+  const loginWithGoogle = async (
+    forceLogoutOtherDevice = false,
+    forceSelectAccount = false
+  ): Promise<LoginActionResult> => {
     clearSessionKickNotice();
     setReplacedOtherDeviceAlert(null);
-    const res = await SyncService.loginWithGoogleCloud({ forceLogoutOtherDevice });
+    const res = await SyncService.loginWithGoogleCloud({
+      forceLogoutOtherDevice,
+      forceSelectAccount
+    });
     const latestUsers = StorageService.getUsers();
     setUsers(latestUsers);
 
@@ -264,7 +274,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   ): Promise<LoginActionResult> => {
     clearSessionKickNotice();
     setReplacedOtherDeviceAlert(null);
-    const res = await SyncService.loginWithServer(username.trim(), pass, {
+    const cleanUser = username.normalize('NFC').trim();
+    const res = await SyncService.loginWithServer(cleanUser, pass, {
       forceLogoutOtherDevice
     });
     const latestUsers = StorageService.getUsers();
@@ -301,7 +312,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     pass: string
   ): Promise<{ success: boolean; message: string }> => {
     clearSessionKickNotice();
-    const res = await SyncService.requestLogoutOtherDevice(username.trim(), pass);
+    const res = await SyncService.requestLogoutOtherDevice(username.normalize('NFC').trim(), pass);
     refreshUsers();
     return res;
   };
@@ -315,8 +326,18 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return res;
   };
 
+  const resetBrowserAuthState = async (): Promise<{ success: boolean; message: string }> => {
+    setCurrentUser(null);
+    clearSessionKickNotice();
+    setReplacedOtherDeviceAlert(null);
+    const res = await SyncService.resetBrowserAuthState();
+    refreshUsers();
+    return res;
+  };
+
   const logout = () => {
     setCurrentUser(null);
+    clearSessionKickNotice();
     setReplacedOtherDeviceAlert(null);
     void SyncService.logoutFromServer();
   };
@@ -400,6 +421,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         login,
         requestLogoutOtherDevice,
         forceLogoutOtherDevicesFromCurrent,
+        resetBrowserAuthState,
         logout,
         isAdmin,
         isManager,
