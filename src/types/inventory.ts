@@ -177,6 +177,63 @@ export interface OutboundReceipt {
   lastEditedAt?: string;
 }
 
+// Quản lý vật tư OSD (Overage - Shortage - Damage)
+export type OsdStatus = 'open' | 'closed'; // "Mở" khi chưa xử lý hoàn thành OSD, "Đóng" khi đã xử lý hoàn thành OSD
+export type OsdType = 'overage' | 'shortage' | 'damage'; // Thừa | Thiếu | Hư hỏng
+
+export interface OsdItemDetail {
+  id: string;
+  materialCode: string; // Mã vật tư
+  materialName: string; // Tên vật tư
+  unit: string; // ĐVT
+  packageNo: string; // Số kiện (Package No.)
+  packageName: string; // Tên kiện hàng
+  packingListNo: string; // Số Packing List
+  shipment: string; // Shipment
+  inboundQuantity: number; // Số lượng theo phiếu nhập / chứng từ
+  osdType: OsdType; // Loại OSD: Thừa / Thiếu / Hư hỏng
+  osdQuantity: number; // Số lượng OSD (thừa/thiếu/hư hỏng)
+  osdWeightKg?: number; // Khối lượng ảnh hưởng (kg)
+  defectDescription: string; // Tình trạng lỗi, hư hỏng hoặc sai lệch thực tế
+  rootCause?: string; // Nguyên nhân ban đầu (vận chuyển, bốc dỡ, nhà cung cấp...)
+  proposedAction?: string; // Biện pháp xử lý kiến nghị (yêu cầu cấp bù, bồi thường, đổi trả...)
+}
+
+export interface OsdPdfAttachment {
+  fileName: string; // Tên file .pdf (vd: Bien_Ban_OSD_PNK25-0019.pdf)
+  fileSize: number; // Kích thước (bytes)
+  fileType: string; // 'application/pdf'
+  uploadedAt: string; // Thời gian tải lên (ISO)
+  dataUrl: string; // Base64 data:application/pdf;base64,...
+}
+
+export interface OsdReceipt {
+  id: string;
+  osdCode: string; // Số biên bản / phiếu OSD (vd: OSD26-0001)
+  osdDate: string; // Ngày lập biên bản OSD (YYYY-MM-DD)
+  inboundReceiptId: string; // ID phiếu nhập kho nguồn
+  inboundReceiptCode: string; // Số phiếu nhập kho nguồn (vd: PNK25-0019)
+  warehouseId: string;
+  warehouseName: string;
+  supplier: string; // Nhà cung cấp / Đơn vị giao hàng
+  packingListNo?: string;
+  shipment?: string;
+  status: OsdStatus; // 'open' (Mở) | 'closed' (Đóng) - Người sử dụng tick thủ công
+  resolutionNotes?: string; // Ghi chú kết quả xử lý
+  resolvedAt?: string; // Thời gian hoàn thành đóng OSD
+  resolvedBy?: string; // Người xử lý đóng OSD
+  pdfAttachment?: OsdPdfAttachment; // Biên bản OSD bằng file .pdf đính kèm
+  items: OsdItemDetail[];
+  totalOsdQuantity: number;
+  totalOsdWeightKg?: number;
+  notes?: string;
+  createdAt: string;
+  createdBy: string;
+  updatedAt?: number;
+  lastEditedBy?: string;
+  lastEditedAt?: string;
+}
+
 // Tổng hợp tồn kho theo các chiều phân tích
 export interface InventoryStockRecord {
   id: string; // Unique key ghép từ các thuộc tính phân nhóm
@@ -195,15 +252,20 @@ export interface InventoryStockRecord {
   category: string;
   drawingNo: string;
   
-  // Tồn kho hiện tại
+  // Tồn kho hiện tại (Tổng SL tồn = Tổng SL nhập + Tổng SL nhập trả kho - Tổng SL xuất kho - Tổng SL tái xuất)
   currentQuantity: number;
   currentWeightKg: number;
   
   // Luân chuyển lịch sử
-  inboundQuantity: number;
+  inboundQuantity: number; // Tổng SL nhập (phiếu nhập chuẩn, không tick Nhập trả kho)
   inboundWeightKg: number;
-  outboundQuantity: number;
+  returnInboundQuantity: number; // Tổng SL nhập trả kho (phiếu nhập có tick "Nhập trả kho")
+  returnInboundWeightKg: number;
+  
+  outboundQuantity: number; // Tổng SL xuất kho (phiếu xuất chuẩn, không tick Xuất điều chuyển)
   outboundWeightKg: number;
+  transferOutboundQuantity: number; // Tổng SL tái xuất (phiếu xuất có tick "Xuất điều chuyển")
+  transferOutboundWeightKg: number;
   
   lastUpdated: string;
 }

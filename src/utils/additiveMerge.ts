@@ -6,6 +6,7 @@ import type {
   InboundItemDetail,
   OutboundReceipt,
   OutboundItemDetail,
+  OsdReceipt,
   TombstoneMap
 } from '../types/inventory.ts';
 
@@ -1766,7 +1767,7 @@ function parseSingleVoucherCode(
 
 export function generateNextSequentialVoucherCode(
   seeds: VoucherCodeSeed[],
-  defaultType: 'PNK' | 'PXK',
+  defaultType: 'PNK' | 'PXK' | 'OSD',
   fallbackDateStr?: string
 ): string {
   const occupiedCodes = new Set<string>();
@@ -1953,5 +1954,22 @@ export function generateNextOutboundVoucherCode(
   });
 
   return generateNextSequentialVoucherCode(seeds, 'PXK', fallbackDateStr);
+}
+
+export function generateNextOsdVoucherCode(
+  osdList: OsdReceipt[],
+  fallbackDateStr?: string
+): string {
+  const seeds: VoucherCodeSeed[] = osdList.map((r) => {
+    return {
+      code: (r.osdCode || '').trim(),
+      date: r.osdDate,
+      createdAt: r.createdAt,
+      lastEditedAt: r.lastEditedAt,
+      updatedAt: r.updatedAt
+    };
+  });
+
+  return generateNextSequentialVoucherCode(seeds, 'OSD', fallbackDateStr);
 }
 

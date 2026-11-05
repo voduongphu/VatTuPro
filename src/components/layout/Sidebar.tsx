@@ -12,7 +12,8 @@ import {
   CheckCircle2,
   X,
   Boxes,
-  LogOut
+  LogOut,
+  FileWarning
 } from 'lucide-react';
 
 interface SidebarProps {
@@ -48,6 +49,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
       label: 'Quản Lý Xuất Kho',
       icon: ArrowUpRight,
       meta: 'Excel'
+    },
+    {
+      id: 'osd',
+      label: 'Quản Lý Vật Tư OSD',
+      icon: FileWarning,
+      meta: 'Mới'
     },
     {
       id: 'report',

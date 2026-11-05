@@ -6,6 +6,8 @@ import {
   OutboundReceipt, 
   InventoryStockRecord,
   StockFilterParams,
+  OsdReceipt,
+  OsdStatus,
   TombstoneMap
 } from '../types/inventory';
 import {
@@ -33,6 +35,7 @@ const STORAGE_KEYS = {
   MATERIALS: 'vtp_inventory_materials_v2',
   INBOUND: 'vtp_inventory_inbound_v2',
   OUTBOUND: 'vtp_inventory_outbound_v2',
+  OSD: 'vtp_inventory_osd_v2',
   CURRENT_USER: 'vtp_inventory_current_user_v2',
   TOMBSTONES: 'vtp_inventory_tombstones_v2',
   DELETED_INBOUND: 'vtp_deleted_inbound_ids_v2',
@@ -44,7 +47,8 @@ const STORAGE_KEYS = {
 const LARGE_DATA_KEYS = new Set<string>([
   STORAGE_KEYS.INBOUND,
   STORAGE_KEYS.OUTBOUND,
-  STORAGE_KEYS.MATERIALS
+  STORAGE_KEYS.MATERIALS,
+  STORAGE_KEYS.OSD
 ]);
 
 const SEED_FLAG_KEY = 'vtp_inventory_seeded_flag_v4';
@@ -304,8 +308,12 @@ interface AggEntry {
   drawingNo: string;
   inboundQuantity: number;
   inboundWeightKg: number;
+  returnInboundQuantity: number;
+  returnInboundWeightKg: number;
   outboundQuantity: number;
   outboundWeightKg: number;
+  transferOutboundQuantity: number;
+  transferOutboundWeightKg: number;
   lastUpdated: string;
 }
 
@@ -449,10 +457,18 @@ function finalizeAggEntries(groupMap: Map<string, AggEntry>): InventoryStockReco
   groupMap.forEach((e, key) => {
     const inQty = roundQty(e.inboundQuantity);
     const inWeight = Math.round(e.inboundWeightKg * 100) / 100;
+    const retInQty = roundQty(e.returnInboundQuantity);
+    const retInWeight = Math.round(e.returnInboundWeightKg * 100) / 100;
+
     const outQty = roundQty(e.outboundQuantity);
     const outWeight = Math.round(e.outboundWeightKg * 100) / 100;
-    const currentQty = roundQty(inQty - outQty);
-    const currentWeight = Math.round((inWeight - outWeight) * 100) / 100;
+    const transOutQty = roundQty(e.transferOutboundQuantity);
+    const transOutWeight = Math.round(e.transferOutboundWeightKg * 100) / 100;
+
+    // Tổng SL tồn = Tổng SL nhập + Tổng SL nhập trả kho - Tổng SL xuất kho - Tổng SL tái xuất
+    const currentQty = roundQty((inQty + retInQty) - (outQty + transOutQty));
+    const currentWeight = Math.round(((inWeight + retInWeight) - (outWeight + transOutWeight)) * 100) / 100;
+
     const warehouseName =
       e.warehouseNames && e.warehouseNames.size > 1
         ? Array.from(e.warehouseNames).join(', ')
@@ -475,8 +491,12 @@ function finalizeAggEntries(groupMap: Map<string, AggEntry>): InventoryStockReco
       drawingNo: e.drawingNo,
       inboundQuantity: inQty,
       inboundWeightKg: inWeight,
+      returnInboundQuantity: retInQty,
+      returnInboundWeightKg: retInWeight,
       outboundQuantity: outQty,
       outboundWeightKg: outWeight,
+      transferOutboundQuantity: transOutQty,
+      transferOutboundWeightKg: transOutWeight,
       currentQuantity: currentQty,
       currentWeightKg: currentWeight,
       lastUpdated: e.lastUpdated
@@ -503,6 +523,7 @@ function buildAggregatedRecords(
     const items = receipt.items;
     const rDate = receipt.receiptDate || '';
     const whId = receipt.warehouseId;
+    const isReturn = receipt.inboundType === 'return';
 
     for (let j = 0; j < items.length; j++) {
       const item = items[j];
@@ -526,6 +547,9 @@ function buildAggregatedRecords(
       const mNameKey = dispName === 'Vật tư' ? 'N/A' : dispName.toUpperCase();
       const key = `${whId}__${plKey}__${shpKey}__${pkgKey}__${mCodeKey}__${mNameKey}`;
 
+      const itemQty = Number(item.quantity) || 0;
+      const itemW = Number(item.weightKg) || 0;
+
       let entry = groupMap.get(key);
       if (!entry) {
         entry = {
@@ -542,16 +566,25 @@ function buildAggregatedRecords(
           packageName: dispPkgName,
           category: dispCat,
           drawingNo: dispDwg,
-          inboundQuantity: Number(item.quantity) || 0,
-          inboundWeightKg: Number(item.weightKg) || 0,
+          inboundQuantity: isReturn ? 0 : itemQty,
+          inboundWeightKg: isReturn ? 0 : itemW,
+          returnInboundQuantity: isReturn ? itemQty : 0,
+          returnInboundWeightKg: isReturn ? itemW : 0,
           outboundQuantity: 0,
           outboundWeightKg: 0,
+          transferOutboundQuantity: 0,
+          transferOutboundWeightKg: 0,
           lastUpdated: rDate
         };
         groupMap.set(key, entry);
       } else {
-        entry.inboundQuantity += Number(item.quantity) || 0;
-        entry.inboundWeightKg += Number(item.weightKg) || 0;
+        if (isReturn) {
+          entry.returnInboundQuantity += itemQty;
+          entry.returnInboundWeightKg += itemW;
+        } else {
+          entry.inboundQuantity += itemQty;
+          entry.inboundWeightKg += itemW;
+        }
         mergeAggMetadata(entry, {
           materialCode: dispCode,
           materialName: dispName,
@@ -579,6 +612,7 @@ function buildAggregatedRecords(
     const items = receipt.items;
     const iDate = receipt.issueDate || '';
     const whId = receipt.warehouseId;
+    const isTransfer = receipt.outboundType === 'transfer';
 
     for (let j = 0; j < items.length; j++) {
       const item = items[j];
@@ -602,6 +636,9 @@ function buildAggregatedRecords(
       const mNameKey = dispName === 'Vật tư' ? 'N/A' : dispName.toUpperCase();
       const key = `${whId}__${plKey}__${shpKey}__${pkgKey}__${mCodeKey}__${mNameKey}`;
 
+      const itemQty = Number(item.quantity) || 0;
+      const itemW = Number(item.weightKg) || 0;
+
       let entry = groupMap.get(key);
       if (!entry) {
         entry = {
@@ -620,14 +657,23 @@ function buildAggregatedRecords(
           drawingNo: dispDwg,
           inboundQuantity: 0,
           inboundWeightKg: 0,
-          outboundQuantity: Number(item.quantity) || 0,
-          outboundWeightKg: Number(item.weightKg) || 0,
+          returnInboundQuantity: 0,
+          returnInboundWeightKg: 0,
+          outboundQuantity: isTransfer ? 0 : itemQty,
+          outboundWeightKg: isTransfer ? 0 : itemW,
+          transferOutboundQuantity: isTransfer ? itemQty : 0,
+          transferOutboundWeightKg: isTransfer ? itemW : 0,
           lastUpdated: iDate
         };
         groupMap.set(key, entry);
       } else {
-        entry.outboundQuantity += Number(item.quantity) || 0;
-        entry.outboundWeightKg += Number(item.weightKg) || 0;
+        if (isTransfer) {
+          entry.transferOutboundQuantity += itemQty;
+          entry.transferOutboundWeightKg += itemW;
+        } else {
+          entry.outboundQuantity += itemQty;
+          entry.outboundWeightKg += itemW;
+        }
         mergeAggMetadata(entry, {
           materialCode: dispCode,
           materialName: dispName,
@@ -685,16 +731,25 @@ function mergeRecordsForInventoryReport(records: InventoryStockRecord[]): Invent
         drawingNo: cleanStockDisplayValue(r.drawingNo, 'N/A'),
         inboundQuantity: r.inboundQuantity,
         inboundWeightKg: r.inboundWeightKg,
+        returnInboundQuantity: r.returnInboundQuantity || 0,
+        returnInboundWeightKg: r.returnInboundWeightKg || 0,
         outboundQuantity: r.outboundQuantity,
         outboundWeightKg: r.outboundWeightKg,
+        transferOutboundQuantity: r.transferOutboundQuantity || 0,
+        transferOutboundWeightKg: r.transferOutboundWeightKg || 0,
         lastUpdated: r.lastUpdated || ''
       };
       reportMap.set(reportKey, entry);
     } else {
       entry.inboundQuantity += r.inboundQuantity;
       entry.inboundWeightKg += r.inboundWeightKg;
+      entry.returnInboundQuantity += r.returnInboundQuantity || 0;
+      entry.returnInboundWeightKg += r.returnInboundWeightKg || 0;
       entry.outboundQuantity += r.outboundQuantity;
       entry.outboundWeightKg += r.outboundWeightKg;
+      entry.transferOutboundQuantity += r.transferOutboundQuantity || 0;
+      entry.transferOutboundWeightKg += r.transferOutboundWeightKg || 0;
+
       if (r.warehouseId !== entry.warehouseId) {
         entry.warehouseId = 'merged';
       }
@@ -926,6 +981,11 @@ export const StorageService = {
     // 5. Outbound Receipts
     if (!memoryCache.has(STORAGE_KEYS.OUTBOUND) && safeLocalGetRaw(STORAGE_KEYS.OUTBOUND) === null) {
       setItem(STORAGE_KEYS.OUTBOUND, []);
+    }
+
+    // 6. OSD Receipts
+    if (!memoryCache.has(STORAGE_KEYS.OSD) && safeLocalGetRaw(STORAGE_KEYS.OSD) === null) {
+      setItem(STORAGE_KEYS.OSD, []);
     }
 
     try {
@@ -2156,6 +2216,68 @@ export const StorageService = {
     }
 
     return applyStockAttributeFilters(mergedRecords, filter, true);
+  },
+
+  // ==========================================================================
+  // QUẢN LÝ VẬT TƯ OSD (Overage - Shortage - Damage)
+  // ==========================================================================
+  getOsdReceipts(): OsdReceipt[] {
+    this.ensureInitialized();
+    return getItem<OsdReceipt[]>(STORAGE_KEYS.OSD, []);
+  },
+
+  saveOsdReceipts(receipts: OsdReceipt[]): void {
+    setItem(STORAGE_KEYS.OSD, receipts);
+    notifySubscribers();
+  },
+
+  addOsdReceipt(rcp: OsdReceipt): void {
+    const list = this.getOsdReceipts();
+    const now = Date.now();
+    const stamped: OsdReceipt = { ...rcp, updatedAt: now };
+    const next = [stamped, ...list];
+    this.saveOsdReceipts(next);
+  },
+
+  updateOsdReceipt(id: string, updated: OsdReceipt): boolean {
+    const list = [...this.getOsdReceipts()];
+    const idx = list.findIndex((r) => r.id === id || normKey(r.osdCode) === normKey(id));
+    if (idx === -1) return false;
+    const now = Date.now();
+    list[idx] = { ...updated, updatedAt: now };
+    this.saveOsdReceipts(list);
+    return true;
+  },
+
+  deleteOsdReceipt(id: string): boolean {
+    const list = this.getOsdReceipts();
+    const next = list.filter((r) => r.id !== id && normKey(r.osdCode) !== normKey(id));
+    if (next.length === list.length) return false;
+    this.saveOsdReceipts(next);
+    return true;
+  },
+
+  toggleOsdStatus(
+    id: string,
+    status: OsdStatus,
+    resolutionNotes?: string,
+    resolvedBy?: string
+  ): boolean {
+    const list = [...this.getOsdReceipts()];
+    const idx = list.findIndex((r) => r.id === id || normKey(r.osdCode) === normKey(id));
+    if (idx === -1) return false;
+    const curr = list[idx];
+    const nowIso = new Date().toISOString();
+    list[idx] = {
+      ...curr,
+      status,
+      resolutionNotes: resolutionNotes !== undefined ? resolutionNotes : curr.resolutionNotes,
+      resolvedAt: status === 'closed' ? (curr.resolvedAt || nowIso) : undefined,
+      resolvedBy: status === 'closed' ? (resolvedBy || curr.resolvedBy || 'Quản lý kho') : undefined,
+      updatedAt: Date.now()
+    };
+    this.saveOsdReceipts(list);
+    return true;
   },
 
   // Reset về dữ liệu gốc (cả IndexedDB và localStorage)

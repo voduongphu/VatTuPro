@@ -10,6 +10,7 @@ import { Sidebar } from './components/layout/Sidebar';
 import { DashboardOverview } from './components/dashboard/DashboardOverview';
 import { InboundManager } from './components/inbound/InboundManager';
 import { OutboundManager } from './components/outbound/OutboundManager';
+import { OsdManager } from './components/osd/OsdManager';
 import { InventoryReport } from './components/reports/InventoryReport';
 import { WarehouseManager } from './components/warehouses/WarehouseManager';
 import { MaterialCatalog } from './components/materials/MaterialCatalog';
@@ -19,6 +20,7 @@ import {
   LayoutDashboard,
   ArrowDownLeft,
   ArrowUpRight,
+  FileWarning,
   BarChart3,
   Warehouse,
   Package,
@@ -31,6 +33,7 @@ const MOBILE_QUICK_TABS = [
   { id: 'dashboard', label: 'Tổng quan', icon: LayoutDashboard },
   { id: 'inbound', label: 'Nhập kho', icon: ArrowDownLeft },
   { id: 'outbound', label: 'Xuất kho', icon: ArrowUpRight },
+  { id: 'osd', label: 'Vật tư OSD', icon: FileWarning },
   { id: 'report', label: 'Báo cáo NXT', icon: BarChart3 },
   { id: 'warehouses', label: 'Kho bãi', icon: Warehouse },
   { id: 'materials', label: 'Vật tư', icon: Package },
@@ -68,6 +71,8 @@ const MainLayout: React.FC = () => {
         return <InboundManager />;
       case 'outbound':
         return <OutboundManager />;
+      case 'osd':
+        return <OsdManager />;
       case 'report':
         return <InventoryReport />;
       case 'warehouses':

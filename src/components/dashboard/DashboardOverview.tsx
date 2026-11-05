@@ -12,7 +12,8 @@ import {
   Layers, 
   Truck, 
   ShieldCheck,
-  TrendingUp
+  TrendingUp,
+  FileWarning
 } from 'lucide-react';
 
 interface DashboardOverviewProps {
@@ -144,6 +145,13 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({ onNavigate
             >
               <TrendingUp className="w-4 h-4 shrink-0" />
               <span>Xem Báo Cáo NXT Đa Chiều</span>
+            </button>
+            <button
+              onClick={() => onNavigate('osd')}
+              className="flex items-center justify-center gap-1.5 px-4 py-2.5 bg-amber-600 hover:bg-amber-500 text-white rounded-xl font-semibold shadow transition min-h-[42px]"
+            >
+              <FileWarning className="w-4 h-4 shrink-0" />
+              <span>Quản Lý Vật Tư OSD</span>
             </button>
           </div>
         </div>

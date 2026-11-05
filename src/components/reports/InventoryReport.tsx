@@ -126,8 +126,12 @@ export const InventoryReport: React.FC = () => {
       'ĐVT': r.unit,
       'Tổng Nhập (SL)': r.inboundQuantity,
       'Tổng Nhập (kg)': r.inboundWeightKg,
+      'Tổng SL Nhập Trả Kho': r.returnInboundQuantity,
+      'Tổng KL Nhập Trả Kho (kg)': r.returnInboundWeightKg,
       'Tổng Xuất (SL)': r.outboundQuantity,
       'Tổng Xuất (kg)': r.outboundWeightKg,
+      'Tổng SL Tái Xuất': r.transferOutboundQuantity,
+      'Tổng KL Tái Xuất (kg)': r.transferOutboundWeightKg,
       'Tồn SL': r.currentQuantity,
       'Tồn KL (kg)': r.currentWeightKg,
       'Kho Bãi': r.warehouseName,
@@ -149,35 +153,47 @@ export const InventoryReport: React.FC = () => {
   const {
     totalInboundQty,
     totalInboundWeight,
+    totalReturnInboundQty,
+    totalReturnInboundWeight,
     totalOutboundQty,
     totalOutboundWeight,
+    totalTransferOutboundQty,
+    totalTransferOutboundWeight,
     totalStockQty,
     totalStockWeight
   } = useMemo(() => {
     let inQty = 0;
     let inW = 0;
+    let retInQty = 0;
+    let retInW = 0;
     let outQty = 0;
     let outW = 0;
+    let transOutQty = 0;
+    let transOutW = 0;
     let stkQty = 0;
     let stkW = 0;
     for (let i = 0; i < records.length; i++) {
       const r = records[i];
       inQty += r.inboundQuantity;
       inW += r.inboundWeightKg;
+      retInQty += r.returnInboundQuantity || 0;
+      retInW += r.returnInboundWeightKg || 0;
       outQty += r.outboundQuantity;
       outW += r.outboundWeightKg;
+      transOutQty += r.transferOutboundQuantity || 0;
+      transOutW += r.transferOutboundWeightKg || 0;
       stkQty += r.currentQuantity;
       stkW += r.currentWeightKg;
     }
-    const roundedInQty = roundQty(inQty);
-    const roundedOutQty = roundQty(outQty);
-    const roundedInW = Math.round(inW * 100) / 100;
-    const roundedOutW = Math.round(outW * 100) / 100;
     return {
-      totalInboundQty: roundedInQty,
-      totalInboundWeight: roundedInW,
-      totalOutboundQty: roundedOutQty,
-      totalOutboundWeight: roundedOutW,
+      totalInboundQty: roundQty(inQty),
+      totalInboundWeight: Math.round(inW * 100) / 100,
+      totalReturnInboundQty: roundQty(retInQty),
+      totalReturnInboundWeight: Math.round(retInW * 100) / 100,
+      totalOutboundQty: roundQty(outQty),
+      totalOutboundWeight: Math.round(outW * 100) / 100,
+      totalTransferOutboundQty: roundQty(transOutQty),
+      totalTransferOutboundWeight: Math.round(transOutW * 100) / 100,
       totalStockQty: roundQty(stkQty),
       totalStockWeight: Math.round(stkW * 100) / 100
     };
@@ -406,31 +422,55 @@ export const InventoryReport: React.FC = () => {
       {/* KPI Cards Summary */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2.5 sm:gap-3">
         <div className="bg-white p-3.5 sm:p-4 rounded-2xl border border-slate-200/80 shadow-sm">
-          <span className="text-[11px] font-semibold text-slate-400 block uppercase">Tổng Nhập (SL)</span>
-          <span className="text-base sm:text-lg font-bold text-blue-700 font-mono tabular-nums mt-1 block truncate">
-            {totalInboundQty.toLocaleString('vi-VN')}
-          </span>
+          <span className="text-[11px] font-semibold text-slate-400 block uppercase">Tổng Nhập (SL / kg)</span>
+          <div className="mt-1 flex items-baseline gap-1.5 flex-wrap">
+            <span className="text-base sm:text-lg font-bold text-blue-700 font-mono tabular-nums">
+              {totalInboundQty.toLocaleString('vi-VN')}
+            </span>
+            <span className="text-xs text-slate-500 font-mono">
+              ({totalInboundWeight.toLocaleString('vi-VN')} kg)
+            </span>
+          </div>
+          <span className="text-[10px] text-slate-400 block mt-0.5">Phiếu nhập kho chuẩn</span>
+        </div>
+
+        <div className="bg-white p-3.5 sm:p-4 rounded-2xl border border-indigo-200/80 shadow-sm bg-gradient-to-br from-indigo-50/40 to-white">
+          <span className="text-[11px] font-semibold text-indigo-700 block uppercase">Nhập Trả Kho (SL / kg)</span>
+          <div className="mt-1 flex items-baseline gap-1.5 flex-wrap">
+            <span className="text-base sm:text-lg font-bold text-indigo-700 font-mono tabular-nums">
+              {totalReturnInboundQty.toLocaleString('vi-VN')}
+            </span>
+            <span className="text-xs text-indigo-500 font-mono">
+              ({totalReturnInboundWeight.toLocaleString('vi-VN')} kg)
+            </span>
+          </div>
+          <span className="text-[10px] text-indigo-500 block mt-0.5">Phiếu tick Nhập trả kho</span>
         </div>
 
         <div className="bg-white p-3.5 sm:p-4 rounded-2xl border border-slate-200/80 shadow-sm">
-          <span className="text-[11px] font-semibold text-slate-400 block uppercase">Tổng Nhập (kg)</span>
-          <span className="text-base sm:text-lg font-bold text-blue-700 font-mono tabular-nums mt-1 block truncate">
-            {totalInboundWeight.toLocaleString('vi-VN')}
-          </span>
+          <span className="text-[11px] font-semibold text-slate-400 block uppercase">Tổng Xuất Kho (SL / kg)</span>
+          <div className="mt-1 flex items-baseline gap-1.5 flex-wrap">
+            <span className="text-base sm:text-lg font-bold text-rose-700 font-mono tabular-nums">
+              {totalOutboundQty.toLocaleString('vi-VN')}
+            </span>
+            <span className="text-xs text-slate-500 font-mono">
+              ({totalOutboundWeight.toLocaleString('vi-VN')} kg)
+            </span>
+          </div>
+          <span className="text-[10px] text-slate-400 block mt-0.5">Phiếu xuất công trình</span>
         </div>
 
-        <div className="bg-white p-3.5 sm:p-4 rounded-2xl border border-slate-200/80 shadow-sm">
-          <span className="text-[11px] font-semibold text-slate-400 block uppercase">Tổng Xuất (SL)</span>
-          <span className="text-base sm:text-lg font-bold text-rose-700 font-mono tabular-nums mt-1 block truncate">
-            {totalOutboundQty.toLocaleString('vi-VN')}
-          </span>
-        </div>
-
-        <div className="bg-white p-3.5 sm:p-4 rounded-2xl border border-slate-200/80 shadow-sm">
-          <span className="text-[11px] font-semibold text-slate-400 block uppercase">Tổng Xuất (kg)</span>
-          <span className="text-base sm:text-lg font-bold text-rose-700 font-mono tabular-nums mt-1 block truncate">
-            {totalOutboundWeight.toLocaleString('vi-VN')}
-          </span>
+        <div className="bg-white p-3.5 sm:p-4 rounded-2xl border border-amber-200/80 shadow-sm bg-gradient-to-br from-amber-50/40 to-white">
+          <span className="text-[11px] font-semibold text-amber-700 block uppercase">Tái Xuất / Đ.Chuyển (SL / kg)</span>
+          <div className="mt-1 flex items-baseline gap-1.5 flex-wrap">
+            <span className="text-base sm:text-lg font-bold text-amber-700 font-mono tabular-nums">
+              {totalTransferOutboundQty.toLocaleString('vi-VN')}
+            </span>
+            <span className="text-xs text-amber-600 font-mono">
+              ({totalTransferOutboundWeight.toLocaleString('vi-VN')} kg)
+            </span>
+          </div>
+          <span className="text-[10px] text-amber-600 block mt-0.5">Phiếu tick Xuất điều chuyển</span>
         </div>
 
         <div className="bg-white p-3.5 sm:p-4 rounded-2xl border border-emerald-200/80 shadow-sm bg-gradient-to-br from-emerald-50/50 to-white">
@@ -438,6 +478,7 @@ export const InventoryReport: React.FC = () => {
           <span className="text-lg sm:text-xl font-extrabold text-emerald-700 font-mono tabular-nums mt-1 block truncate">
             {totalStockQty.toLocaleString('vi-VN')}
           </span>
+          <span className="text-[10px] text-emerald-600 block mt-0.5 font-medium">Nhập + Trả - Xuất - Tái xuất</span>
         </div>
 
         <div className="bg-white p-3.5 sm:p-4 rounded-2xl border border-emerald-200/80 shadow-sm bg-gradient-to-br from-emerald-50/50 to-white">
@@ -445,6 +486,7 @@ export const InventoryReport: React.FC = () => {
           <span className="text-lg sm:text-xl font-extrabold text-emerald-700 font-mono tabular-nums mt-1 block truncate">
             {totalStockWeight.toLocaleString('vi-VN')}
           </span>
+          <span className="text-[10px] text-emerald-600 block mt-0.5 font-medium">Tổng khối lượng tồn bãi</span>
         </div>
       </div>
 
@@ -455,12 +497,12 @@ export const InventoryReport: React.FC = () => {
             Bảng Chi Tiết Nhập - Xuất - Tồn Sau Gộp ({records.length.toLocaleString('vi-VN')} vật tư gộp)
           </div>
           <span className="text-xs text-slate-500">
-            Tự động gộp theo Packing List, Shipment, Kiện hàng, Mã vật tư &amp; Tên vật tư
+            Tự động gộp theo Packing List, Shipment, Kiện hàng, Mã vật tư &amp; Tên vật tư | Tồn = (Nhập + Nhập trả) - (Xuất + Tái xuất)
           </span>
         </div>
 
         <div className="overflow-x-auto">
-          <table className="w-full text-left text-xs min-w-[1050px]">
+          <table className="w-full text-left text-xs min-w-[1250px]">
             <thead className="bg-slate-50/90 text-slate-700 font-semibold border-b border-slate-200 uppercase tracking-wider text-[11px]">
               <tr>
                 <th className="p-3 w-10 text-center">STT</th>
@@ -471,7 +513,9 @@ export const InventoryReport: React.FC = () => {
                 <th className="p-3 w-56">VẬT TƯ THIẾT BỊ</th>
                 <th className="p-3 w-16 text-center">ĐVT</th>
                 <th className="p-3 text-right bg-blue-50/50 text-blue-900">TỔNG NHẬP</th>
+                <th className="p-3 text-right bg-indigo-50/60 text-indigo-900">NHẬP TRẢ KHO</th>
                 <th className="p-3 text-right bg-rose-50/50 text-rose-900">TỔNG XUẤT</th>
+                <th className="p-3 text-right bg-amber-50/60 text-amber-900">TÁI XUẤT</th>
                 <th className="p-3 text-right bg-emerald-50 text-emerald-950 font-bold">TỒN SL</th>
                 <th className="p-3 text-right bg-emerald-50 text-emerald-950 font-bold">TỒN KL (KG)</th>
               </tr>
@@ -479,7 +523,7 @@ export const InventoryReport: React.FC = () => {
             <tbody className="divide-y divide-slate-100">
               {pagedRecords.length === 0 ? (
                 <tr>
-                  <td colSpan={11} className="p-12 text-center text-slate-400 text-sm">
+                  <td colSpan={13} className="p-12 text-center text-slate-400 text-sm">
                     Không có bản ghi tồn kho nào khớp với các điều kiện lọc đã chọn.
                   </td>
                 </tr>
@@ -505,19 +549,31 @@ export const InventoryReport: React.FC = () => {
                     </td>
                     <td className="p-3 text-center font-medium text-slate-600">{r.unit}</td>
                     
-                    {/* Nhập */}
+                    {/* Nhập chuẩn */}
                     <td className="p-3 text-right bg-blue-50/30 font-mono">
                       <div className="font-semibold text-blue-700">{r.inboundQuantity.toLocaleString('vi-VN')}</div>
                       <div className="text-[10px] text-slate-500">{r.inboundWeightKg.toLocaleString('vi-VN')} kg</div>
                     </td>
 
-                    {/* Xuất */}
+                    {/* Nhập trả kho */}
+                    <td className="p-3 text-right bg-indigo-50/30 font-mono">
+                      <div className="font-semibold text-indigo-700">{(r.returnInboundQuantity || 0).toLocaleString('vi-VN')}</div>
+                      <div className="text-[10px] text-slate-500">{(r.returnInboundWeightKg || 0).toLocaleString('vi-VN')} kg</div>
+                    </td>
+
+                    {/* Xuất kho chuẩn */}
                     <td className="p-3 text-right bg-rose-50/30 font-mono">
                       <div className="font-semibold text-rose-700">{r.outboundQuantity.toLocaleString('vi-VN')}</div>
                       <div className="text-[10px] text-slate-500">{r.outboundWeightKg.toLocaleString('vi-VN')} kg</div>
                     </td>
 
-                    {/* Tồn số lượng */}
+                    {/* Tái xuất / Xuất điều chuyển */}
+                    <td className="p-3 text-right bg-amber-50/30 font-mono">
+                      <div className="font-semibold text-amber-700">{(r.transferOutboundQuantity || 0).toLocaleString('vi-VN')}</div>
+                      <div className="text-[10px] text-slate-500">{(r.transferOutboundWeightKg || 0).toLocaleString('vi-VN')} kg</div>
+                    </td>
+
+                    {/* Tồn số lượng = (Nhập + Nhập trả) - (Xuất + Tái xuất) */}
                     <td className="p-3 text-right bg-emerald-50/50 font-mono font-bold text-emerald-800 text-sm">
                       {r.currentQuantity.toLocaleString('vi-VN')}
                     </td>
@@ -539,9 +595,17 @@ export const InventoryReport: React.FC = () => {
                   <div>{totalInboundQty.toLocaleString('vi-VN')}</div>
                   <div className="text-[10px]">{totalInboundWeight.toLocaleString('vi-VN')} kg</div>
                 </td>
+                <td className="p-3 text-right font-mono text-indigo-700">
+                  <div>{totalReturnInboundQty.toLocaleString('vi-VN')}</div>
+                  <div className="text-[10px]">{totalReturnInboundWeight.toLocaleString('vi-VN')} kg</div>
+                </td>
                 <td className="p-3 text-right font-mono text-rose-700">
                   <div>{totalOutboundQty.toLocaleString('vi-VN')}</div>
                   <div className="text-[10px]">{totalOutboundWeight.toLocaleString('vi-VN')} kg</div>
+                </td>
+                <td className="p-3 text-right font-mono text-amber-700">
+                  <div>{totalTransferOutboundQty.toLocaleString('vi-VN')}</div>
+                  <div className="text-[10px]">{totalTransferOutboundWeight.toLocaleString('vi-VN')} kg</div>
                 </td>
                 <td className="p-3 text-right font-mono text-emerald-800 text-sm">
                   {totalStockQty.toLocaleString('vi-VN')}
