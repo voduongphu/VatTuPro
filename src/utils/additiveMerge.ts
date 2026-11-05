@@ -1987,3 +1987,112 @@ export function generateNextOsdVoucherCode(
   return generateNextSequentialVoucherCode(seeds, 'OSD', fallbackDateStr);
 }
 
+export function canonicalUserSessionKey(
+  input: { email?: string | null; username?: string | null } | string | null | undefined
+): string {
+  if (!input) return 'user';
+  if (typeof input === 'string') {
+    const trimmed = input.trim();
+    if (trimmed.includes('@')) {
+      return normUserKey(trimmed);
+    }
+    const folded = foldVietnameseAscii(trimmed);
+    if (folded === 'vo duong phu' || folded === 'voduongphu') {
+      return normUserKey(BOOTSTRAPPED_ADMIN_EMAIL);
+    }
+    return normUserKey(trimmed);
+  }
+  const em = (input.email || '').trim().toLowerCase();
+  if (em) return normUserKey(em);
+  if (isBootstrappedAdminUser(input as User)) {
+    return normUserKey(BOOTSTRAPPED_ADMIN_EMAIL);
+  }
+  return normUserKey(input.username || 'user');
+}
+
+export function computeOsdDigest(osdList: OsdReceipt[]): string {
+  let sum1 = 0;
+  let sum2 = 0;
+  let xor1 = 0;
+
+  for (let i = 0; i < osdList.length; i++) {
+    const o = osdList[i];
+    const [h1, h2] = hashPair(
+      `${normKey(o.osdCode || o.id)}|${o.osdDate || ''}|${o.inboundReceiptCode || ''}|${o.status || ''}|${o.resolvedBy || ''}|${Number(o.totalOsdQuantity) || 0}|${o.items?.length || 0}|${Number(o.updatedAt) || 0}`
+    );
+    sum1 = (sum1 + h1) >>> 0;
+    sum2 = (sum2 + h2) >>> 0;
+    xor1 = (xor1 ^ h1) >>> 0;
+  }
+
+  return `${osdList.length}:${sum1.toString(36)}:${sum2.toString(36)}:${xor1.toString(36)}`;
+}
+
+export function mergeOsdReceiptsAdditive(
+  existing: OsdReceipt[],
+  incoming: OsdReceipt[]
+): { list: OsdReceipt[]; changed: boolean } {
+  let changed = false;
+  const result: OsdReceipt[] = [];
+  const indexByCode = new Map<string, number>();
+  const indexById = new Map<string, number>();
+
+  for (let i = 0; i < existing.length; i++) {
+    const o = existing[i];
+    const cKey = normKey(o.osdCode);
+    const idx = result.length;
+    result.push(o);
+    if (cKey) indexByCode.set(cKey, idx);
+    if (o.id) indexById.set(o.id, idx);
+  }
+
+  for (let i = 0; i < incoming.length; i++) {
+    const inc = incoming[i];
+    if (!inc) continue;
+    const cKey = normKey(inc.osdCode);
+    let existIdx = cKey ? indexByCode.get(cKey) : undefined;
+    if (existIdx === undefined && inc.id) {
+      existIdx = indexById.get(inc.id);
+    }
+
+    if (existIdx === undefined) {
+      const idx = result.length;
+      result.push(inc);
+      if (cKey) indexByCode.set(cKey, idx);
+      if (inc.id) indexById.set(inc.id, idx);
+      changed = true;
+    } else {
+      const curr = result[existIdx];
+      const incTs = Number(inc.updatedAt) || 0;
+      const currTs = Number(curr.updatedAt) || 0;
+      if (incTs > currTs) {
+        const finalPdf = inc.pdfAttachment?.dataUrl
+          ? inc.pdfAttachment
+          : curr.pdfAttachment || inc.pdfAttachment;
+        result[existIdx] = {
+          ...curr,
+          ...inc,
+          pdfAttachment: finalPdf,
+          updatedAt: incTs
+        };
+        changed = true;
+      } else {
+        if (!curr.pdfAttachment && inc.pdfAttachment) {
+          result[existIdx] = {
+            ...curr,
+            pdfAttachment: inc.pdfAttachment
+          };
+          changed = true;
+        }
+      }
+    }
+  }
+
+  result.sort((a, b) => {
+    const dComp = (b.osdDate || '').localeCompare(a.osdDate || '');
+    if (dComp !== 0) return dComp;
+    return (b.osdCode || '').localeCompare(a.osdCode || '');
+  });
+
+  return { list: result, changed };
+}

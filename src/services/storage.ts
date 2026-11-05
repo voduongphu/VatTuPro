@@ -26,6 +26,7 @@ import {
   mergeMaterialsAdditive,
   mergeInboundReceiptsAdditive,
   mergeOutboundReceiptsAdditive,
+  mergeOsdReceiptsAdditive,
   buildLatestMaterialsFromReceipts
 } from '../utils/additiveMerge';
 
@@ -101,7 +102,7 @@ let initPromise: Promise<void> | null = null;
 let isHydrated = false;
 let pendingWrites = new Set<Promise<void>>();
 
-export type LocalMutationKind = 'meta' | 'materials' | 'inbound' | 'outbound';
+export type LocalMutationKind = 'meta' | 'materials' | 'inbound' | 'outbound' | 'osd';
 const subscribers = new Set<() => void>();
 const localMutationListeners = new Set<(kind: LocalMutationKind, codes?: string[]) => void>();
 
@@ -2384,6 +2385,7 @@ export const StorageService = {
     const stamped: OsdReceipt = { ...rcp, updatedAt: now };
     const next = [stamped, ...list];
     this.saveOsdReceipts(next);
+    emitLocalMutation('osd', [rcp.osdCode]);
   },
 
   updateOsdReceipt(id: string, updated: OsdReceipt): boolean {
@@ -2393,14 +2395,17 @@ export const StorageService = {
     const now = Date.now();
     list[idx] = { ...updated, updatedAt: now };
     this.saveOsdReceipts(list);
+    emitLocalMutation('osd', [updated.osdCode]);
     return true;
   },
 
   deleteOsdReceipt(id: string): boolean {
     const list = this.getOsdReceipts();
+    const target = list.find((r) => r.id === id || normKey(r.osdCode) === normKey(id));
     const next = list.filter((r) => r.id !== id && normKey(r.osdCode) !== normKey(id));
     if (next.length === list.length) return false;
     this.saveOsdReceipts(next);
+    emitLocalMutation('osd', target ? [target.osdCode] : undefined);
     return true;
   },
 
@@ -2424,7 +2429,18 @@ export const StorageService = {
       updatedAt: Date.now()
     };
     this.saveOsdReceipts(list);
+    emitLocalMutation('osd', [curr.osdCode]);
     return true;
+  },
+
+  applyRemoteOsdReceipts(receipts: OsdReceipt[]): boolean {
+    if (!Array.isArray(receipts) || receipts.length === 0) return false;
+    const merged = mergeOsdReceiptsAdditive(this.getOsdReceipts(), receipts);
+    if (merged.changed) {
+      this.saveOsdReceipts(merged.list);
+      return true;
+    }
+    return false;
   },
 
   // Reset về dữ liệu gốc (cả IndexedDB và localStorage)

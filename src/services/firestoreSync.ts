@@ -33,7 +33,9 @@ import type {
   OutboundReceipt,
   OutboundItemDetail,
   TombstoneMap,
-  ActiveUserSession
+  ActiveUserSession,
+  OsdReceipt,
+  OsdItemDetail
 } from '../types/inventory';
 import {
   normKey,
@@ -51,7 +53,9 @@ import {
   computePackingListSummary,
   sumInboundItems,
   sumOutboundItems,
-  roundQty
+  roundQty,
+  canonicalUserSessionKey,
+  computeOsdDigest
 } from '../utils/additiveMerge';
 
 export type CloudConnectionStatus =
@@ -330,6 +334,17 @@ function computeCloudSharedMetaDigest(
     xor1 = (xor1 ^ h2) >>> 0;
   }
 
+  const osdList = StorageService.getOsdReceipts();
+  for (let i = 0; i < osdList.length; i++) {
+    const o = osdList[i];
+    const [h1, h2] = hash32Pair(
+      `COSD|${normKey(o.osdCode || o.id)}|${o.osdDate || ''}|${o.inboundReceiptCode || ''}|${o.status || ''}|${o.resolvedBy || ''}|${Number(o.totalOsdQuantity) || 0}|${o.items?.length || 0}|${Number(o.updatedAt) || 0}`
+    );
+    sum1 = (sum1 + h1) >>> 0;
+    sum2 = (sum2 + h2) >>> 0;
+    xor1 = (xor1 ^ h1) >>> 0;
+  }
+
   const buckets: Array<keyof TombstoneMap> = ['inbound', 'outbound', 'materials', 'warehouses', 'users'];
   for (let b = 0; b < buckets.length; b++) {
     const bucketName = buckets[b];
@@ -347,7 +362,7 @@ function computeCloudSharedMetaDigest(
     }
   }
 
-  return `${users.length}.${warehouses.length}.${tombCount}:${sum1.toString(36)}:${sum2.toString(36)}:${xor1.toString(36)}`;
+  return `${users.length}.${warehouses.length}.${osdList.length}.${tombCount}:${sum1.toString(36)}:${sum2.toString(36)}:${xor1.toString(36)}`;
 }
 
 // ============================================================================
@@ -562,6 +577,125 @@ function deserializeWarehousePublic(m: Record<string, any>): Warehouse {
     updatedAt: Number(m.updatedAt) || 1
   };
 }
+
+function serializeOsdPublic(o: OsdReceipt): Record<string, any> {
+  const safeItems = (Array.isArray(o.items) ? o.items : []).map((it) => ({
+    id: cleanStr(it.id, 160),
+    materialCode: cleanStr(it.materialCode, 160),
+    materialName: cleanStr(it.materialName, 200),
+    unit: cleanStr(it.unit, 64),
+    packageNo: cleanStr(it.packageNo, 160),
+    packageName: cleanStr(it.packageName, 200),
+    packingListNo: cleanStr(it.packingListNo, 160),
+    shipment: cleanStr(it.shipment, 160),
+    inboundQuantity: cleanNum(it.inboundQuantity, 0),
+    osdType: cleanStr(it.osdType, 32, 'damage'),
+    osdQuantity: cleanNum(it.osdQuantity, 0),
+    osdWeightKg: cleanNum(it.osdWeightKg, 0),
+    defectDescription: cleanStr(it.defectDescription, 500),
+    rootCause: cleanStr(it.rootCause, 500),
+    proposedAction: cleanStr(it.proposedAction, 500)
+  }));
+
+  const payload: Record<string, any> = {
+    id: cleanStr(o.id, 160, `osd-${Date.now()}`),
+    osdCode: cleanStr(o.osdCode, 160, 'OSD-0001'),
+    osdDate: cleanStr(o.osdDate, 32, new Date().toISOString().slice(0, 10)),
+    inboundReceiptId: cleanStr(o.inboundReceiptId, 160),
+    inboundReceiptCode: cleanStr(o.inboundReceiptCode, 160),
+    warehouseId: cleanStr(o.warehouseId, 160),
+    warehouseName: cleanStr(o.warehouseName, 200),
+    supplier: cleanStr(o.supplier, 200),
+    packingListNo: cleanStr(o.packingListNo, 160),
+    shipment: cleanStr(o.shipment, 160),
+    status: o.status === 'closed' ? 'closed' : 'open',
+    resolutionNotes: cleanStr(o.resolutionNotes, 1000),
+    resolvedAt: cleanStr(o.resolvedAt, 64),
+    resolvedBy: cleanStr(o.resolvedBy, 160),
+    items: safeItems,
+    totalOsdQuantity: cleanNum(o.totalOsdQuantity, 0),
+    totalOsdWeightKg: cleanNum(o.totalOsdWeightKg, 0),
+    notes: cleanStr(o.notes, 1000),
+    createdAt: cleanStr(o.createdAt, 64, new Date().toISOString()),
+    createdBy: cleanStr(o.createdBy, 160),
+    updatedAt: cleanNum(o.updatedAt, 1),
+    lastEditedBy: cleanStr(o.lastEditedBy, 160),
+    lastEditedAt: cleanStr(o.lastEditedAt, 64)
+  };
+
+  if (o.pdfAttachment) {
+    const pdf = o.pdfAttachment;
+    const safeDataUrl = (pdf.dataUrl || '').length < 400_000 ? pdf.dataUrl : '';
+    payload.pdfAttachment = {
+      fileName: cleanStr(pdf.fileName, 255),
+      fileSize: cleanNum(pdf.fileSize, 0),
+      fileType: cleanStr(pdf.fileType, 64, 'application/pdf'),
+      uploadedAt: cleanStr(pdf.uploadedAt, 64),
+      dataUrl: safeDataUrl
+    };
+  }
+
+  return payload;
+}
+
+function deserializeOsdPublic(raw: any): OsdReceipt {
+  const safeItems: OsdItemDetail[] = (Array.isArray(raw?.items) ? raw.items : []).map((it: any) => ({
+    id: String(it?.id || ''),
+    materialCode: String(it?.materialCode || ''),
+    materialName: String(it?.materialName || ''),
+    unit: String(it?.unit || 'Bộ'),
+    packageNo: String(it?.packageNo || ''),
+    packageName: String(it?.packageName || ''),
+    packingListNo: String(it?.packingListNo || ''),
+    shipment: String(it?.shipment || ''),
+    inboundQuantity: Number(it?.inboundQuantity) || 0,
+    osdType: (it?.osdType || 'damage') as any,
+    osdQuantity: Number(it?.osdQuantity) || 0,
+    osdWeightKg: it?.osdWeightKg ? Number(it.osdWeightKg) : undefined,
+    defectDescription: String(it?.defectDescription || ''),
+    rootCause: it?.rootCause ? String(it.rootCause) : undefined,
+    proposedAction: it?.proposedAction ? String(it.proposedAction) : undefined
+  }));
+
+  const rcp: OsdReceipt = {
+    id: String(raw?.id || `osd-${Date.now()}`),
+    osdCode: String(raw?.osdCode || 'OSD-0001'),
+    osdDate: String(raw?.osdDate || new Date().toISOString().slice(0, 10)),
+    inboundReceiptId: String(raw?.inboundReceiptId || ''),
+    inboundReceiptCode: String(raw?.inboundReceiptCode || ''),
+    warehouseId: String(raw?.warehouseId || ''),
+    warehouseName: String(raw?.warehouseName || ''),
+    supplier: String(raw?.supplier || ''),
+    packingListNo: raw?.packingListNo ? String(raw.packingListNo) : undefined,
+    shipment: raw?.shipment ? String(raw.shipment) : undefined,
+    status: raw?.status === 'closed' ? 'closed' : 'open',
+    resolutionNotes: raw?.resolutionNotes ? String(raw.resolutionNotes) : undefined,
+    resolvedAt: raw?.resolvedAt ? String(raw.resolvedAt) : undefined,
+    resolvedBy: raw?.resolvedBy ? String(raw.resolvedBy) : undefined,
+    items: safeItems,
+    totalOsdQuantity: Number(raw?.totalOsdQuantity) || 0,
+    totalOsdWeightKg: raw?.totalOsdWeightKg ? Number(raw.totalOsdWeightKg) : undefined,
+    notes: raw?.notes ? String(raw.notes) : undefined,
+    createdAt: String(raw?.createdAt || new Date().toISOString()),
+    createdBy: String(raw?.createdBy || ''),
+    updatedAt: Number(raw?.updatedAt) || 1,
+    lastEditedBy: raw?.lastEditedBy ? String(raw.lastEditedBy) : undefined,
+    lastEditedAt: raw?.lastEditedAt ? String(raw.lastEditedAt) : undefined
+  };
+
+  if (raw?.pdfAttachment && typeof raw.pdfAttachment === 'object') {
+    rcp.pdfAttachment = {
+      fileName: String(raw.pdfAttachment.fileName || 'bien_ban_osd.pdf'),
+      fileSize: Number(raw.pdfAttachment.fileSize) || 0,
+      fileType: String(raw.pdfAttachment.fileType || 'application/pdf'),
+      uploadedAt: String(raw.pdfAttachment.uploadedAt || new Date().toISOString()),
+      dataUrl: String(raw.pdfAttachment.dataUrl || '')
+    };
+  }
+
+  return rcp;
+}
+
 
 function serializeMaterial(m: MaterialItem): Record<string, any> {
   return {
@@ -1037,11 +1171,37 @@ async function pullMetaFromCloud(wsData: WorkspaceManifestDoc, fbUser: FirebaseU
     );
   }
 
-  const [tombSnaps, accSnaps, whSnaps] = await Promise.all([
+  const osdReads: Promise<any>[] = [
+    safeGetDoc(
+      doc(db, 'workspaces', WORKSPACE_ID, 'metaChunks', 'osd_0'),
+      `workspaces/${WORKSPACE_ID}/metaChunks/osd_0`
+    ),
+    safeGetDoc(
+      doc(db, 'workspaces', WORKSPACE_ID, 'metaChunks', 'osd_1'),
+      `workspaces/${WORKSPACE_ID}/metaChunks/osd_1`
+    )
+  ];
+
+  const [tombSnaps, accSnaps, whSnaps, osdSnaps] = await Promise.all([
     Promise.all(tombReads),
     Promise.all(accReads),
-    Promise.all(whReads)
+    Promise.all(whReads),
+    Promise.all(osdReads)
   ]);
+
+  const remoteOsd: OsdReceipt[] = [];
+  for (const snap of osdSnaps) {
+    if (!snap.exists()) continue;
+    const items = Array.isArray(snap.data().items) ? snap.data().items : [];
+    for (const raw of items) {
+      if (raw && typeof raw === 'object') {
+        remoteOsd.push(deserializeOsdPublic(raw));
+      }
+    }
+  }
+  if (remoteOsd.length > 0) {
+    StorageService.applyRemoteOsdReceipts(remoteOsd);
+  }
 
   const remoteTombstones = createEmptyTombstones();
   for (const snap of tombSnaps) {
@@ -1166,6 +1326,25 @@ async function pushMetaToCloud(fbUser: FirebaseUser): Promise<{
       },
       mutableFields: {
         items: whChunks[i]
+      }
+    });
+  }
+
+  const osdList = StorageService.getOsdReceipts();
+  const osdChunks = chunkArray(osdList.map(serializeOsdPublic), CLOUD_CHUNK_SIZE);
+  const effectiveOsdChunks = osdChunks.length > 0 ? osdChunks : [[]];
+  for (let i = 0; i < effectiveOsdChunks.length; i++) {
+    const cid = `osd_${i}`;
+    staged.push({
+      ref: doc(db, 'workspaces', WORKSPACE_ID, 'metaChunks', cid),
+      pathLabel: `workspaces/${WORKSPACE_ID}/metaChunks/${cid}`,
+      immutableCreateFields: {
+        workspaceId: WORKSPACE_ID,
+        chunkType: 'osd',
+        chunkIndex: i
+      },
+      mutableFields: {
+        items: effectiveOsdChunks[i]
       }
     });
   }
@@ -1736,6 +1915,9 @@ export const FirestoreSyncService = {
           status: 'connected',
           errorMessage: null
         });
+        if (fbUser.email) {
+          this.watchActiveSession(fbUser.email);
+        }
         externalOnRemoteWorkspaceChange?.();
       } catch (err) {
         console.warn('Cloud workspace bootstrap warning:', err);
@@ -1809,8 +1991,8 @@ export const FirestoreSyncService = {
     };
   },
 
-  markLocalMutation(kind: 'meta' | 'materials' | 'inbound' | 'outbound'): void {
-    if (kind === 'meta') cloudMetaDirty = true;
+  markLocalMutation(kind: 'meta' | 'materials' | 'inbound' | 'outbound' | 'osd'): void {
+    if (kind === 'meta' || kind === 'osd') cloudMetaDirty = true;
     if (kind === 'materials') cloudMaterialsDirty = true;
   },
 
@@ -1986,7 +2168,8 @@ export const FirestoreSyncService = {
       return;
     }
 
-    const sessionDocId = makeSafeDocId('sess', normUserKey(userKey));
+    const canonicalKey = canonicalUserSessionKey(userKey);
+    const sessionDocId = makeSafeDocId('sess', canonicalKey);
     if (sessionUnsub && watchedSessionDocId === sessionDocId) return;
 
     if (sessionUnsub) {
@@ -2381,7 +2564,7 @@ export const FirestoreSyncService = {
       errorMessage: null
     });
 
-    const userKey = normUserKey(session.userKey || session.username);
+    const userKey = canonicalUserSessionKey(session.userKey || session.username);
     const sessionDocId = makeSafeDocId('sess', userKey);
     const sessPath = `workspaces/${WORKSPACE_ID}/sessions/${sessionDocId}`;
     const sessRef = doc(db, 'workspaces', WORKSPACE_ID, 'sessions', sessionDocId);
@@ -2504,7 +2687,7 @@ export const FirestoreSyncService = {
         };
       }
 
-      const userKey = normUserKey(matched.username);
+      const userKey = canonicalUserSessionKey(matched);
       const sessionDocId = makeSafeDocId('sess', userKey);
       const sessPath = `workspaces/${WORKSPACE_ID}/sessions/${sessionDocId}`;
       const sessRef = doc(db, 'workspaces', WORKSPACE_ID, 'sessions', sessionDocId);
@@ -2737,7 +2920,7 @@ export const FirestoreSyncService = {
           cloudMetaDirty = true;
         }
 
-        const userKey = normUserKey(matched.username);
+        const userKey = canonicalUserSessionKey(matched);
         const sessionDocId = makeSafeDocId('sess', userKey);
         const sessPath = `workspaces/${WORKSPACE_ID}/sessions/${sessionDocId}`;
         const sessRef = doc(db, 'workspaces', WORKSPACE_ID, 'sessions', sessionDocId);
@@ -2921,7 +3104,7 @@ export const FirestoreSyncService = {
       }
 
       const matched = resolved.user;
-      const userKey = normUserKey(matched.username);
+      const userKey = canonicalUserSessionKey(matched);
       const sessionDocId = makeSafeDocId('sess', userKey);
       const sessPath = `workspaces/${WORKSPACE_ID}/sessions/${sessionDocId}`;
       const sessRef = doc(db, 'workspaces', WORKSPACE_ID, 'sessions', sessionDocId);
@@ -3002,7 +3185,9 @@ export const FirestoreSyncService = {
         return { handled: true, valid: false, reason: 'disabled' };
       }
 
-      const userKey = normUserKey(mySession.userKey || mySession.username);
+      const userKey =
+        canonicalUserSessionKey({ username: mySession.username, email: matched?.email }) ||
+        canonicalUserSessionKey(mySession.userKey);
       const sessionDocId = makeSafeDocId('sess', userKey);
       const sessPath = `workspaces/${WORKSPACE_ID}/sessions/${sessionDocId}`;
       const sessRef = doc(db, 'workspaces', WORKSPACE_ID, 'sessions', sessionDocId);
@@ -3135,7 +3320,7 @@ export const FirestoreSyncService = {
         };
       }
 
-      const userKey = normUserKey(matched.username);
+      const userKey = canonicalUserSessionKey(matched);
       const sessionDocId = makeSafeDocId('sess', userKey);
       const sessPath = `workspaces/${WORKSPACE_ID}/sessions/${sessionDocId}`;
       const sessRef = doc(db, 'workspaces', WORKSPACE_ID, 'sessions', sessionDocId);
@@ -3205,7 +3390,8 @@ export const FirestoreSyncService = {
       const ok = await ensureWorkspaceReady(fbUser);
       if (!ok) return { handled: false, success: false, message: '' };
 
-      const userKey = normUserKey(current.session.userKey || current.user.username);
+      const userKey =
+        canonicalUserSessionKey(current.user) || canonicalUserSessionKey(current.session.userKey);
       const sessionDocId = makeSafeDocId('sess', userKey);
       const sessPath = `workspaces/${WORKSPACE_ID}/sessions/${sessionDocId}`;
       const sessRef = doc(db, 'workspaces', WORKSPACE_ID, 'sessions', sessionDocId);
@@ -3276,7 +3462,7 @@ export const FirestoreSyncService = {
     if (!fbUser || !fbUser.emailVerified) return;
 
     try {
-      const userKey = normUserKey(mySession.userKey || mySession.username);
+      const userKey = canonicalUserSessionKey(mySession.userKey || mySession.username);
       const sessionDocId = makeSafeDocId('sess', userKey);
       const sessPath = `workspaces/${WORKSPACE_ID}/sessions/${sessionDocId}`;
       const sessRef = doc(db, 'workspaces', WORKSPACE_ID, 'sessions', sessionDocId);

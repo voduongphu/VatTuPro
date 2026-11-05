@@ -7,7 +7,8 @@ import type {
   InboundReceipt,
   OutboundReceipt,
   TombstoneMap,
-  ActiveUserSession
+  ActiveUserSession,
+  OsdReceipt
 } from '../types/inventory';
 import {
   normKey,
@@ -19,7 +20,8 @@ import {
   computeMetaDigest,
   computeMaterialsDigest,
   computeInboundReceiptDigest,
-  computeOutboundReceiptDigest
+  computeOutboundReceiptDigest,
+  canonicalUserSessionKey
 } from '../utils/additiveMerge';
 
 interface ManifestReceiptEntry {
@@ -45,6 +47,7 @@ interface ServerManifest {
   tombstones: TombstoneMap;
   inboundManifest: ManifestReceiptEntry[];
   outboundManifest: ManifestReceiptEntry[];
+  osd?: OsdReceipt[];
 }
 
 export interface SessionInvalidationInfo {
@@ -625,17 +628,19 @@ async function verifySessionHeartbeat(forceImmediate = false): Promise<void> {
   const current = getStoredUnifiedSession();
   if (!current) return;
 
+  const watchKey = canonicalUserSessionKey(current.user) || current.session.userKey;
+
   // Khi Cloud Firestore đang kết nối, onSnapshot nhận thay đổi tức thì; chỉ kiểm tra định kỳ mỗi 30s để bảo toàn hạn mức đọc
   if (FirestoreSyncService.isCloudConnected()) {
     const now = Date.now();
     if (!forceImmediate && now - lastCloudHeartbeatCheckMs < 30_000) {
-      FirestoreSyncService.watchActiveSession(current.session.userKey);
+      FirestoreSyncService.watchActiveSession(watchKey);
       return;
     }
     lastCloudHeartbeatCheckMs = now;
     isVerifyingSession = true;
     try {
-      FirestoreSyncService.watchActiveSession(current.session.userKey);
+      FirestoreSyncService.watchActiveSession(watchKey);
       const cloudRes = await FirestoreSyncService.verifySessionWithCloud(current.session);
       const latestLocal = getStoredUnifiedSession();
       if (
@@ -674,6 +679,26 @@ async function verifySessionHeartbeat(forceImmediate = false): Promise<void> {
   try {
     const mySession = current.session;
     if (mySession.sessionToken.startsWith('cloud.')) {
+      if (FirestoreSyncService.hasAuthenticatedCloudUser()) {
+        const cloudRes = await FirestoreSyncService.verifySessionWithCloud(current.session);
+        if (cloudRes.handled && !cloudRes.valid) {
+          if (cloudRes.reason === 'disabled') {
+            triggerLocalKickOut({ reason: 'disabled' });
+          } else if (cloudRes.reason === 'force_logout') {
+            triggerLocalKickOut({
+              reason: 'force_logout',
+              deviceLabel: cloudRes.forceLogoutBy?.deviceLabel,
+              loginAt: cloudRes.forceLogoutBy?.at
+            });
+          } else if (cloudRes.reason === 'replaced') {
+            triggerLocalKickOut({
+              reason: 'replaced',
+              deviceLabel: cloudRes.replacedBy?.deviceLabel,
+              loginAt: cloudRes.replacedBy?.loginAt
+            });
+          }
+        }
+      }
       return;
     }
 
@@ -1056,6 +1081,9 @@ async function reconcileLocalServerOnly(): Promise<boolean> {
     warehouses: manifest.warehouses,
     tombstones: manifest.tombstones
   });
+  if (Array.isArray(manifest.osd) && manifest.osd.length > 0) {
+    StorageService.applyRemoteOsdReceipts(manifest.osd);
+  }
 
   // Fast-path: Nếu revision máy chủ không đổi và cục bộ không phát sinh thay đổi mới -> bỏ qua toàn bộ vòng lặp băm O(N)
   if (
@@ -1079,6 +1107,7 @@ async function reconcileLocalServerOnly(): Promise<boolean> {
       users: User[];
       warehouses: Warehouse[];
       tombstones: TombstoneMap;
+      osd?: OsdReceipt[];
     }>('/api/sync/meta', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1086,7 +1115,8 @@ async function reconcileLocalServerOnly(): Promise<boolean> {
         clientId: CLIENT_ID,
         users: localUsers,
         warehouses: localWhs,
-        tombstones: localTombstones
+        tombstones: localTombstones,
+        osd: StorageService.getOsdReceipts()
       })
     });
     StorageService.applyRemoteMeta({
@@ -1094,6 +1124,9 @@ async function reconcileLocalServerOnly(): Promise<boolean> {
       warehouses: metaRes.warehouses,
       tombstones: metaRes.tombstones
     });
+    if (Array.isArray(metaRes.osd) && metaRes.osd.length > 0) {
+      StorageService.applyRemoteOsdReceipts(metaRes.osd);
+    }
     metaDirty = false;
     lastKnownServerRev = Math.max(lastKnownServerRev, metaRes.serverRevision);
   }
@@ -1502,7 +1535,15 @@ export const SyncService = {
         if (authTransitionCount > 0) return;
         const current = getStoredUnifiedSession();
         if (!current) return;
-        if (normUserKey(current.session.userKey) !== normUserKey(remoteData.userKey)) return;
+        const myCanonical = canonicalUserSessionKey(current.user) || normUserKey(current.session.userKey);
+        const remoteCanonical =
+          canonicalUserSessionKey({ email: (remoteData as any).email, username: (remoteData as any).username }) ||
+          normUserKey(remoteData.userKey);
+        const isMatch =
+          myCanonical === remoteCanonical ||
+          (current.session.userId && remoteData.userId && current.session.userId === remoteData.userId) ||
+          normUserKey(current.session.userKey) === normUserKey(remoteData.userKey);
+        if (!isMatch) return;
 
         const remoteToken = String(remoteData.sessionToken || '');
         const remoteIssued = Number(remoteData.issuedAtMs) || 0;
@@ -1536,7 +1577,7 @@ export const SyncService = {
     StorageService.onLocalMutation((kind) => {
       if (kind === 'materials') {
         materialsDirty = true;
-      } else if (kind === 'meta') {
+      } else if (kind === 'meta' || kind === 'osd') {
         metaDirty = true;
       } else if (kind === 'inbound' || kind === 'outbound') {
         localReceiptsDirty = true;

@@ -10,7 +10,8 @@ import type {
   InboundReceipt,
   OutboundReceipt,
   TombstoneMap,
-  ActiveUserSession
+  ActiveUserSession,
+  OsdReceipt
 } from '../types/inventory.ts';
 import {
   createEmptyTombstones,
@@ -32,7 +33,9 @@ import {
   mergeWarehousesAdditive,
   mergeMaterialsAdditive,
   mergeInboundReceiptsAdditive,
-  mergeOutboundReceiptsAdditive
+  mergeOutboundReceiptsAdditive,
+  mergeOsdReceiptsAdditive,
+  canonicalUserSessionKey
 } from '../utils/additiveMerge.ts';
 
 const SESSION_HMAC_SECRET =
@@ -65,6 +68,7 @@ export interface ServerStore {
   inbound: InboundReceipt[];
   outbound: OutboundReceipt[];
   tombstones: TombstoneMap;
+  osd: OsdReceipt[];
   activeSessions: Record<string, ActiveUserSession>;
   revokedTokens: Record<string, number>;
   sessionRevokedBefore: Record<string, number>;
@@ -222,6 +226,7 @@ export function createSyncBackend(options: SyncBackendOptions = {}): SyncBackend
     inbound: [],
     outbound: [],
     tombstones: createEmptyTombstones(),
+    osd: [],
     activeSessions: {},
     revokedTokens: {},
     sessionRevokedBefore: {},
@@ -321,6 +326,10 @@ export function createSyncBackend(options: SyncBackendOptions = {}): SyncBackend
             store.tombstones.warehouses
           );
           store.warehouses = mergedW.list;
+        }
+        if (Array.isArray(parsed.osd)) {
+          const mergedO = mergeOsdReceiptsAdditive(store.osd || [], parsed.osd);
+          store.osd = mergedO.list;
         }
         if (!isSeedSource) {
           if (parsed.sessionRevokedBefore && typeof parsed.sessionRevokedBefore === 'object') {
@@ -495,6 +504,7 @@ export function createSyncBackend(options: SyncBackendOptions = {}): SyncBackend
         users: store.users,
         warehouses: store.warehouses,
         tombstones: store.tombstones,
+        osd: store.osd,
         activeSessions: store.activeSessions,
         revokedTokens: store.revokedTokens,
         sessionRevokedBefore: store.sessionRevokedBefore,
@@ -612,18 +622,22 @@ export function createSyncBackend(options: SyncBackendOptions = {}): SyncBackend
     deviceLabel?: string;
     loginAt?: string;
   }): SessionValidationResult {
-    const key = normUserKey(String(params.userKey || params.username || ''));
+    const rawKey = normUserKey(String(params.userKey || params.username || ''));
     const token = String(params.sessionToken || '').trim();
-    if (!key || !token) {
+    if (!rawKey || !token) {
       return { valid: false, reason: 'missing' };
     }
 
     const user = store.users.find(
-      (u) => normUserKey(u.username) === key || (params.userId && u.id === params.userId)
+      (u) =>
+        normUserKey(u.username) === rawKey ||
+        canonicalUserSessionKey(u) === rawKey ||
+        (params.userId && u.id === params.userId)
     );
+    const key = user ? canonicalUserSessionKey(user) : rawKey;
     const deletedInTombstones = isRecordDeleted(
       store.tombstones.users,
-      [params.userId || '', key],
+      [params.userId || '', key, rawKey],
       user?.updatedAt
     );
     if ((user && !user.isActive) || deletedInTombstones) {
@@ -631,12 +645,16 @@ export function createSyncBackend(options: SyncBackendOptions = {}): SyncBackend
         delete store.activeSessions[key];
         scheduleSaveMeta();
       }
+      if (store.activeSessions[rawKey]) {
+        delete store.activeSessions[rawKey];
+        scheduleSaveMeta();
+      }
       return { valid: false, reason: 'disabled' };
     }
 
     const nowMs = Date.now();
-    const revokedBefore = getRevokedBeforeMs(key, user);
-    let active: ActiveUserSession | undefined = store.activeSessions[key];
+    const revokedBefore = Math.max(getRevokedBeforeMs(key, user), getRevokedBeforeMs(rawKey, user));
+    let active: ActiveUserSession | undefined = store.activeSessions[key] || store.activeSessions[rawKey];
 
     if (active) {
       const activeIssued = getSessionIssuedAtMs(active);
@@ -909,7 +927,7 @@ export function createSyncBackend(options: SyncBackendOptions = {}): SyncBackend
     }
 
     const nowMs = Date.now();
-    const userKey = normUserKey(user.username);
+    const userKey = canonicalUserSessionKey(user);
     const cleanDeviceId = String(deviceId || `dev-${nowMs}`);
     const cleanDeviceLabel = String(deviceLabel || 'Thiết bị khác');
 
@@ -1082,7 +1100,7 @@ export function createSyncBackend(options: SyncBackendOptions = {}): SyncBackend
     }
     user = store.users[matchedIdx];
 
-    const userKey = normUserKey(user.username);
+    const userKey = canonicalUserSessionKey(user);
     const cleanDeviceId = String(deviceId || `dev-${nowMs}`);
     const cleanDeviceLabel = String(deviceLabel || 'Thiết bị Web');
 
@@ -1491,6 +1509,7 @@ export function createSyncBackend(options: SyncBackendOptions = {}): SyncBackend
       users: store.users,
       warehouses: store.warehouses,
       tombstones: store.tombstones,
+      osd: store.osd || [],
       inboundManifest,
       outboundManifest
     });
@@ -1571,6 +1590,14 @@ export function createSyncBackend(options: SyncBackendOptions = {}): SyncBackend
       }
     }
 
+    if (Array.isArray(req.body.osd)) {
+      const mergedO = mergeOsdReceiptsAdditive(store.osd || [], req.body.osd);
+      if (mergedO.changed) {
+        store.osd = mergedO.list;
+        anyChanged = true;
+      }
+    }
+
     if (anyChanged) {
       store.serverRevision++;
       scheduleSaveMeta();
@@ -1584,7 +1611,8 @@ export function createSyncBackend(options: SyncBackendOptions = {}): SyncBackend
       metaDigest: computeMetaDigest(store.users, store.warehouses, store.tombstones),
       users: store.users,
       warehouses: store.warehouses,
-      tombstones: store.tombstones
+      tombstones: store.tombstones,
+      osd: store.osd || []
     });
   });
 

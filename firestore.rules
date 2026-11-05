@@ -156,7 +156,7 @@ service cloud.firestore {
         ]) &&
         isValidWorkspaceId(data.workspaceId) &&
         data.chunkType is string && data.chunkType.size() >= 1 && data.chunkType.size() <= 32 &&
-        (data.chunkType == 'accounts' || data.chunkType == 'warehouses') &&
+        (data.chunkType == 'accounts' || data.chunkType == 'warehouses' || data.chunkType == 'osd') &&
         data.chunkIndex is number && data.chunkIndex >= 0 && data.chunkIndex <= 50 &&
         isBoundedMapList(data.items) &&
         data.updatedByUid is string && data.updatedByUid.size() >= 1 && data.updatedByUid.size() <= 128 &&
@@ -577,6 +577,38 @@ service cloud.firestore {
               incoming().diff(existing()).affectedKeys().hasOnly(['items', 'updatedByUid', 'updatedAt'])
             )
           )
+        );
+
+        allow delete: if isVerifiedUser() && isValidWorkspaceId(workspaceId) && isValidId(chunkId) && isAdmin();
+      }
+
+      // =======================================================================
+      // 4b. /workspaces/{workspaceId}/osdChunks/{chunkId}
+      // =======================================================================
+      match /osdChunks/{chunkId} {
+        allow get: if isVerifiedUser() && isValidWorkspaceId(workspaceId) && isValidId(chunkId) && isActiveMember(workspaceId);
+        allow list: if false;
+
+        allow create: if isVerifiedUser() &&
+          isValidWorkspaceId(workspaceId) &&
+          isValidId(chunkId) &&
+          isValidMetaChunk(incoming()) &&
+          incoming().workspaceId == workspaceId &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time &&
+          isActiveMember(workspaceId);
+
+        allow update: if (
+          isVerifiedUser() &&
+          isValidWorkspaceId(workspaceId) &&
+          isValidId(chunkId) &&
+          isValidMetaChunk(incoming()) &&
+          incoming().workspaceId == existing().workspaceId &&
+          incoming().chunkType == existing().chunkType &&
+          incoming().chunkIndex == existing().chunkIndex &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time &&
+          isActiveMember(workspaceId)
         );
 
         allow delete: if isVerifiedUser() && isValidWorkspaceId(workspaceId) && isValidId(chunkId) && isAdmin();
