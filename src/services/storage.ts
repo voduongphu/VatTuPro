@@ -1022,12 +1022,16 @@ export const StorageService = {
       }
 
       this.ensureInitialized();
-      this.syncMaterialsFromReceipts({ emitMutation: true });
+      this.syncMaterialsFromReceipts({ emitMutation: false, notify: false });
       inventoryVersion++;
       isHydrated = true;
     })();
 
     return initPromise;
+  },
+
+  isHydratedReady(): boolean {
+    return isHydrated;
   },
 
   async flush(): Promise<void> {

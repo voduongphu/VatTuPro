@@ -79,7 +79,7 @@ export const LoginScreen: React.FC = () => {
   const [isResettingSession, setIsResettingSession] = useState(false);
 
   const handleGoogleSignIn = async (
-    forceLogoutOtherDevice = false,
+    forceLogoutOtherDevice = true,
     forceSelectAccount = true,
     reuseExistingAccount = false
   ) => {

@@ -57,7 +57,7 @@ export const LoginModal: React.FC<LoginModalProps> = ({ isOpen, onClose }) => {
   if (!isOpen) return null;
 
   const handleGoogleSignIn = async (
-    forceLogoutOtherDevice = false,
+    forceLogoutOtherDevice = true,
     forceSelectAccount = true,
     reuseExistingAccount = false
   ) => {

@@ -1238,26 +1238,19 @@ async function reconcileInternal(): Promise<void> {
   notifySyncState(true);
 
   try {
-    // 1. Đồng bộ nhanh với /api/sync nếu có máy chủ cục bộ / Cloud Run
-    try {
-      await reconcileLocalServerOnly();
-    } catch (localErr) {
-      if (!FirestoreSyncService.isCloudConnected()) {
-        console.warn('Local server sync unavailable:', localErr);
-      }
-    }
-
-    // 2. Đồng bộ 2 chiều thời gian thực qua Cloud Firestore cho mọi tài khoản Google đã xác thực (Admin & Nhân sự)
+    // 1. Ưu tiên đồng bộ 2 chiều thời gian thực qua Cloud Firestore cho mọi tài khoản Google đã xác thực (Admin & Nhân sự)
     if (
       authTransitionCount === 0 &&
       (FirestoreSyncService.isCloudConnected() || FirestoreSyncService.hasAuthenticatedCloudUser())
     ) {
-      const cloudRes = await FirestoreSyncService.reconcileWithCloudDetailed();
-      if (cloudRes.pulledChanges) {
-        try {
-          await reconcileLocalServerOnly();
-        } catch {
-          // ignore if serverless/static
+      await FirestoreSyncService.reconcileWithCloudDetailed();
+    } else {
+      // 2. Fallback đồng bộ máy chủ cục bộ /api/sync khi chưa kết nối Google Cloud
+      try {
+        await reconcileLocalServerOnly();
+      } catch (localErr) {
+        if (!FirestoreSyncService.isCloudConnected()) {
+          console.warn('Local server sync unavailable:', localErr);
         }
       }
     }
@@ -1671,7 +1664,7 @@ export const SyncService = {
   }): Promise<LoginServerResult> {
     authTransitionCount++;
     ++authAttemptEpoch;
-    const forceFlag = Boolean(options?.forceLogoutOtherDevice);
+    const forceFlag = options?.forceLogoutOtherDevice !== false;
 
     // Dọn dẹp đồng bộ phiên cũ trong RAM/sessionStorage ngay trước khi gọi Google Popup (không await mạng để tránh Chrome chặn Popup)
     const prevUnified = getStoredUnifiedSession();
@@ -1723,20 +1716,19 @@ export const SyncService = {
       const deviceId = getDeviceId();
       const deviceLabel = getDeviceLabel();
 
-      // 1. Ưu tiên cấp phiên tốc độ cao trên Cloud Firestore (giới hạn tối đa ~950ms, tự động chuyển sang máy chủ /api nếu mạng Cloud chậm)
+      // 1. Ưu tiên cấp phiên tốc độ cao trên Cloud Firestore
       if (authRes.cloudReady && authRes.fbUser) {
         let cloudRes = await FirestoreSyncService.loginWithGoogleIdentityOnCloud(
           authRes.fbUser,
           deviceId,
           deviceLabel,
           forceFlag,
-          950
+          12000
         );
 
         if (
           cloudRes.handled &&
           cloudRes.conflict &&
-          !forceFlag &&
           cloudRes.activeSession &&
           (cloudRes.activeSession.deviceId === deviceId ||
             revokedLocalTokens.has(cloudRes.activeSession.sessionToken))
@@ -1746,7 +1738,7 @@ export const SyncService = {
             deviceId,
             deviceLabel,
             true,
-            950
+            12000
           );
         }
 

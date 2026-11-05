@@ -880,7 +880,11 @@ async function ensureWorkspaceReady(fbUser: FirebaseUser): Promise<boolean> {
       if (!wsSnap.exists()) {
         await createInitialBatch(isCloudAdmin(fbUser) ? 'admin' : 'member');
       } else {
-        await repairWorkspaceManifestIfNeeded(wsSnap.data());
+        if (isCloudAdmin(fbUser)) {
+          await repairWorkspaceManifestIfNeeded(wsSnap.data());
+        } else {
+          cachedWsManifest = { data: wsSnap.data() as WorkspaceManifestDoc, atMs: Date.now() };
+        }
       }
       verifiedWorkspaceUid = uid;
       return true;
@@ -923,7 +927,7 @@ async function ensureWorkspaceReady(fbUser: FirebaseUser): Promise<boolean> {
       knownExistingPaths.add(memberRef.path);
       const wsSnap = await safeGetDoc(wsRef, wsPath);
       if (wsSnap.exists()) {
-        await repairWorkspaceManifestIfNeeded(wsSnap.data());
+        cachedWsManifest = { data: wsSnap.data() as WorkspaceManifestDoc, atMs: Date.now() };
       }
       verifiedWorkspaceUid = uid;
       return true;
@@ -2535,13 +2539,8 @@ export const FirestoreSyncService = {
       }
 
       if (prevActive && prevActive.deviceId !== deviceId && !forceLogoutOtherDevice) {
-        return {
-          handled: true,
-          success: false,
-          conflict: true,
-          activeSession: prevActive,
-          message: `Tài khoản "${matched.username}" hiện đang đăng nhập trên ${prevActive.deviceLabel || 'thiết bị khác'}. Vui lòng nhấn "Yêu cầu đăng xuất thiết bị kia & Đăng nhập" để chuyển phiên sang thiết bị này.`
-        };
+        // Tự động thu hồi phiên cũ trên thiết bị khác để bảo đảm duy nhất 1 thiết bị hoạt động tại một thời điểm
+        forceLogoutOtherDevice = true;
       }
 
       if (prevActive?.sessionToken) {
@@ -2623,7 +2622,7 @@ export const FirestoreSyncService = {
     deviceId: string,
     deviceLabel: string,
     forceLogoutOtherDevice: boolean,
-    timeoutMs = 950
+    timeoutMs = 12000
   ): Promise<{
     handled: boolean;
     success: boolean;
@@ -2640,8 +2639,7 @@ export const FirestoreSyncService = {
     }
 
     let timedOut = false;
-    const effectiveTimeoutMs =
-      verifiedWorkspaceUid === fbUser.uid ? Math.max(timeoutMs, 1100) : Math.max(timeoutMs, 2400);
+    const effectiveTimeoutMs = Math.max(timeoutMs, 12000);
 
     const executeFastCloudLogin = async (): Promise<{
       handled: boolean;
@@ -2780,14 +2778,8 @@ export const FirestoreSyncService = {
         }
 
         if (prevActive && prevActive.deviceId !== deviceId && !forceLogoutOtherDevice) {
-          return {
-            handled: true,
-            success: false,
-            conflict: true,
-            activeSession: prevActive,
-            user: matched,
-            message: `Tài khoản Google "${emailLower}" hiện đang mở trên ${prevActive.deviceLabel || 'thiết bị khác'}. Nhấn nút bên dưới để đăng xuất thiết bị kia và tiếp tục vào hệ thống.`
-          };
+          // Tự động thu hồi phiên cũ trên thiết bị khác để bảo đảm duy nhất 1 thiết bị hoạt động per user account
+          forceLogoutOtherDevice = true;
         }
 
         if (timedOut) {

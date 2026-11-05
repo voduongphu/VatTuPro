@@ -241,7 +241,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const loginWithGoogle = async (
-    forceLogoutOtherDevice = false,
+    forceLogoutOtherDevice = true,
     forceSelectAccount = false,
     reuseExistingAccount = false
   ): Promise<LoginActionResult> => {
