@@ -336,7 +336,7 @@ export function computeMetaDigest(
     xor1 = (xor1 ^ h2) >>> 0;
   }
 
-  const buckets: Array<keyof TombstoneMap> = ['inbound', 'outbound', 'materials', 'warehouses', 'users'];
+  const buckets: Array<keyof TombstoneMap> = ['inbound', 'outbound', 'materials', 'warehouses', 'users', 'osd'];
   for (let b = 0; b < buckets.length; b++) {
     const bucketName = buckets[b];
     const map = tombstones[bucketName] || {};

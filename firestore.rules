@@ -605,6 +605,34 @@ service cloud.firestore {
       }
 
       // =======================================================================
+      // 4c. /workspaces/{workspaceId}/osdAttachments/{attachmentId} (OSD PDF Files)
+      // =======================================================================
+      match /osdAttachments/{attachmentId} {
+        allow get: if isVerifiedUser() && isValidWorkspaceId(workspaceId) && isValidId(attachmentId) && isActiveMember(workspaceId);
+        allow list: if false;
+
+        allow create: if isVerifiedUser() &&
+          isValidWorkspaceId(workspaceId) &&
+          isValidId(attachmentId) &&
+          incoming().workspaceId == workspaceId &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time &&
+          incoming().updatedByUid == request.auth.uid &&
+          isActiveMember(workspaceId);
+
+        allow update: if isVerifiedUser() &&
+          isValidWorkspaceId(workspaceId) &&
+          isValidId(attachmentId) &&
+          incoming().workspaceId == existing().workspaceId &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time &&
+          incoming().updatedByUid == request.auth.uid &&
+          isActiveMember(workspaceId);
+
+        allow delete: if isVerifiedUser() && isValidWorkspaceId(workspaceId) && isValidId(attachmentId) && isActiveMember(workspaceId);
+      }
+
+      // =======================================================================
       // 5. /workspaces/{workspaceId}/accountPrivate/{accountId} (PII Isolated to Admin)
       // =======================================================================
       match /accountPrivate/{accountId} {

@@ -1616,6 +1616,43 @@ export function createSyncBackend(options: SyncBackendOptions = {}): SyncBackend
     });
   });
 
+  // Lưu và truy xuất file PDF đính kèm của biên bản OSD
+  const osdAttachmentsMap = new Map<string, any>();
+
+  app.post('/api/osd/attachment', (req, res) => {
+    const { osdId, attachment } = req.body || {};
+    if (!osdId || !attachment || !attachment.dataUrl) {
+      return res.status(400).json({ ok: false, message: 'Thiếu dữ liệu file đính kèm' });
+    }
+    const safeId = String(osdId).trim();
+    osdAttachmentsMap.set(safeId, attachment);
+    if (Array.isArray(store.osd)) {
+      const idx = store.osd.findIndex((o) => o.id === safeId || normKey(o.osdCode) === normKey(safeId));
+      if (idx !== -1) {
+        store.osd[idx].pdfAttachment = attachment;
+        store.serverRevision++;
+        scheduleSaveMeta();
+      }
+    }
+    res.json({ ok: true });
+  });
+
+  app.get('/api/osd/attachment/:osdId', (req, res) => {
+    const safeId = String(req.params.osdId || '').trim();
+    const inMem = osdAttachmentsMap.get(safeId);
+    if (inMem) {
+      return res.json({ ok: true, attachment: inMem });
+    }
+    if (Array.isArray(store.osd)) {
+      const found = store.osd.find((o) => o.id === safeId || normKey(o.osdCode) === normKey(safeId));
+      if (found?.pdfAttachment?.dataUrl) {
+        osdAttachmentsMap.set(safeId, found.pdfAttachment);
+        return res.json({ ok: true, attachment: found.pdfAttachment });
+      }
+    }
+    res.status(404).json({ ok: false, message: 'Không tìm thấy file đính kèm' });
+  });
+
   app.get('/api/sync/materials', (req, res) => {
     const offset = Math.max(0, Number(req.query.offset) || 0);
     const limit = Math.min(3500, Math.max(100, Number(req.query.limit) || 3500));

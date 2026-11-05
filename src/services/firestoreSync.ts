@@ -35,7 +35,8 @@ import type {
   TombstoneMap,
   ActiveUserSession,
   OsdReceipt,
-  OsdItemDetail
+  OsdItemDetail,
+  OsdPdfAttachment
 } from '../types/inventory';
 import {
   normKey,
@@ -626,13 +627,16 @@ function serializeOsdPublic(o: OsdReceipt): Record<string, any> {
 
   if (o.pdfAttachment) {
     const pdf = o.pdfAttachment;
-    const safeDataUrl = (pdf.dataUrl || '').length < 400_000 ? pdf.dataUrl : '';
+    // Để tài liệu metaChunks/osd_0 không bao giờ vượt quá giới hạn 1MB của Firestore,
+    // ta chỉ lưu metadata trong chunk danh sách, và dataUrl inline nếu kích thước nhỏ (< 50KB).
+    // Toàn bộ file PDF đầy đủ được lưu và đồng bộ riêng biệt qua collection `osdAttachments`.
+    const inlineDataUrl = (pdf.dataUrl || '').length < 65_000 ? pdf.dataUrl : '';
     payload.pdfAttachment = {
       fileName: cleanStr(pdf.fileName, 255),
       fileSize: cleanNum(pdf.fileSize, 0),
       fileType: cleanStr(pdf.fileType, 64, 'application/pdf'),
       uploadedAt: cleanStr(pdf.uploadedAt, 64),
-      dataUrl: safeDataUrl
+      dataUrl: inlineDataUrl
     };
   }
 
@@ -695,6 +699,138 @@ function deserializeOsdPublic(raw: any): OsdReceipt {
   }
 
   return rcp;
+}
+
+async function pushSingleOsdAttachment(osdId: string, pdf: OsdPdfAttachment): Promise<void> {
+  const dataUrl = pdf?.dataUrl;
+  if (!osdId || !dataUrl || dataUrl.length === 0) return;
+  const fbUser = auth.currentUser;
+  if (!fbUser || !fbUser.emailVerified) return;
+
+  try {
+    const CHUNK_CHAR_LIMIT = 600_000;
+    const totalChunks = Math.max(1, Math.ceil(dataUrl.length / CHUNK_CHAR_LIMIT));
+    const safeOsdId = makeSafeDocId('att', osdId);
+
+    for (let c = 0; c < totalChunks; c++) {
+      const chunkId = `${safeOsdId}_c${c}`;
+      const chunkPath = `workspaces/${WORKSPACE_ID}/osdAttachments/${chunkId}`;
+      const chunkRef = doc(db, 'workspaces', WORKSPACE_ID, 'osdAttachments', chunkId);
+      const start = c * CHUNK_CHAR_LIMIT;
+      const slice = dataUrl.slice(start, start + CHUNK_CHAR_LIMIT);
+
+      await writeSingleProtectedDoc(
+        chunkRef,
+        chunkPath,
+        {
+          workspaceId: WORKSPACE_ID,
+          attachmentId: chunkId,
+          osdId: cleanStr(osdId, 160)
+        },
+        {
+          chunkIndex: c,
+          totalChunks,
+          fileName: cleanStr(pdf.fileName, 255),
+          fileSize: cleanNum(pdf.fileSize, 0),
+          fileType: cleanStr(pdf.fileType, 64, 'application/pdf'),
+          uploadedAt: cleanStr(pdf.uploadedAt, 64),
+          dataChunk: slice
+        }
+      );
+    }
+
+    void fetch('/api/osd/attachment', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ osdId, attachment: pdf })
+    }).catch(() => {});
+  } catch (err) {
+    console.warn('pushSingleOsdAttachment deferred:', err);
+  }
+}
+
+async function getOsdPdfAttachment(osdId: string): Promise<string | null> {
+  if (!osdId) return null;
+
+  const localList = StorageService.getOsdReceipts();
+  const matched = localList.find((o) => o.id === osdId || normKey(o.osdCode) === normKey(osdId));
+  if (matched?.pdfAttachment?.dataUrl && matched.pdfAttachment.dataUrl.length > 50) {
+    return matched.pdfAttachment.dataUrl;
+  }
+
+  const fbUser = auth.currentUser;
+  if (fbUser && fbUser.emailVerified && !isFirestoreCircuitOpen()) {
+    try {
+      const safeOsdId = makeSafeDocId('att', osdId);
+      const c0Id = `${safeOsdId}_c0`;
+      const c0Ref = doc(db, 'workspaces', WORKSPACE_ID, 'osdAttachments', c0Id);
+      const c0Snap = await safeGetDoc(c0Ref, `workspaces/${WORKSPACE_ID}/osdAttachments/${c0Id}`);
+
+      if (c0Snap.exists()) {
+        const d0 = c0Snap.data();
+        const totalChunks = Number(d0?.totalChunks) || 1;
+        const chunks: string[] = [String(d0?.dataChunk || '')];
+
+        if (totalChunks > 1) {
+          const reads = Array.from({ length: totalChunks - 1 }, (_, idx) => {
+            const cid = `${safeOsdId}_c${idx + 1}`;
+            return safeGetDoc(
+              doc(db, 'workspaces', WORKSPACE_ID, 'osdAttachments', cid),
+              `workspaces/${WORKSPACE_ID}/osdAttachments/${cid}`
+            );
+          });
+          const otherSnaps = await Promise.all(reads);
+          for (const s of otherSnaps) {
+            if (s.exists()) {
+              chunks.push(String(s.data()?.dataChunk || ''));
+            }
+          }
+        }
+
+        const fullDataUrl = chunks.join('');
+        if (fullDataUrl && fullDataUrl.startsWith('data:')) {
+          if (matched && matched.pdfAttachment) {
+            matched.pdfAttachment.dataUrl = fullDataUrl;
+            StorageService.updateOsdReceipt(matched.id, { ...matched });
+          }
+          return fullDataUrl;
+        }
+      }
+    } catch (err) {
+      console.warn('Error fetching osd attachment from cloud:', err);
+    }
+  }
+
+  try {
+    const res = await fetch(`/api/osd/attachment/${encodeURIComponent(osdId)}`);
+    if (res.ok) {
+      const json = await res.json();
+      const url = json?.attachment?.dataUrl;
+      if (url && typeof url === 'string') {
+        if (matched && matched.pdfAttachment) {
+          matched.pdfAttachment.dataUrl = url;
+          StorageService.updateOsdReceipt(matched.id, { ...matched });
+        }
+        return url;
+      }
+    }
+  } catch {
+    // ignore
+  }
+
+  return null;
+}
+
+async function preloadOsdAttachments(receipts: OsdReceipt[]): Promise<void> {
+  const needsFetch = receipts.filter(
+    (r) => r.pdfAttachment && (!r.pdfAttachment.dataUrl || r.pdfAttachment.dataUrl.length === 0)
+  );
+  if (needsFetch.length === 0) return;
+
+  for (let i = 0; i < needsFetch.length; i += 2) {
+    const batch = needsFetch.slice(i, i + 2);
+    await Promise.all(batch.map((r) => getOsdPdfAttachment(r.id).catch(() => null)));
+  }
 }
 
 
@@ -1114,6 +1250,7 @@ function attachOsdRealtimeListener(): void {
         }
       }
       StorageService.applyRemoteOsdReceipts(remoteOsd);
+      void preloadOsdAttachments(remoteOsd);
       externalOnRemoteWorkspaceChange?.();
     },
     (err) => {
@@ -1318,6 +1455,7 @@ async function pullMetaFromCloud(wsData: WorkspaceManifestDoc, fbUser: FirebaseU
   });
 
   StorageService.applyRemoteOsdReceipts(remoteOsd);
+  void preloadOsdAttachments(remoteOsd);
 }
 
 async function pushMetaToCloud(fbUser: FirebaseUser): Promise<{
@@ -1455,6 +1593,12 @@ async function pushMetaToCloud(fbUser: FirebaseUser): Promise<{
 
   await commitStagedWrites(staged);
   cloudMetaDirty = false;
+
+  for (const o of osdList) {
+    if (o.pdfAttachment?.dataUrl && o.pdfAttachment.dataUrl.length > 50) {
+      void pushSingleOsdAttachment(o.id, o.pdfAttachment).catch(() => {});
+    }
+  }
 
   return {
     accountChunkCount: accChunks.length,
@@ -3634,6 +3778,12 @@ export const FirestoreSyncService = {
       await commitStagedWrites(staged);
       cloudMetaDirty = false;
 
+      for (const o of osdList) {
+        if (o.pdfAttachment?.dataUrl && o.pdfAttachment.dataUrl.length > 50) {
+          void pushSingleOsdAttachment(o.id, o.pdfAttachment).catch(() => {});
+        }
+      }
+
       // Cập nhật WorkspaceManifest với serverRevision và metaRevision mới để kích hoạt realtime trên mọi thiết bị
       const wsPath = `workspaces/${WORKSPACE_ID}`;
       const wsRef = doc(db, 'workspaces', WORKSPACE_ID);
@@ -3689,5 +3839,13 @@ export const FirestoreSyncService = {
       console.warn('pushOsdRealtimeToCloud failed:', err);
       return false;
     }
+  },
+
+  getOsdPdfAttachment(osdId: string): Promise<string | null> {
+    return getOsdPdfAttachment(osdId);
+  },
+
+  pushSingleOsdAttachment(osdId: string, pdf: OsdPdfAttachment): Promise<void> {
+    return pushSingleOsdAttachment(osdId, pdf);
   }
 };

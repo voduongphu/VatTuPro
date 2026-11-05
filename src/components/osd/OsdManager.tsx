@@ -10,6 +10,7 @@ import {
   Warehouse 
 } from '../../types/inventory';
 import { StorageService } from '../../services/storage';
+import { FirestoreSyncService } from '../../services/firestoreSync';
 import { exportToExcel } from '../../services/excelService';
 import { generateNextOsdVoucherCode, roundQty } from '../../utils/additiveMerge';
 import { PaginationBar } from '../common/PaginationBar';
@@ -37,7 +38,8 @@ import {
   Check,
   PackageOpen,
   Calendar,
-  ExternalLink
+  ExternalLink,
+  Loader2
 } from 'lucide-react';
 
 export const OsdManager: React.FC = () => {
@@ -66,6 +68,32 @@ export const OsdManager: React.FC = () => {
   const [pdfPreviewModal, setPdfPreviewModal] = useState<OsdPdfAttachment | null>(null);
   const [osdToDelete, setOsdToDelete] = useState<OsdReceipt | null>(null);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
+  const [loadingPdfId, setLoadingPdfId] = useState<string | null>(null);
+
+  const handleOpenPdf = async (pdf?: OsdPdfAttachment, osdId?: string) => {
+    if (!pdf) return;
+    if (pdf.dataUrl && pdf.dataUrl.length > 50) {
+      setPdfPreviewModal(pdf);
+      return;
+    }
+    if (!osdId) {
+      setToast({ message: 'Biên bản chưa có nội dung PDF.', type: 'error' });
+      return;
+    }
+    setLoadingPdfId(osdId);
+    try {
+      const fullDataUrl = await FirestoreSyncService.getOsdPdfAttachment(osdId);
+      if (fullDataUrl && fullDataUrl.length > 50) {
+        setPdfPreviewModal({ ...pdf, dataUrl: fullDataUrl });
+      } else {
+        setToast({ message: 'Không thể tải file PDF từ đám mây. Vui lòng thử lại sau.', type: 'error' });
+      }
+    } catch {
+      setToast({ message: 'Lỗi khi tải file PDF từ đám mây.', type: 'error' });
+    } finally {
+      setLoadingPdfId(null);
+    }
+  };
 
   // Form States
   const [formOsdCode, setFormOsdCode] = useState('');
@@ -447,6 +475,9 @@ export const OsdManager: React.FC = () => {
       };
 
       StorageService.updateOsdReceipt(editingOsd.id, updatedOsd);
+      if (formPdf?.dataUrl && formPdf.dataUrl.length > 50) {
+        void FirestoreSyncService.pushSingleOsdAttachment(editingOsd.id, formPdf).catch(() => {});
+      }
       showToast(`Đã cập nhật biên bản OSD "${trimmedCode}" thành công!`);
     } else {
       const newOsd: OsdReceipt = {
@@ -474,6 +505,9 @@ export const OsdManager: React.FC = () => {
       };
 
       StorageService.addOsdReceipt(newOsd);
+      if (formPdf?.dataUrl && formPdf.dataUrl.length > 50) {
+        void FirestoreSyncService.pushSingleOsdAttachment(newOsd.id, formPdf).catch(() => {});
+      }
       showToast(`Đã lập biên bản OSD "${trimmedCode}" thành công!`);
     }
 
@@ -890,11 +924,16 @@ export const OsdManager: React.FC = () => {
                           <div className="flex flex-col items-center gap-1">
                             <button
                               type="button"
-                              onClick={() => setPdfPreviewModal(osd.pdfAttachment!)}
-                              className="inline-flex items-center gap-1 px-2.5 py-1 bg-rose-50 hover:bg-rose-100 text-rose-700 rounded-lg border border-rose-200 text-[11px] font-semibold transition"
+                              onClick={() => handleOpenPdf(osd.pdfAttachment, osd.id)}
+                              disabled={loadingPdfId === osd.id}
+                              className="inline-flex items-center gap-1 px-2.5 py-1 bg-rose-50 hover:bg-rose-100 text-rose-700 rounded-lg border border-rose-200 text-[11px] font-semibold transition disabled:opacity-60"
                               title={osd.pdfAttachment.fileName}
                             >
-                              <Paperclip className="w-3.5 h-3.5 text-rose-600" />
+                              {loadingPdfId === osd.id ? (
+                                <Loader2 className="w-3.5 h-3.5 text-rose-600 animate-spin" />
+                              ) : (
+                                <Paperclip className="w-3.5 h-3.5 text-rose-600" />
+                              )}
                               <span className="max-w-[80px] truncate">PDF</span>
                               <Eye className="w-3 h-3 ml-0.5" />
                             </button>
@@ -1362,7 +1401,7 @@ export const OsdManager: React.FC = () => {
                       <div className="flex items-center gap-1 shrink-0">
                         <button
                           type="button"
-                          onClick={() => setPdfPreviewModal(formPdf)}
+                          onClick={() => handleOpenPdf(formPdf, editingOsd?.id)}
                           className="px-2 py-1 bg-rose-50 hover:bg-rose-100 text-rose-700 rounded-lg text-xs font-semibold flex items-center gap-1 transition"
                         >
                           <Eye className="w-3.5 h-3.5" />
@@ -1658,10 +1697,14 @@ export const OsdManager: React.FC = () => {
                     </div>
                     <button
                       type="button"
-                      onClick={() => setPdfPreviewModal(viewingOsd.pdfAttachment!)}
-                      className="px-2.5 py-1 bg-white hover:bg-rose-100 text-rose-700 rounded-lg font-bold border border-rose-300 shadow-sm transition"
+                      onClick={() => handleOpenPdf(viewingOsd.pdfAttachment, viewingOsd.id)}
+                      disabled={loadingPdfId === viewingOsd.id}
+                      className="px-2.5 py-1 bg-white hover:bg-rose-100 text-rose-700 rounded-lg font-bold border border-rose-300 shadow-sm transition disabled:opacity-60 flex items-center gap-1"
                     >
-                      Xem PDF
+                      {loadingPdfId === viewingOsd.id && (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin text-rose-600" />
+                      )}
+                      <span>Xem PDF</span>
                     </button>
                   </div>
                 )}
