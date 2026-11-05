@@ -633,7 +633,7 @@ async function verifySessionHeartbeat(forceImmediate = false): Promise<void> {
   // Khi Cloud Firestore đang kết nối, onSnapshot nhận thay đổi tức thì; chỉ kiểm tra định kỳ mỗi 30s để bảo toàn hạn mức đọc
   if (FirestoreSyncService.isCloudConnected()) {
     const now = Date.now();
-    if (!forceImmediate && now - lastCloudHeartbeatCheckMs < 30_000) {
+    if (!forceImmediate && now - lastCloudHeartbeatCheckMs < 4_000) {
       FirestoreSyncService.watchActiveSession(watchKey);
       return;
     }
@@ -1326,19 +1326,33 @@ function setupBroadcastChannel(): void {
           current &&
           data.activeSessionToken &&
           !revokedLocalTokens.has(String(data.activeSessionToken)) &&
-          normUserKey(current.session.userKey) === normUserKey(data.userKey) &&
           current.session.sessionToken !== data.activeSessionToken
         ) {
-          const myIssued = getClientSessionIssuedAtMs(current.session);
-          const remoteIssued = Number(data.issuedAtMs) || 0;
-          if (!myIssued || !remoteIssued || remoteIssued >= myIssued) {
-            triggerLocalKickOut({
-              reason: 'replaced',
-              username: current.user.username,
-              fullName: current.user.fullName,
-              deviceLabel: data.deviceLabel,
-              loginAt: data.loginAt
-            });
+          const myCanonical =
+            canonicalUserSessionKey(current.user) || canonicalUserSessionKey(current.session.userKey);
+          const dataCanonical = canonicalUserSessionKey(data.userKey);
+          const isUserMatch =
+            myCanonical === dataCanonical ||
+            (current.session.userId && data.userId && current.session.userId === data.userId) ||
+            normUserKey(current.session.userKey) === normUserKey(data.userKey);
+
+          if (isUserMatch) {
+            const myIssued = getClientSessionIssuedAtMs(current.session);
+            const remoteIssued = Number(data.issuedAtMs) || 0;
+            if (
+              data.deviceId !== current.session.deviceId ||
+              !myIssued ||
+              !remoteIssued ||
+              remoteIssued >= myIssued - 5000
+            ) {
+              triggerLocalKickOut({
+                reason: 'replaced',
+                username: current.user.username,
+                fullName: current.user.fullName,
+                deviceLabel: data.deviceLabel,
+                loginAt: data.loginAt
+              });
+            }
           }
         }
       } else if (data.type === 'auth:session_force_logout') {
@@ -1399,20 +1413,34 @@ function connectWebSocket(force = false): void {
             current &&
             msg.activeSessionToken &&
             !revokedLocalTokens.has(String(msg.activeSessionToken)) &&
-            normUserKey(current.session.userKey) === normUserKey(msg.userKey) &&
             current.session.sessionToken !== msg.activeSessionToken
           ) {
-            const myIssued = getClientSessionIssuedAtMs(current.session);
-            const remoteIssued =
-              Number(msg.issuedAtMs) || (msg.loginAt ? Date.parse(msg.loginAt) : 0);
-            if (!myIssued || !remoteIssued || remoteIssued >= myIssued) {
-              triggerLocalKickOut({
-                reason: 'replaced',
-                username: current.user.username,
-                fullName: current.user.fullName,
-                deviceLabel: msg.deviceLabel,
-                loginAt: msg.loginAt
-              });
+            const myCanonical =
+              canonicalUserSessionKey(current.user) || canonicalUserSessionKey(current.session.userKey);
+            const msgCanonical = canonicalUserSessionKey(msg.userKey);
+            const isUserMatch =
+              myCanonical === msgCanonical ||
+              (current.session.userId && msg.userId && current.session.userId === msg.userId) ||
+              normUserKey(current.session.userKey) === normUserKey(msg.userKey);
+
+            if (isUserMatch) {
+              const myIssued = getClientSessionIssuedAtMs(current.session);
+              const remoteIssued =
+                Number(msg.issuedAtMs) || (msg.loginAt ? Date.parse(msg.loginAt) : 0);
+              if (
+                msg.deviceId !== current.session.deviceId ||
+                !myIssued ||
+                !remoteIssued ||
+                remoteIssued >= myIssued - 5000
+              ) {
+                triggerLocalKickOut({
+                  reason: 'replaced',
+                  username: current.user.username,
+                  fullName: current.user.fullName,
+                  deviceLabel: msg.deviceLabel,
+                  loginAt: msg.loginAt
+                });
+              }
             }
           }
           return;
@@ -1525,10 +1553,7 @@ export const SyncService = {
             getStoredUnifiedSession()?.session.sessionToken === token
         ),
       onRemoteWorkspaceChange: () => {
-        const current = getStoredUnifiedSession();
-        if (current && !revokedLocalTokens.has(current.session.sessionToken)) {
-          void FirestoreSyncService.syncActiveSessionToCloudIfConnected(current.session).catch(() => {});
-        }
+        void verifySessionHeartbeat(true);
         void reconcileInternal();
       },
       onRemoteSessionSnapshot: (remoteData) => {
@@ -1564,7 +1589,10 @@ export const SyncService = {
           return;
         }
 
-        if (remoteToken && remoteIssued >= myIssued) {
+        if (
+          remoteToken &&
+          (remoteData.deviceId !== current.session.deviceId || remoteIssued >= myIssued - 5000)
+        ) {
           triggerLocalKickOut({
             reason: 'replaced',
             deviceLabel: remoteData.deviceLabel ? String(remoteData.deviceLabel) : undefined,
@@ -1626,8 +1654,10 @@ export const SyncService = {
         const now = Date.now();
         if (now - lastInteractionCheckMs < 2000) return;
         lastInteractionCheckMs = now;
-        if (getStoredUnifiedSession() && !FirestoreSyncService.isCloudConnected()) {
-          connectWebSocket();
+        if (getStoredUnifiedSession()) {
+          if (!FirestoreSyncService.isCloudConnected()) {
+            connectWebSocket();
+          }
           void verifySessionHeartbeat();
         }
       };

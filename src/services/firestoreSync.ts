@@ -2577,8 +2577,24 @@ export const FirestoreSyncService = {
 
     // Nếu đám mây đã ghi nhận đúng mã phiên này và nhịp tim còn rất mới thì không cần ghi lặp lại
     if (prevToken === session.sessionToken) {
-      if (isSessionHeartbeatFresh(nowMs, Number(prev?.lastSeenAt) || 0, 25_000)) {
+      if (isSessionHeartbeatFresh(nowMs, Number(prev?.lastSeenAt) || 0, 20_000)) {
         this.watchActiveSession(userKey);
+        return;
+      }
+    }
+
+    // NẾU ĐÁM MÂY ĐANG CÓ MÃ PHIÊN KHÁC (do thiết bị khác vừa đăng nhập hoặc đã bị thay thế):
+    // Tuyệt đối KHÔNG GHI ĐÈ! Thiết bị này đã bị thay thế, phải kích hoạt đăng xuất ngay lập tức!
+    if (prev && prevToken && prevToken !== session.sessionToken) {
+      const prevIssued = Number(prev.issuedAtMs) || 0;
+      const myIssued = Number(session.issuedAtMs) || 0;
+      const revokedBefore = Number(prev.revokedBeforeMs) || 0;
+      if (
+        prev.deviceId !== session.deviceId ||
+        prevIssued >= myIssued - 5000 ||
+        (revokedBefore > 0 && myIssued <= revokedBefore)
+      ) {
+        externalOnRemoteSessionSnapshot?.(prev);
         return;
       }
     }
@@ -3006,7 +3022,17 @@ export const FirestoreSyncService = {
         };
 
         if (sessSnap.exists()) {
-          await updateDoc(sessRef, sessionMutablePayload);
+          try {
+            await updateDoc(sessRef, sessionMutablePayload);
+          } catch {
+            await setDoc(sessRef, {
+              workspaceId: WORKSPACE_ID,
+              sessionDocId,
+              userKey: cleanStr(userKey, 160, 'user'),
+              ...sessionMutablePayload,
+              createdAt: sessSnap.data()?.createdAt || serverTimestamp()
+            });
+          }
         } else {
           await setDoc(sessRef, {
             workspaceId: WORKSPACE_ID,
@@ -3173,7 +3199,7 @@ export const FirestoreSyncService = {
         return { handled: false, valid: true };
       }
       const fbUser = auth.currentUser;
-      if (!fbUser || !fbUser.emailVerified || currentState.status !== 'connected') {
+      if (!fbUser || !fbUser.emailVerified || isFirestoreCircuitOpen()) {
         return { handled: false, valid: true };
       }
 
@@ -3254,7 +3280,11 @@ export const FirestoreSyncService = {
         return { handled: true, valid: true };
       }
 
-      if (remoteIssued >= myIssued && !revokedCloudSessionTokens.has(remoteToken)) {
+      if (
+        remoteToken &&
+        (d.deviceId !== mySession.deviceId || remoteIssued >= myIssued - 5000) &&
+        !revokedCloudSessionTokens.has(remoteToken)
+      ) {
         return {
           handled: true,
           valid: false,

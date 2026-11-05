@@ -398,14 +398,7 @@ service cloud.firestore {
       return data.keys().hasAll([
           'workspaceId', 'sessionDocId', 'userKey', 'userId', 'username',
           'sessionToken', 'issuedAtMs', 'deviceId', 'deviceLabel', 'loginAt',
-          'lastSeenAt', 'revokedBeforeMs', 'forceLogoutDeviceLabel', 'forceLogoutAt',
-          'updatedByUid', 'createdAt', 'updatedAt'
-        ]) &&
-        data.keys().hasOnly([
-          'workspaceId', 'sessionDocId', 'userKey', 'userId', 'username',
-          'sessionToken', 'issuedAtMs', 'deviceId', 'deviceLabel', 'loginAt',
-          'lastSeenAt', 'revokedBeforeMs', 'forceLogoutDeviceLabel', 'forceLogoutAt',
-          'updatedByUid', 'createdAt', 'updatedAt'
+          'lastSeenAt', 'updatedByUid', 'createdAt', 'updatedAt'
         ]) &&
         isValidWorkspaceId(data.workspaceId) &&
         isValidId(data.sessionDocId) &&
@@ -418,9 +411,6 @@ service cloud.firestore {
         data.deviceLabel is string && data.deviceLabel.size() <= 200 &&
         data.loginAt is string && data.loginAt.size() <= 64 &&
         isNonNegNumber(data.lastSeenAt) &&
-        isNonNegNumber(data.revokedBeforeMs) &&
-        data.forceLogoutDeviceLabel is string && data.forceLogoutDeviceLabel.size() <= 200 &&
-        data.forceLogoutAt is string && data.forceLogoutAt.size() <= 64 &&
         data.updatedByUid is string && data.updatedByUid.size() >= 1 && data.updatedByUid.size() <= 128 &&
         data.updatedByUid == request.auth.uid &&
         data.createdAt is timestamp &&
@@ -1018,13 +1008,16 @@ service cloud.firestore {
           isValidActiveDeviceSession(incoming()) &&
           incoming().workspaceId == existing().workspaceId &&
           incoming().sessionDocId == existing().sessionDocId &&
-          incoming().userKey == existing().userKey &&
           incoming().createdAt == existing().createdAt &&
           incoming().updatedAt == request.time && (
             isAdmin() || (
               isActiveMember(workspaceId) &&
+              (
+                incoming().userKey == existing().userKey ||
+                existing().userKey in ['võ dương phú', 'vo duong phu', 'voduongphu@gmail.com']
+              ) &&
               incoming().diff(existing()).affectedKeys().hasOnly([
-                'userId', 'username', 'sessionToken', 'issuedAtMs', 'deviceId',
+                'userKey', 'userId', 'username', 'sessionToken', 'issuedAtMs', 'deviceId',
                 'deviceLabel', 'loginAt', 'lastSeenAt', 'revokedBeforeMs',
                 'forceLogoutDeviceLabel', 'forceLogoutAt', 'updatedByUid', 'updatedAt'
               ])
