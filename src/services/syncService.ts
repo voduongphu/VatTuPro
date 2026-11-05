@@ -1611,6 +1611,9 @@ export const SyncService = {
         localReceiptsDirty = true;
       }
       FirestoreSyncService.markLocalMutation(kind);
+      if (kind === 'osd') {
+        FirestoreSyncService.pushOsdRealtimeToCloud().catch(() => {});
+      }
       schedulePush(150);
       try {
         authChannel?.postMessage({ type: 'sync:local_changed' });

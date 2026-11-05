@@ -293,6 +293,7 @@ export interface TombstoneMap {
   materials: Record<string, number>;
   warehouses: Record<string, number>;
   users: Record<string, number>;
+  osd?: Record<string, number>;
 }
 
 export interface ActiveUserSession {

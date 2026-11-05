@@ -16,7 +16,8 @@ export function createEmptyTombstones(): TombstoneMap {
     outbound: {},
     materials: {},
     warehouses: {},
-    users: {}
+    users: {},
+    osd: {}
   };
 }
 
@@ -437,13 +438,17 @@ export function computeOutboundReceiptDigest(rcp: OutboundReceipt): string {
 export function mergeTombstones(target: TombstoneMap, incoming?: Partial<TombstoneMap> | null): boolean {
   if (!incoming) return false;
   let changed = false;
-  const buckets: Array<keyof TombstoneMap> = ['inbound', 'outbound', 'materials', 'warehouses', 'users'];
+  const buckets: Array<keyof TombstoneMap> = ['inbound', 'outbound', 'materials', 'warehouses', 'users', 'osd'];
 
   for (let b = 0; b < buckets.length; b++) {
     const bucketName = buckets[b];
     const incBucket = incoming[bucketName];
     if (!incBucket) continue;
-    const dstBucket = target[bucketName];
+    if (!target[bucketName]) {
+      target[bucketName] = {};
+      changed = true;
+    }
+    const dstBucket = target[bucketName]!;
     const keys = Object.keys(incBucket);
     for (let i = 0; i < keys.length; i++) {
       const k = keys[i];
@@ -2030,16 +2035,22 @@ export function computeOsdDigest(osdList: OsdReceipt[]): string {
 
 export function mergeOsdReceiptsAdditive(
   existing: OsdReceipt[],
-  incoming: OsdReceipt[]
+  incoming: OsdReceipt[],
+  tombstones?: Record<string, number>
 ): { list: OsdReceipt[]; changed: boolean } {
   let changed = false;
   const result: OsdReceipt[] = [];
   const indexByCode = new Map<string, number>();
   const indexById = new Map<string, number>();
+  const safeTombs = tombstones || {};
 
   for (let i = 0; i < existing.length; i++) {
     const o = existing[i];
     const cKey = normKey(o.osdCode);
+    if (isRecordDeleted(safeTombs, [o.id, cKey, o.osdCode], o.updatedAt)) {
+      changed = true;
+      continue;
+    }
     const idx = result.length;
     result.push(o);
     if (cKey) indexByCode.set(cKey, idx);
@@ -2050,6 +2061,9 @@ export function mergeOsdReceiptsAdditive(
     const inc = incoming[i];
     if (!inc) continue;
     const cKey = normKey(inc.osdCode);
+    if (isRecordDeleted(safeTombs, [inc.id, cKey, inc.osdCode], inc.updatedAt)) {
+      continue;
+    }
     let existIdx = cKey ? indexByCode.get(cKey) : undefined;
     if (existIdx === undefined && inc.id) {
       existIdx = indexById.get(inc.id);
@@ -2065,7 +2079,7 @@ export function mergeOsdReceiptsAdditive(
       const curr = result[existIdx];
       const incTs = Number(inc.updatedAt) || 0;
       const currTs = Number(curr.updatedAt) || 0;
-      if (incTs > currTs) {
+      if (incTs >= currTs) {
         const finalPdf = inc.pdfAttachment?.dataUrl
           ? inc.pdfAttachment
           : curr.pdfAttachment || inc.pdfAttachment;
@@ -2073,7 +2087,7 @@ export function mergeOsdReceiptsAdditive(
           ...curr,
           ...inc,
           pdfAttachment: finalPdf,
-          updatedAt: incTs
+          updatedAt: Math.max(incTs, currTs)
         };
         changed = true;
       } else {

@@ -129,6 +129,7 @@ let currentState: CloudSyncSnapshotState = {
 
 let workspaceUnsub: Unsubscribe | null = null;
 let sessionUnsub: Unsubscribe | null = null;
+let osdUnsub: Unsubscribe | null = null;
 let watchedSessionDocId: string | null = null;
 let workspaceReadyPromise: Promise<boolean> | null = null;
 let workspaceReadyUid: string | null = null;
@@ -345,7 +346,7 @@ function computeCloudSharedMetaDigest(
     xor1 = (xor1 ^ h1) >>> 0;
   }
 
-  const buckets: Array<keyof TombstoneMap> = ['inbound', 'outbound', 'materials', 'warehouses', 'users'];
+  const buckets: Array<keyof TombstoneMap> = ['inbound', 'outbound', 'materials', 'warehouses', 'users', 'osd'];
   for (let b = 0; b < buckets.length; b++) {
     const bucketName = buckets[b];
     const map = tombstones[bucketName] || {};
@@ -1094,7 +1095,39 @@ async function ensureWorkspaceReady(fbUser: FirebaseUser): Promise<boolean> {
   }
 }
 
+function attachOsdRealtimeListener(): void {
+  if (osdUnsub || !auth.currentUser) return;
+  const osdPath = `workspaces/${WORKSPACE_ID}/metaChunks/osd_0`;
+  const osdRef = doc(db, 'workspaces', WORKSPACE_ID, 'metaChunks', 'osd_0');
+
+  osdUnsub = onSnapshot(
+    osdRef,
+    (snap) => {
+      if (!snap.exists()) return;
+      knownExistingPaths.add(osdRef.path);
+      const data = snap.data();
+      const rawItems = Array.isArray(data?.items) ? data.items : [];
+      const remoteOsd: OsdReceipt[] = [];
+      for (const raw of rawItems) {
+        if (raw && typeof raw === 'object') {
+          remoteOsd.push(deserializeOsdPublic(raw));
+        }
+      }
+      StorageService.applyRemoteOsdReceipts(remoteOsd);
+      externalOnRemoteWorkspaceChange?.();
+    },
+    (err) => {
+      try {
+        handleFirestoreError(err, OperationType.GET, osdPath);
+      } catch {
+        // ignore transient error
+      }
+    }
+  );
+}
+
 function attachWorkspaceRealtimeListener(): void {
+  attachOsdRealtimeListener();
   if (workspaceUnsub || !auth.currentUser) return;
   const wsPath = `workspaces/${WORKSPACE_ID}`;
   const wsRef = doc(db, 'workspaces', WORKSPACE_ID);
@@ -1126,6 +1159,10 @@ function detachAllListeners(): void {
   if (workspaceUnsub) {
     workspaceUnsub();
     workspaceUnsub = null;
+  }
+  if (osdUnsub) {
+    osdUnsub();
+    osdUnsub = null;
   }
   if (sessionUnsub) {
     sessionUnsub();
@@ -1198,9 +1235,6 @@ async function pullMetaFromCloud(wsData: WorkspaceManifestDoc, fbUser: FirebaseU
         remoteOsd.push(deserializeOsdPublic(raw));
       }
     }
-  }
-  if (remoteOsd.length > 0) {
-    StorageService.applyRemoteOsdReceipts(remoteOsd);
   }
 
   const remoteTombstones = createEmptyTombstones();
@@ -1282,6 +1316,8 @@ async function pullMetaFromCloud(wsData: WorkspaceManifestDoc, fbUser: FirebaseU
     warehouses: remoteWarehouses,
     tombstones: remoteTombstones
   });
+
+  StorageService.applyRemoteOsdReceipts(remoteOsd);
 }
 
 async function pushMetaToCloud(fbUser: FirebaseUser): Promise<{
@@ -1350,7 +1386,7 @@ async function pushMetaToCloud(fbUser: FirebaseUser): Promise<{
   }
 
   const flatTombItems: Array<{ bucket: string; key: string; deletedAtMs: number }> = [];
-  const buckets: Array<keyof TombstoneMap> = ['inbound', 'outbound', 'materials', 'warehouses', 'users'];
+  const buckets: Array<keyof TombstoneMap> = ['inbound', 'outbound', 'materials', 'warehouses', 'users', 'osd'];
   for (const b of buckets) {
     const map = tombstones[b] || {};
     for (const [k, ts] of Object.entries(map)) {
@@ -2280,8 +2316,8 @@ export const FirestoreSyncService = {
         StorageService.getTombstones()
       );
       if (
-        (nextAccountChunkCount > 0 || nextWarehouseChunkCount > 0 || nextTombstoneChunkCount > 0) &&
-        (Number(wsData.metaRevision) !== lastAppliedCloudMetaRev || localMetaDigestBefore !== nextMetaDigest)
+        Number(wsData.metaRevision) !== lastAppliedCloudMetaRev ||
+        localMetaDigestBefore !== nextMetaDigest
       ) {
         await pullMetaFromCloud(wsData, fbUser);
         lastAppliedCloudMetaRev = Number(wsData.metaRevision) || 0;
@@ -3526,6 +3562,132 @@ export const FirestoreSyncService = {
       );
     } catch {
       // ignore network error during logout
+    }
+  },
+
+  async pushOsdRealtimeToCloud(): Promise<boolean> {
+    if (isFirestoreCircuitOpen() || interactiveAuthInFlight) return false;
+    const fbUser = auth.currentUser;
+    if (!fbUser || !fbUser.emailVerified) return false;
+    const ok = await ensureWorkspaceReady(fbUser);
+    if (!ok) return false;
+
+    try {
+      const osdList = StorageService.getOsdReceipts();
+      const tombstones = StorageService.getTombstones();
+      const users = StorageService.getUsers();
+      const warehouses = StorageService.getWarehouses();
+
+      const staged: StagedDocWrite[] = [];
+
+      const osdChunks = chunkArray(osdList.map(serializeOsdPublic), CLOUD_CHUNK_SIZE);
+      const effectiveOsdChunks = osdChunks.length > 0 ? osdChunks : [[]];
+      for (let i = 0; i < effectiveOsdChunks.length; i++) {
+        const cid = `osd_${i}`;
+        staged.push({
+          ref: doc(db, 'workspaces', WORKSPACE_ID, 'metaChunks', cid),
+          pathLabel: `workspaces/${WORKSPACE_ID}/metaChunks/${cid}`,
+          immutableCreateFields: {
+            workspaceId: WORKSPACE_ID,
+            chunkType: 'osd',
+            chunkIndex: i
+          },
+          mutableFields: {
+            items: effectiveOsdChunks[i]
+          }
+        });
+      }
+
+      // Đẩy tombstones để các client khác nhận diện ngay vật tư OSD đã bị xóa
+      const flatTombItems: Array<{ bucket: string; key: string; deletedAtMs: number }> = [];
+      const buckets: Array<keyof TombstoneMap> = ['inbound', 'outbound', 'materials', 'warehouses', 'users', 'osd'];
+      for (const b of buckets) {
+        const map = tombstones[b] || {};
+        for (const [k, ts] of Object.entries(map)) {
+          const numTs = Number(ts) || 0;
+          if (k && numTs > 0) {
+            flatTombItems.push({
+              bucket: b,
+              key: cleanStr(k, 160, 'k'),
+              deletedAtMs: cleanNum(numTs, 1)
+            });
+          }
+        }
+      }
+
+      const tombChunks = chunkArray(flatTombItems, CLOUD_CHUNK_SIZE);
+      for (let i = 0; i < tombChunks.length; i++) {
+        const cid = `tomb_${i}`;
+        staged.push({
+          ref: doc(db, 'workspaces', WORKSPACE_ID, 'tombstoneChunks', cid),
+          pathLabel: `workspaces/${WORKSPACE_ID}/tombstoneChunks/${cid}`,
+          immutableCreateFields: {
+            workspaceId: WORKSPACE_ID,
+            chunkIndex: i
+          },
+          mutableFields: {
+            items: tombChunks[i]
+          }
+        });
+      }
+
+      await commitStagedWrites(staged);
+      cloudMetaDirty = false;
+
+      // Cập nhật WorkspaceManifest với serverRevision và metaRevision mới để kích hoạt realtime trên mọi thiết bị
+      const wsPath = `workspaces/${WORKSPACE_ID}`;
+      const wsRef = doc(db, 'workspaces', WORKSPACE_ID);
+      const wsSnap = await safeGetDoc(wsRef, wsPath);
+      if (wsSnap.exists()) {
+        const wsData = wsSnap.data() as WorkspaceManifestDoc;
+        const nextServerRev = (Number(wsData.serverRevision) || 0) + 1;
+        const nextMetaRevision = (Number(wsData.metaRevision) || 0) + 1;
+        const nextMetaDigest = cleanStr(
+          computeCloudSharedMetaDigest(users, warehouses, tombstones),
+          128,
+          '0.0.0:0:0:0'
+        );
+
+        knownExistingPaths.add(wsRef.path);
+        await writeSingleProtectedDoc(
+          wsRef,
+          wsPath,
+          {
+            workspaceId: WORKSPACE_ID,
+            name: WORKSPACE_NAME,
+            ownerUid: fbUser.uid,
+            status: 'active',
+            allowSelfJoin: true
+          },
+          {
+            serverRevision: nextServerRev,
+            metaRevision: nextMetaRevision,
+            materialsRevision: Number(wsData.materialsRevision) || 0,
+            materialsCount: Number(wsData.materialsCount) || 0,
+            materialsChunkCount: Number(wsData.materialsChunkCount) || 0,
+            materialsDigest: String(wsData.materialsDigest || '0:0:0:0'),
+            metaDigest: nextMetaDigest,
+            accountChunkCount: Number(wsData.accountChunkCount) || 0,
+            warehouseChunkCount: Number(wsData.warehouseChunkCount) || 0,
+            tombstoneChunkCount: tombChunks.length,
+            inboundIndexChunkCount: Number(wsData.inboundIndexChunkCount) || 0,
+            outboundIndexChunkCount: Number(wsData.outboundIndexChunkCount) || 0
+          }
+        );
+        lastAppliedCloudServerRev = nextServerRev;
+        lastAppliedCloudMetaRev = nextMetaRevision;
+      }
+
+      emitCloudState({
+        status: 'connected',
+        lastSyncedAt: Date.now(),
+        errorMessage: null
+      });
+
+      return true;
+    } catch (err) {
+      console.warn('pushOsdRealtimeToCloud failed:', err);
+      return false;
     }
   }
 };

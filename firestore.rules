@@ -63,7 +63,7 @@ service cloud.firestore {
     function isBoundedMapList(listVal) {
       return listVal is list &&
         listVal.size() <= 200 &&
-        (listVal.size() == 0 || (listVal.size() > 0 && listVal[0] is map && listVal[0].keys().size() <= 32));
+        (listVal.size() == 0 || (listVal.size() > 0 && listVal[0] is map && listVal[0].keys().size() <= 48));
     }
 
     function isNonNegNumber(n) {

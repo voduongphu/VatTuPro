@@ -2371,7 +2371,12 @@ export const StorageService = {
   // ==========================================================================
   getOsdReceipts(): OsdReceipt[] {
     this.ensureInitialized();
-    return getItem<OsdReceipt[]>(STORAGE_KEYS.OSD, []);
+    const list = getItem<OsdReceipt[]>(STORAGE_KEYS.OSD, []);
+    const tombstones = this.getTombstones();
+    if (!tombstones.osd || Object.keys(tombstones.osd).length === 0) return list;
+    return list.filter(
+      (r) => !isRecordDeleted(tombstones.osd!, [r.id, normKey(r.osdCode), r.osdCode], r.updatedAt)
+    );
   },
 
   saveOsdReceipts(receipts: OsdReceipt[]): void {
@@ -2403,7 +2408,18 @@ export const StorageService = {
     const list = this.getOsdReceipts();
     const target = list.find((r) => r.id === id || normKey(r.osdCode) === normKey(id));
     const next = list.filter((r) => r.id !== id && normKey(r.osdCode) !== normKey(id));
-    if (next.length === list.length) return false;
+    if (next.length === list.length && !target) return false;
+    const now = Date.now();
+    const tombstones = this.getTombstones();
+    if (!tombstones.osd) tombstones.osd = {};
+    tombstones.osd[id] = now;
+    tombstones.osd[normKey(id)] = now;
+    if (target) {
+      tombstones.osd[target.id] = now;
+      tombstones.osd[target.osdCode] = now;
+      tombstones.osd[normKey(target.osdCode)] = now;
+    }
+    this.saveTombstones(tombstones);
     this.saveOsdReceipts(next);
     emitLocalMutation('osd', target ? [target.osdCode] : undefined);
     return true;
@@ -2434,8 +2450,9 @@ export const StorageService = {
   },
 
   applyRemoteOsdReceipts(receipts: OsdReceipt[]): boolean {
-    if (!Array.isArray(receipts) || receipts.length === 0) return false;
-    const merged = mergeOsdReceiptsAdditive(this.getOsdReceipts(), receipts);
+    if (!Array.isArray(receipts)) return false;
+    const tombstones = this.getTombstones();
+    const merged = mergeOsdReceiptsAdditive(this.getOsdReceipts(), receipts, tombstones.osd);
     if (merged.changed) {
       this.saveOsdReceipts(merged.list);
       return true;
