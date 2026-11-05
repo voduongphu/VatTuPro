@@ -39,8 +39,14 @@ import {
   CheckCircle2,
   AlertCircle,
   RefreshCw,
-  X
+  X,
+  ArrowUpDown,
+  ArrowUp,
+  ArrowDown
 } from 'lucide-react';
+
+export type ReceiptSortField = 'date' | 'code';
+export type SortOrder = 'asc' | 'desc';
 
 const FORM_ITEM_PAGE_SIZE = 100;
 
@@ -118,6 +124,8 @@ export const OutboundManager: React.FC = () => {
   const [filterWarehouse, setFilterWarehouse] = useState('all');
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
+  const [sortField, setSortField] = useState<ReceiptSortField>('date');
+  const [sortOrder, setSortOrder] = useState<SortOrder>('desc');
 
   // Pagination cho bảng phiếu xuất
   const [currentPage, setCurrentPage] = useState(1);
@@ -857,49 +865,76 @@ export const OutboundManager: React.FC = () => {
     const q = deferredSearch.trim().toLowerCase();
     const checkWh = filterWarehouse !== 'all';
 
-    if (!q && !checkWh && !startDate && !endDate) {
-      return receipts;
-    }
+    const filtered =
+      !q && !checkWh && !startDate && !endDate
+        ? receipts
+        : receipts.filter((r) => {
+            if (checkWh && r.warehouseId !== filterWarehouse) return false;
+            const normDate = formatExcelDate(r.issueDate);
+            if (startDate && normDate < startDate) return false;
+            if (endDate && normDate > endDate) return false;
 
-    return receipts.filter((r) => {
-      if (checkWh && r.warehouseId !== filterWarehouse) return false;
-      const normDate = formatExcelDate(r.issueDate);
-      if (startDate && normDate < startDate) return false;
-      if (endDate && normDate > endDate) return false;
+            if (q) {
+              const headerMatch =
+                r.issueCode.toLowerCase().includes(q) ||
+                r.recipientDepartment.toLowerCase().includes(q) ||
+                r.recipientName.toLowerCase().includes(q) ||
+                (r.requestNo && r.requestNo.toLowerCase().includes(q)) ||
+                (r.departmentName && r.departmentName.toLowerCase().includes(q)) ||
+                (r.notes && r.notes.toLowerCase().includes(q)) ||
+                (r.projectName && r.projectName.toLowerCase().includes(q)) ||
+                (r.packingListSummary && r.packingListSummary.toLowerCase().includes(q));
 
-      if (q) {
-        const headerMatch =
-          r.issueCode.toLowerCase().includes(q) ||
-          r.recipientDepartment.toLowerCase().includes(q) ||
-          r.recipientName.toLowerCase().includes(q) ||
-          (r.requestNo && r.requestNo.toLowerCase().includes(q)) ||
-          (r.departmentName && r.departmentName.toLowerCase().includes(q)) ||
-          (r.notes && r.notes.toLowerCase().includes(q)) ||
-          (r.projectName && r.projectName.toLowerCase().includes(q)) ||
-          (r.packingListSummary && r.packingListSummary.toLowerCase().includes(q));
+              if (headerMatch) return true;
 
-        if (headerMatch) return true;
+              const items = r.items;
+              for (let i = 0; i < items.length; i++) {
+                const it = items[i];
+                if (
+                  it.materialName.toLowerCase().includes(q) ||
+                  it.materialCode.toLowerCase().includes(q) ||
+                  (it.batchCode && it.batchCode.toLowerCase().includes(q)) ||
+                  it.packingListNo.toLowerCase().includes(q) ||
+                  it.shipment.toLowerCase().includes(q) ||
+                  it.packageNo.toLowerCase().includes(q)
+                ) {
+                  return true;
+                }
+              }
+              return false;
+            }
 
-        const items = r.items;
-        for (let i = 0; i < items.length; i++) {
-          const it = items[i];
-          if (
-            it.materialName.toLowerCase().includes(q) ||
-            it.materialCode.toLowerCase().includes(q) ||
-            (it.batchCode && it.batchCode.toLowerCase().includes(q)) ||
-            it.packingListNo.toLowerCase().includes(q) ||
-            it.shipment.toLowerCase().includes(q) ||
-            it.packageNo.toLowerCase().includes(q)
-          ) {
             return true;
-          }
-        }
-        return false;
-      }
+          });
 
-      return true;
+    const sorted = [...filtered];
+    sorted.sort((a, b) => {
+      if (sortField === 'date') {
+        const dateA = formatExcelDate(a.issueDate) || a.issueDate || '';
+        const dateB = formatExcelDate(b.issueDate) || b.issueDate || '';
+        if (dateA !== dateB) {
+          return sortOrder === 'desc'
+            ? dateB.localeCompare(dateA)
+            : dateA.localeCompare(dateB);
+        }
+        return sortOrder === 'desc'
+          ? (b.issueCode || '').localeCompare(a.issueCode || '', 'vi', { numeric: true })
+          : (a.issueCode || '').localeCompare(b.issueCode || '', 'vi', { numeric: true });
+      } else {
+        const codeA = a.issueCode || '';
+        const codeB = b.issueCode || '';
+        const cmp = codeA.localeCompare(codeB, 'vi', { numeric: true });
+        if (cmp !== 0) {
+          return sortOrder === 'desc' ? -cmp : cmp;
+        }
+        const dateA = formatExcelDate(a.issueDate) || a.issueDate || '';
+        const dateB = formatExcelDate(b.issueDate) || b.issueDate || '';
+        return dateB.localeCompare(dateA);
+      }
     });
-  }, [receipts, deferredSearch, filterWarehouse, startDate, endDate]);
+
+    return sorted;
+  }, [receipts, deferredSearch, filterWarehouse, startDate, endDate, sortField, sortOrder]);
 
   const pagedReceipts = useMemo(() => {
     const start = (currentPage - 1) * pageSize;
@@ -1295,6 +1330,26 @@ export const OutboundManager: React.FC = () => {
               className="w-full bg-transparent text-slate-700 outline-none text-xs"
             />
           </div>
+
+          <div className="flex-1 sm:flex-initial flex items-center gap-1.5 bg-slate-50 border border-slate-200 rounded-xl px-2.5 py-1.5 text-xs min-h-[40px]">
+            <ArrowUpDown className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+            <span className="text-slate-500 font-medium shrink-0">Sắp xếp:</span>
+            <select
+              value={`${sortField}_${sortOrder}`}
+              onChange={(e) => {
+                const [f, o] = e.target.value.split('_') as [ReceiptSortField, SortOrder];
+                setSortField(f);
+                setSortOrder(o);
+                setCurrentPage(1);
+              }}
+              className="bg-transparent text-slate-800 font-semibold outline-none cursor-pointer text-xs"
+            >
+              <option value="date_desc">Ngày: Mới nhất trước (Mặc định)</option>
+              <option value="date_asc">Ngày: Cũ nhất trước</option>
+              <option value="code_desc">Số phiếu: Giảm dần (Z-A / 9-0)</option>
+              <option value="code_asc">Số phiếu: Tăng dần (A-Z / 0-9)</option>
+            </select>
+          </div>
         </div>
       </div>
 
@@ -1392,7 +1447,71 @@ export const OutboundManager: React.FC = () => {
                     />
                   </th>
                 )}
-                <th className="px-5 py-3.5">Số Phiếu Xuất & Ngày</th>
+                <th className="px-5 py-3.5 select-none">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span>Số Phiếu Xuất & Ngày</span>
+                    <div className="inline-flex items-center gap-1 bg-white border border-slate-200 rounded-lg p-0.5 shadow-xs">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (sortField === 'code') {
+                            setSortOrder((prev) => (prev === 'asc' ? 'desc' : 'asc'));
+                          } else {
+                            setSortField('code');
+                            setSortOrder('asc');
+                          }
+                          setCurrentPage(1);
+                        }}
+                        className={`px-1.5 py-0.5 rounded text-[11px] font-medium inline-flex items-center gap-0.5 transition ${
+                          sortField === 'code'
+                            ? 'bg-blue-600 text-white font-bold'
+                            : 'text-slate-600 hover:bg-slate-100'
+                        }`}
+                        title="Bấm để sắp xếp theo Số phiếu xuất"
+                      >
+                        <span>Số phiếu</span>
+                        {sortField === 'code' ? (
+                          sortOrder === 'asc' ? (
+                            <ArrowUp className="w-3 h-3" />
+                          ) : (
+                            <ArrowDown className="w-3 h-3" />
+                          )
+                        ) : (
+                          <ArrowUpDown className="w-2.5 h-2.5 text-slate-400" />
+                        )}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (sortField === 'date') {
+                            setSortOrder((prev) => (prev === 'desc' ? 'asc' : 'desc'));
+                          } else {
+                            setSortField('date');
+                            setSortOrder('desc');
+                          }
+                          setCurrentPage(1);
+                        }}
+                        className={`px-1.5 py-0.5 rounded text-[11px] font-medium inline-flex items-center gap-0.5 transition ${
+                          sortField === 'date'
+                            ? 'bg-blue-600 text-white font-bold'
+                            : 'text-slate-600 hover:bg-slate-100'
+                        }`}
+                        title="Bấm để sắp xếp theo Ngày xuất"
+                      >
+                        <span>Ngày</span>
+                        {sortField === 'date' ? (
+                          sortOrder === 'desc' ? (
+                            <ArrowDown className="w-3 h-3" />
+                          ) : (
+                            <ArrowUp className="w-3 h-3" />
+                          )
+                        ) : (
+                          <ArrowUpDown className="w-2.5 h-2.5 text-slate-400" />
+                        )}
+                      </button>
+                    </div>
+                  </div>
+                </th>
                 <th className="px-5 py-3.5">Người Nhận & Đơn Vị/Tổ/Nhóm</th>
                 <th className="px-5 py-3.5">Bộ Phận & Kho Xuất</th>
                 <th className="px-5 py-3.5">Số PYC/PĐX & Lý Do Xuất</th>

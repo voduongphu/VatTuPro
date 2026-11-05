@@ -441,6 +441,17 @@ function mergeAggMetadata(
     entry.supplier = incoming.supplier;
   }
 
+  if (incoming.packingListNo && incoming.packingListNo !== 'N/A' && !isVoucherCodeLike(incoming.packingListNo)) {
+    if (entry.packingListNo === 'N/A' || isVoucherCodeLike(entry.packingListNo)) {
+      entry.packingListNo = incoming.packingListNo;
+    }
+  }
+  if (incoming.shipment && incoming.shipment !== 'N/A') {
+    if (entry.shipment === 'N/A') {
+      entry.shipment = incoming.shipment;
+    }
+  }
+
   if (isNewerOrSame) {
     entry.lastUpdated = incoming.date;
     if (incoming.materialName && incoming.materialName !== 'Vật tư' && incoming.materialName !== 'N/A') {
@@ -449,6 +460,19 @@ function mergeAggMetadata(
   } else if ((entry.materialName === 'Vật tư' || entry.materialName === 'N/A') && incoming.materialName !== 'Vật tư') {
     entry.materialName = incoming.materialName;
   }
+}
+
+function isVoucherCodeLike(val?: string | null): boolean {
+  if (!val) return false;
+  const s = val.trim().toUpperCase();
+  return (
+    /^PNK\d{2}-/i.test(s) ||
+    /^PXK\d{2}-/i.test(s) ||
+    /^PNK-/i.test(s) ||
+    /^PXK-/i.test(s) ||
+    /^OSD\d{2}-/i.test(s) ||
+    /^\d{4}[-/]\d{1,2}[-/]\d{1,2}$/.test(s)
+  );
 }
 
 function finalizeAggEntries(groupMap: Map<string, AggEntry>): InventoryStockRecord[] {
@@ -514,6 +538,90 @@ function buildAggregatedRecords(
 ): InventoryStockRecord[] {
   const groupMap = new Map<string, AggEntry>();
 
+  // Bản đồ tra cứu Packing List & Shipment chuẩn cho từng mã vật tư
+  const realPlByItemKey = new Map<string, { pl: string; shp: string }>();
+  const realPlByMaterial = new Map<string, { pl: string; shp: string }>();
+
+  // 1. Khởi tạo từ danh mục vật tư
+  try {
+    const allMaterials = StorageService.getMaterials();
+    for (let i = 0; i < allMaterials.length; i++) {
+      const m = allMaterials[i];
+      const mPl = cleanStockDisplayValue(m.packingListNo, 'N/A');
+      const mShp = cleanStockDisplayValue(m.shipment, 'N/A');
+      if (mPl !== 'N/A' && !isVoucherCodeLike(mPl)) {
+        const codeKey = normKey(m.code);
+        if (codeKey) {
+          realPlByMaterial.set(codeKey, { pl: mPl, shp: mShp });
+        }
+      }
+    }
+  } catch {
+    // an toàn nếu chưa nạp storage
+  }
+
+  // 2. Tra cứu từ các phiếu nhập mua hàng thực tế (loại trừ phiếu nhập trả kho)
+  for (let i = 0; i < inbounds.length; i++) {
+    const rcp = inbounds[i];
+    if (rcp.inboundType === 'return') continue;
+    const rcpCodeUpper = (rcp.receiptCode || '').toUpperCase().trim();
+    const items = rcp.items || [];
+    for (let j = 0; j < items.length; j++) {
+      const it = items[j];
+      const pl = cleanStockDisplayValue(it.packingListNo, 'N/A');
+      const shp = cleanStockDisplayValue(it.shipment, 'N/A');
+      if (pl !== 'N/A' && !isVoucherCodeLike(pl) && pl.toUpperCase() !== rcpCodeUpper) {
+        const rawPkg = cleanStockDisplayValue(it.packageNo, 'N/A');
+        const effPkg = rawPkg !== 'N/A' ? rawPkg : cleanStockDisplayValue(it.batchCode, 'N/A');
+        const pkgK = buildPackageMergeKey(effPkg, cleanStockDisplayValue(it.packageName, ''));
+        const mK = normKey(it.materialCode);
+        const whId = rcp.warehouseId;
+        if (mK) {
+          realPlByItemKey.set(`${whId}__${mK}__${pkgK}`, { pl, shp });
+          realPlByItemKey.set(`${mK}__${pkgK}`, { pl, shp });
+          realPlByMaterial.set(mK, { pl, shp });
+        }
+      }
+    }
+  }
+
+  const resolveActualPlAndShp = (
+    rawPl: string | undefined | null,
+    rawShp: string | undefined | null,
+    mCode: string,
+    pkgKey: string,
+    whId: string,
+    voucherCode?: string,
+    isReturn?: boolean
+  ): { pl: string; shp: string } => {
+    let cleanPl = cleanStockDisplayValue(rawPl, 'N/A');
+    let cleanShp = cleanStockDisplayValue(rawShp, 'N/A');
+    const vUpper = (voucherCode || '').toUpperCase().trim();
+
+    const isBadPl =
+      cleanPl === 'N/A' ||
+      isVoucherCodeLike(cleanPl) ||
+      (vUpper && cleanPl.toUpperCase() === vUpper) ||
+      Boolean(isReturn && isVoucherCodeLike(cleanPl));
+
+    if (isBadPl) {
+      const mK = normKey(mCode);
+      const matched =
+        realPlByItemKey.get(`${whId}__${mK}__${pkgKey}`) ||
+        realPlByItemKey.get(`${mK}__${pkgKey}`) ||
+        realPlByMaterial.get(mK);
+      if (matched) {
+        cleanPl = matched.pl;
+        if (cleanShp === 'N/A' && matched.shp !== 'N/A') {
+          cleanShp = matched.shp;
+        }
+      } else {
+        cleanPl = 'N/A';
+      }
+    }
+    return { pl: cleanPl, shp: cleanShp };
+  };
+
   for (let i = 0; i < inbounds.length; i++) {
     const receipt = inbounds[i];
     if (startDate && receipt.receiptDate < startDate) continue;
@@ -527,12 +635,24 @@ function buildAggregatedRecords(
 
     for (let j = 0; j < items.length; j++) {
       const item = items[j];
-      const dispPl = cleanStockDisplayValue(item.packingListNo, 'N/A');
-      const dispShp = cleanStockDisplayValue(item.shipment, 'N/A');
       const rawPkgNo = cleanStockDisplayValue(item.packageNo, 'N/A');
       const dispPkgNo = rawPkgNo !== 'N/A' ? rawPkgNo : cleanStockDisplayValue(item.batchCode, 'N/A');
       const dispPkgName = cleanStockDisplayValue(item.packageName, '');
       const dispCode = cleanStockDisplayValue(item.materialCode, 'N/A');
+      const pkgKey = buildPackageMergeKey(dispPkgNo, dispPkgName);
+
+      const resolvedPlShp = resolveActualPlAndShp(
+        item.packingListNo,
+        item.shipment,
+        dispCode,
+        pkgKey,
+        whId,
+        receipt.receiptCode,
+        isReturn
+      );
+      const dispPl = resolvedPlShp.pl;
+      const dispShp = resolvedPlShp.shp;
+
       const dispName = cleanStockDisplayValue(item.materialName, 'Vật tư');
       const dispUnit = cleanStockDisplayValue(item.unit, 'Bộ');
       const dispMaker = cleanStockDisplayValue(item.manufacturer, 'N/A');
@@ -542,7 +662,6 @@ function buildAggregatedRecords(
 
       const plKey = dispPl === 'N/A' ? 'N/A' : dispPl.toUpperCase();
       const shpKey = dispShp === 'N/A' ? 'N/A' : dispShp.toUpperCase();
-      const pkgKey = buildPackageMergeKey(dispPkgNo, dispPkgName);
       const mCodeKey = dispCode === 'N/A' ? 'N/A' : dispCode.toUpperCase();
       const mNameKey = dispName === 'Vật tư' ? 'N/A' : dispName.toUpperCase();
       const key = `${whId}__${plKey}__${shpKey}__${pkgKey}__${mCodeKey}__${mNameKey}`;
@@ -616,12 +735,23 @@ function buildAggregatedRecords(
 
     for (let j = 0; j < items.length; j++) {
       const item = items[j];
-      const dispPl = cleanStockDisplayValue(item.packingListNo, 'N/A');
-      const dispShp = cleanStockDisplayValue(item.shipment, 'N/A');
       const rawPkgNo = cleanStockDisplayValue(item.packageNo, 'N/A');
       const dispPkgNo = rawPkgNo !== 'N/A' ? rawPkgNo : cleanStockDisplayValue(item.batchCode, 'N/A');
       const dispPkgName = cleanStockDisplayValue(item.packageName, '');
       const dispCode = cleanStockDisplayValue(item.materialCode, 'N/A');
+      const pkgKey = buildPackageMergeKey(dispPkgNo, dispPkgName);
+
+      const resolvedPlShp = resolveActualPlAndShp(
+        item.packingListNo,
+        item.shipment,
+        dispCode,
+        pkgKey,
+        whId,
+        receipt.issueCode,
+        false
+      );
+      const dispPl = resolvedPlShp.pl;
+      const dispShp = resolvedPlShp.shp;
       const dispName = cleanStockDisplayValue(item.materialName, 'Vật tư');
       const dispUnit = cleanStockDisplayValue(item.unit, 'Bộ');
       const dispMaker = cleanStockDisplayValue(item.manufacturer, 'N/A');
@@ -631,7 +761,6 @@ function buildAggregatedRecords(
 
       const plKey = dispPl === 'N/A' ? 'N/A' : dispPl.toUpperCase();
       const shpKey = dispShp === 'N/A' ? 'N/A' : dispShp.toUpperCase();
-      const pkgKey = buildPackageMergeKey(dispPkgNo, dispPkgName);
       const mCodeKey = dispCode === 'N/A' ? 'N/A' : dispCode.toUpperCase();
       const mNameKey = dispName === 'Vật tư' ? 'N/A' : dispName.toUpperCase();
       const key = `${whId}__${plKey}__${shpKey}__${pkgKey}__${mCodeKey}__${mNameKey}`;
