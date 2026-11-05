@@ -203,8 +203,8 @@ export const InboundManager: React.FC = () => {
       materialName: mat.name || '',
       unit: mat.unit || 'Ống',
       batchCode: batch,
-      packingListNo: formPackingListNo || '',
-      shipment: formShipment || '',
+      packingListNo: mat.packingListNo || formPackingListNo || '',
+      shipment: mat.shipment || formShipment || '',
       packageNo: batch,
       packageName: batch ? `Kiện ${batch}` : '',
       category: mat.category && mat.category !== 'Chung' ? mat.category : '',
@@ -245,6 +245,8 @@ export const InboundManager: React.FC = () => {
         materialName: mat.name || '',
         unit: mat.unit || existing.unit || 'Ống',
         batchCode: batch,
+        packingListNo: existing.packingListNo || mat.packingListNo || formPackingListNo || '',
+        shipment: existing.shipment || mat.shipment || formShipment || '',
         packageNo: batch || existing.packageNo || '',
         category:
           (mat.category && mat.category !== 'Chung' ? mat.category : '') ||
@@ -522,7 +524,10 @@ export const InboundManager: React.FC = () => {
   };
 
   const removeItemRow = (idx: number) => {
-    setFormItems((prev) => prev.filter((_, i) => i !== idx));
+    setFormItems((prev) => {
+      const next = prev.filter((_, i) => i !== idx);
+      return next.length > 0 ? next : [createBlankInboundItem(0)];
+    });
   };
 
   const updateItemRow = (idx: number, field: keyof InboundItemDetail, val: any) => {
@@ -1290,6 +1295,8 @@ export const InboundManager: React.FC = () => {
         return (
           m.code.toLowerCase().includes(q) ||
           m.name.toLowerCase().includes(q) ||
+          (m.packingListNo && m.packingListNo.toLowerCase().includes(q)) ||
+          (m.shipment && m.shipment.toLowerCase().includes(q)) ||
           (m.category && m.category.toLowerCase().includes(q)) ||
           (m.packageNo && m.packageNo.toLowerCase().includes(q)) ||
           (m.drawingNo && m.drawingNo.toLowerCase().includes(q)) ||
@@ -1297,7 +1304,9 @@ export const InboundManager: React.FC = () => {
           (m.manufacturer && m.manufacturer.toLowerCase().includes(q)) ||
           (qFolded &&
             (foldVietnameseAscii(m.name).includes(qFolded) ||
-              foldVietnameseAscii(m.category).includes(qFolded)))
+              foldVietnameseAscii(m.category).includes(qFolded) ||
+              foldVietnameseAscii(m.packingListNo || '').includes(qFolded) ||
+              foldVietnameseAscii(m.shipment || '').includes(qFolded)))
         );
       }
       return true;
@@ -2207,7 +2216,9 @@ export const InboundManager: React.FC = () => {
                         <th className="p-2 w-28 text-right">Đơn giá (VNĐ)</th>
                         <th className="p-2 w-28 text-right">Thành tiền (VNĐ)</th>
                         <th className="p-2 w-36">Ghi chú</th>
-                        <th className="p-2 w-10 text-center">Xóa</th>
+                        <th className="p-2 w-14 text-center sticky right-0 bg-slate-100 z-10 shadow-[-2px_0_4px_rgba(0,0,0,0.06)] border-l border-slate-200">
+                          Xóa
+                        </th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
@@ -2338,17 +2349,16 @@ export const InboundManager: React.FC = () => {
                                 className="w-full px-2 py-1 bg-white border border-slate-200 rounded outline-none text-xs"
                               />
                             </td>
-                            <td className="p-2 text-center">
-                              {formItems.length > 1 && (
-                                <button
-                                  type="button"
-                                  onClick={() => removeItemRow(realIdx)}
-                                  className="p-1 text-rose-500 hover:bg-rose-50 rounded"
-                                  title="Xóa dòng vật tư này"
-                                >
-                                  <Trash2 className="w-3.5 h-3.5" />
-                                </button>
-                              )}
+                            <td className="p-2 text-center sticky right-0 bg-white/95 backdrop-blur-[2px] z-10 shadow-[-2px_0_4px_rgba(0,0,0,0.06)] border-l border-slate-100">
+                              <button
+                                type="button"
+                                onClick={() => removeItemRow(realIdx)}
+                                className="p-1.5 text-rose-600 bg-rose-50 hover:bg-rose-100 border border-rose-200 hover:border-rose-300 rounded-lg transition inline-flex items-center justify-center shadow-xs"
+                                title={`Xóa dòng vật tư ${realIdx + 1}`}
+                                aria-label={`Xóa dòng vật tư ${realIdx + 1}`}
+                              >
+                                <Trash2 className="w-4 h-4 text-rose-600" />
+                              </button>
                             </td>
                           </tr>
                         ))
@@ -2461,7 +2471,7 @@ export const InboundManager: React.FC = () => {
                     setCatalogSearch(e.target.value);
                     setCatalogPage(1);
                   }}
-                  placeholder="Tìm nhanh theo Mã vật tư, Tên vật tư, Hạng mục, Mã kiện, Bản vẽ, Nhà cung cấp..."
+                  placeholder="Tìm nhanh theo Mã vật tư, Tên vật tư, Packing List, Shipment, Mã kiện, Bản vẽ, Nhà cung cấp..."
                   className="w-full pl-9 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs sm:text-sm outline-none focus:bg-white focus:border-blue-500"
                   autoFocus
                 />
@@ -2494,7 +2504,7 @@ export const InboundManager: React.FC = () => {
                         <th className="p-2.5 w-40">Mã vật tư</th>
                         <th className="p-2.5 min-w-[240px]">Tên vật tư & Quy cách</th>
                         <th className="p-2.5 w-20 text-center">ĐVT</th>
-                        <th className="p-2.5 w-36">Hạng mục</th>
+                        <th className="p-2.5 w-44">Số packing list/Shipment</th>
                         <th className="p-2.5 w-32">Kiện / Lô</th>
                         <th className="p-2.5 w-28 text-right">KL đơn vị (Kg)</th>
                         <th className="p-2.5 w-20 text-center">
@@ -2565,8 +2575,15 @@ export const InboundManager: React.FC = () => {
                               <td className="p-2.5 text-center font-medium text-slate-700">
                                 {mat.unit || 'Ống'}
                               </td>
-                              <td className="p-2.5 text-slate-700">
-                                {mat.category || '-'}
+                              <td className="p-2.5 font-mono text-xs">
+                                <span className="font-semibold text-blue-700 block">
+                                  {mat.packingListNo && mat.packingListNo !== 'N/A'
+                                    ? mat.packingListNo
+                                    : '-'}
+                                </span>
+                                <span className="text-[11px] text-slate-500 block">
+                                  {mat.shipment && mat.shipment !== 'N/A' ? mat.shipment : '-'}
+                                </span>
                               </td>
                               <td className="p-2.5 font-mono text-slate-700">
                                 {mat.packageNo && mat.packageNo !== 'N/A' ? mat.packageNo : '-'}

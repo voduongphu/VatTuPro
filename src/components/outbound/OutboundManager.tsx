@@ -1828,7 +1828,9 @@ export const OutboundManager: React.FC = () => {
                         <th className="p-2 w-20 text-center">ĐVT</th>
                         <th className="p-2 w-32 text-right">Khối lượng (Kg)</th>
                         <th className="p-2 w-44">Ghi chú</th>
-                        <th className="p-2 w-10 text-center">Xóa</th>
+                        <th className="p-2 w-14 text-center sticky right-0 bg-slate-100 z-10 shadow-[-2px_0_4px_rgba(0,0,0,0.06)] border-l border-slate-200">
+                          Xóa
+                        </th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
@@ -1936,14 +1938,15 @@ export const OutboundManager: React.FC = () => {
                                 className="w-full px-2 py-1 bg-white border border-slate-200 rounded outline-none text-xs"
                               />
                             </td>
-                            <td className="p-2 text-center">
+                            <td className="p-2 text-center sticky right-0 bg-white/95 backdrop-blur-[2px] z-10 shadow-[-2px_0_4px_rgba(0,0,0,0.06)] border-l border-slate-100">
                               <button
                                 type="button"
                                 onClick={() => removeItemRow(realIdx)}
-                                className="p-1 text-rose-500 hover:bg-rose-50 rounded"
-                                title="Xóa dòng vật tư này"
+                                className="p-1.5 text-rose-600 bg-rose-50 hover:bg-rose-100 border border-rose-200 hover:border-rose-300 rounded-lg transition inline-flex items-center justify-center shadow-xs"
+                                title={`Xóa dòng vật tư ${realIdx + 1}`}
+                                aria-label={`Xóa dòng vật tư ${realIdx + 1}`}
                               >
-                                <Trash2 className="w-3.5 h-3.5" />
+                                <Trash2 className="w-4 h-4 text-rose-600" />
                               </button>
                             </td>
                           </tr>

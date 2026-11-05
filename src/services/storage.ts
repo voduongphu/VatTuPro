@@ -1484,6 +1484,8 @@ export const StorageService = {
           name: cand.name || cand.code,
           unit: cand.unit || 'Bộ',
           category: cand.category || 'Chung',
+          packingListNo: cand.packingListNo || '',
+          shipment: cand.shipment || '',
           packageNo: cand.packageNo || '',
           drawingNo: cand.drawingNo || '',
           manufacturer: cand.manufacturer || '',
@@ -1519,6 +1521,8 @@ export const StorageService = {
                 curr.category !== 'Khác'
               ? curr.category
               : cand.category || curr.category || 'Chung';
+          const nextPackingListNo = cand.packingListNo || curr.packingListNo || '';
+          const nextShipment = cand.shipment || curr.shipment || '';
           const nextPackageNo = cand.packageNo || curr.packageNo || '';
           const nextDrawingNo = cand.drawingNo || curr.drawingNo || '';
           const nextManufacturer = cand.manufacturer || curr.manufacturer || '';
@@ -1536,6 +1540,8 @@ export const StorageService = {
             nextName !== curr.name ||
             nextUnit !== curr.unit ||
             nextCategory !== curr.category ||
+            nextPackingListNo !== (curr.packingListNo || '') ||
+            nextShipment !== (curr.shipment || '') ||
             nextPackageNo !== (curr.packageNo || '') ||
             nextDrawingNo !== (curr.drawingNo || '') ||
             nextManufacturer !== (curr.manufacturer || '') ||
@@ -1554,6 +1560,8 @@ export const StorageService = {
               name: nextName,
               unit: nextUnit,
               category: nextCategory,
+              packingListNo: nextPackingListNo,
+              shipment: nextShipment,
               packageNo: nextPackageNo,
               drawingNo: nextDrawingNo,
               manufacturer: nextManufacturer,
@@ -1568,6 +1576,8 @@ export const StorageService = {
           }
         } else {
           // Trường hợp Admin vừa chỉnh tay danh mục sau ngày lập phiếu: chỉ điền bổ sung các trường đang trống
+          const nextPackingListNo = curr.packingListNo || cand.packingListNo || '';
+          const nextShipment = curr.shipment || cand.shipment || '';
           const nextPackageNo = curr.packageNo || cand.packageNo || '';
           const nextDrawingNo = curr.drawingNo || cand.drawingNo || '';
           const nextManufacturer = curr.manufacturer || cand.manufacturer || '';
@@ -1577,6 +1587,8 @@ export const StorageService = {
           const nextSpecification = curr.specification || cand.specification || '';
 
           if (
+            nextPackingListNo !== (curr.packingListNo || '') ||
+            nextShipment !== (curr.shipment || '') ||
             nextPackageNo !== (curr.packageNo || '') ||
             nextDrawingNo !== (curr.drawingNo || '') ||
             nextManufacturer !== (curr.manufacturer || '') ||
@@ -1586,6 +1598,8 @@ export const StorageService = {
           ) {
             dedupedActive[existIdx] = {
               ...curr,
+              packingListNo: nextPackingListNo,
+              shipment: nextShipment,
               packageNo: nextPackageNo,
               drawingNo: nextDrawingNo,
               manufacturer: nextManufacturer,

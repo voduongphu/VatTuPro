@@ -1353,6 +1353,8 @@ export interface SyncedMaterialCandidate {
   unit: string;
   category: string;
   hasSpecificCategory: boolean;
+  packingListNo?: string;
+  shipment?: string;
   packageNo: string;
   drawingNo: string;
   manufacturer: string;
@@ -1535,6 +1537,8 @@ export function buildLatestMaterialsFromReceipts(
         const dwgNo = cleanMaterialFieldVal(it.drawingNo);
         const maker = cleanMaterialFieldVal(it.manufacturer) || fallbackMaker;
         const supplier = cleanMaterialFieldVal(it.supplier) || fallbackSupplier;
+        const plNo = cleanMaterialFieldVal(it.packingListNo) || cleanMaterialFieldVal(rcp.contractNo);
+        const shp = cleanMaterialFieldVal(it.shipment);
         const qty = roundQty(it.quantity);
         const weight = Number(it.weightKg) || 0;
         const calcUnitWeight = qty > 0 && weight > 0 ? Math.round((weight / qty) * 100) / 100 : 0;
@@ -1549,6 +1553,8 @@ export function buildLatestMaterialsFromReceipts(
             unit: unit || 'Bộ',
             category: cat || 'Chung',
             hasSpecificCategory: specificCat,
+            packingListNo: plNo,
+            shipment: shp,
             packageNo: pkgNo,
             drawingNo: dwgNo,
             manufacturer: maker,
@@ -1569,6 +1575,8 @@ export function buildLatestMaterialsFromReceipts(
           } else if (cat && !prev.hasSpecificCategory) {
             prev.category = cat;
           }
+          if (plNo) prev.packingListNo = plNo;
+          if (shp) prev.shipment = shp;
           if (pkgNo) prev.packageNo = pkgNo;
           if (dwgNo) prev.drawingNo = dwgNo;
           if (maker) prev.manufacturer = maker;
@@ -1595,6 +1603,8 @@ export function buildLatestMaterialsFromReceipts(
         const unit = cleanMaterialFieldVal(it.unit);
         const cat = cleanMaterialFieldVal(it.category);
         const specificCat = Boolean(cat && !isGenericMaterialCategory(cat));
+        const plNo = cleanMaterialFieldVal(it.packingListNo);
+        const shp = cleanMaterialFieldVal(it.shipment);
         const pkgNo = cleanMaterialFieldVal(it.packageNo);
         const dwgNo = cleanMaterialFieldVal(it.drawingNo);
         const maker = cleanMaterialFieldVal(it.manufacturer);
@@ -1612,6 +1622,8 @@ export function buildLatestMaterialsFromReceipts(
             unit: unit || 'Bộ',
             category: cat || 'Chung',
             hasSpecificCategory: specificCat,
+            packingListNo: plNo && plNo !== 'N/A' ? plNo : undefined,
+            shipment: shp && shp !== 'N/A' ? shp : undefined,
             packageNo: pkgNo,
             drawingNo: dwgNo,
             manufacturer: maker,
@@ -1632,6 +1644,8 @@ export function buildLatestMaterialsFromReceipts(
           } else if (cat && !prev.hasSpecificCategory) {
             prev.category = cat;
           }
+          if (plNo && plNo !== 'N/A') prev.packingListNo = plNo;
+          if (shp && shp !== 'N/A') prev.shipment = shp;
           if (pkgNo) prev.packageNo = pkgNo;
           if (dwgNo) prev.drawingNo = dwgNo;
           if (maker) prev.manufacturer = maker;

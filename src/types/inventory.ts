@@ -39,6 +39,8 @@ export interface MaterialItem {
   name: string; // Tên vật tư thiết bị
   unit: string; // Đơn vị tính (Cái, Bộ, Kiện, Tấn, Mét...)
   category: string; // Hạng mục mặc định (Cơ khí, Kết cấu, Điện, Tự động hóa...)
+  packingListNo?: string; // Số Packing list
+  shipment?: string; // Shipment / Lô vận chuyển
   packageNo?: string; // Package No. / Số kiện (PKG-01/15, BOX-03/08...)
   drawingNo?: string; // Bản vẽ kỹ thuật mặc định (nếu có)
   manufacturer?: string; // Nhà sản xuất (Siemens, Posco, ABB...)
