@@ -331,7 +331,7 @@ export function createSyncBackend(options: SyncBackendOptions = {}): SyncBackend
           store.warehouses = mergedW.list;
         }
         if (Array.isArray(parsed.osd)) {
-          const mergedO = mergeOsdReceiptsAdditive(store.osd || [], parsed.osd, store.tombstones.osd);
+          const mergedO = mergeOsdReceiptsAdditive(store.osd || [], parsed.osd, store.tombstones.osd, 'server');
           store.osd = mergedO.list;
         }
         if (!isSeedSource) {
@@ -1580,7 +1580,7 @@ export function createSyncBackend(options: SyncBackendOptions = {}): SyncBackend
     }
 
     if (Array.isArray(req.body.osd)) {
-      const mergedO = mergeOsdReceiptsAdditive(store.osd || [], req.body.osd, store.tombstones.osd);
+      const mergedO = mergeOsdReceiptsAdditive(store.osd || [], req.body.osd, store.tombstones.osd, 'server');
       if (mergedO.changed) {
         store.osd = mergedO.list;
         anyChanged = true;
@@ -1684,7 +1684,7 @@ export function createSyncBackend(options: SyncBackendOptions = {}): SyncBackend
     }
 
     if (Array.isArray(osd)) {
-      const mergedO = mergeOsdReceiptsAdditive(store.osd || [], osd, store.tombstones.osd);
+      const mergedO = mergeOsdReceiptsAdditive(store.osd || [], osd, store.tombstones.osd, 'server');
       if (mergedO.changed) {
         store.osd = mergedO.list;
         changed = true;

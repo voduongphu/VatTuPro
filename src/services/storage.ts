@@ -29,6 +29,21 @@ import {
   mergeOsdReceiptsAdditive,
   buildLatestMaterialsFromReceipts
 } from '../utils/additiveMerge';
+import { incrementVersionVector } from '../utils/versionVector';
+
+function getLocalActorId(): string {
+  try {
+    if (typeof localStorage !== 'undefined') {
+      const raw = localStorage.getItem('vtp_auth_session_v5');
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed?.user?.username) return parsed.user.username;
+        if (parsed?.session?.deviceId) return parsed.session.deviceId;
+      }
+    }
+  } catch {}
+  return 'local';
+}
 
 const STORAGE_KEYS = {
   USERS: 'vtp_inventory_users_v2',
@@ -2389,7 +2404,12 @@ export const StorageService = {
   addOsdReceipt(rcp: OsdReceipt): void {
     const list = this.getOsdReceipts();
     const now = Date.now();
-    const stamped: OsdReceipt = { ...rcp, updatedAt: now };
+    const actorId = rcp.createdBy || rcp.lastEditedBy || getLocalActorId();
+    const vector =
+      rcp.versionVector && Object.keys(rcp.versionVector).length > 0
+        ? incrementVersionVector(rcp.versionVector, actorId)
+        : { [actorId]: 1 };
+    const stamped: OsdReceipt = { ...rcp, versionVector: vector, updatedAt: now };
     const next = [stamped, ...list];
     this.saveOsdReceipts(next);
     emitLocalMutation('osd', [rcp.osdCode]);
@@ -2400,7 +2420,10 @@ export const StorageService = {
     const idx = list.findIndex((r) => r.id === id || normKey(r.osdCode) === normKey(id));
     if (idx === -1) return false;
     const now = Date.now();
-    list[idx] = { ...updated, updatedAt: now };
+    const actorId = updated.lastEditedBy || getLocalActorId();
+    const currentVector = updated.versionVector || list[idx].versionVector;
+    const nextVector = incrementVersionVector(currentVector, actorId);
+    list[idx] = { ...updated, versionVector: nextVector, updatedAt: now };
     this.saveOsdReceipts(list);
     emitLocalMutation('osd', [updated.osdCode]);
     return true;
@@ -2438,12 +2461,15 @@ export const StorageService = {
     if (idx === -1) return false;
     const curr = list[idx];
     const nowIso = new Date().toISOString();
+    const actorId = resolvedBy || getLocalActorId();
+    const nextVector = incrementVersionVector(curr.versionVector, actorId);
     list[idx] = {
       ...curr,
       status,
       resolutionNotes: resolutionNotes !== undefined ? resolutionNotes : curr.resolutionNotes,
       resolvedAt: status === 'closed' ? (curr.resolvedAt || nowIso) : undefined,
       resolvedBy: status === 'closed' ? (resolvedBy || curr.resolvedBy || 'Quản lý kho') : undefined,
+      versionVector: nextVector,
       updatedAt: Date.now()
     };
     this.saveOsdReceipts(list);
@@ -2451,10 +2477,15 @@ export const StorageService = {
     return true;
   },
 
-  applyRemoteOsdReceipts(receipts: OsdReceipt[]): boolean {
+  applyRemoteOsdReceipts(receipts: OsdReceipt[], actorId?: string): boolean {
     if (!Array.isArray(receipts)) return false;
     const tombstones = this.getTombstones();
-    const merged = mergeOsdReceiptsAdditive(this.getOsdReceipts(), receipts, tombstones.osd);
+    const merged = mergeOsdReceiptsAdditive(
+      this.getOsdReceipts(),
+      receipts,
+      tombstones.osd,
+      actorId || getLocalActorId()
+    );
     if (merged.changed) {
       this.saveOsdReceipts(merged.list);
       return true;

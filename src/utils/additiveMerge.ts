@@ -9,6 +9,11 @@ import type {
   OsdReceipt,
   TombstoneMap
 } from '../types/inventory.ts';
+import {
+  compareVersionVectors,
+  resolveConcurrentOsd,
+  mergeVersionVectors
+} from './versionVector.ts';
 
 export function createEmptyTombstones(): TombstoneMap {
   return {
@@ -2048,9 +2053,11 @@ export function computeOsdDigest(osdList: OsdReceipt[]): string {
 export function mergeOsdReceiptsAdditive(
   existing: OsdReceipt[],
   incoming: OsdReceipt[],
-  tombstones?: Record<string, number>
-): { list: OsdReceipt[]; changed: boolean } {
+  tombstones?: Record<string, number>,
+  actorId?: string
+): { list: OsdReceipt[]; changed: boolean; conflictsResolved: number } {
   let changed = false;
+  let conflictsResolved = 0;
   const result: OsdReceipt[] = [];
   const indexByCode = new Map<string, number>();
   const indexById = new Map<string, number>();
@@ -2112,43 +2119,77 @@ export function mergeOsdReceiptsAdditive(
       const curr = result[existIdx];
       const incTs = Number(inc.updatedAt) || 0;
       const currTs = Number(curr.updatedAt) || 0;
-      if (incTs > currTs) {
+
+      // So sánh quan hệ nhân quả theo Version Vector
+      const comp = compareVersionVectors(curr.versionVector, inc.versionVector);
+
+      if (comp === 'CONCURRENT') {
+        // Cả hai phía chỉnh sửa độc lập đồng thời -> Kích hoạt CRDT/Convergent Semantic Merge
+        const mergedOsd = resolveConcurrentOsd(curr, inc, actorId);
+        result[existIdx] = mergedOsd;
+        changed = true;
+        conflictsResolved++;
+      } else if (comp === 'DOMINATED') {
+        // inc thống trị curr trong quan hệ nhân quả (inc kế thừa và mới hơn curr)
         const finalPdf = inc.pdfAttachment?.dataUrl
           ? inc.pdfAttachment
           : curr.pdfAttachment || inc.pdfAttachment;
+        const mergedVector = mergeVersionVectors(curr.versionVector, inc.versionVector);
         result[existIdx] = {
           ...curr,
           ...inc,
           pdfAttachment: finalPdf,
-          updatedAt: incTs
+          versionVector: mergedVector,
+          updatedAt: Math.max(incTs, currTs)
         };
         changed = true;
-      } else if (incTs === currTs) {
-        const finalPdf = inc.pdfAttachment?.dataUrl
-          ? inc.pdfAttachment
-          : curr.pdfAttachment || inc.pdfAttachment;
-        const diffStatus = inc.status !== curr.status;
-        const diffQty = inc.totalOsdQuantity !== curr.totalOsdQuantity;
-        const diffItems = (inc.items?.length || 0) !== (curr.items?.length || 0);
-        const diffPdf =
-          (!curr.pdfAttachment && Boolean(inc.pdfAttachment)) ||
-          (Boolean(curr.pdfAttachment) && !curr.pdfAttachment?.dataUrl && Boolean(inc.pdfAttachment?.dataUrl));
-        if (diffStatus || diffQty || diffItems || diffPdf) {
+      } else if (comp === 'DOMINATES') {
+        // curr thống trị inc trong quan hệ nhân quả (curr mới hơn)
+        // Chỉ kế thừa pdfAttachment nếu curr chưa có bản base64 mà inc lại có
+        if (!curr.pdfAttachment?.dataUrl && inc.pdfAttachment?.dataUrl) {
           result[existIdx] = {
             ...curr,
-            ...inc,
-            pdfAttachment: finalPdf,
-            updatedAt: currTs
+            pdfAttachment: inc.pdfAttachment,
+            versionVector: mergeVersionVectors(curr.versionVector, inc.versionVector)
           };
           changed = true;
         }
       } else {
-        if (!curr.pdfAttachment?.dataUrl && inc.pdfAttachment?.dataUrl) {
+        // comp === 'EQUAL' (cả hai có cùng vector clock hoặc chưa gán vector clock)
+        if (incTs > currTs) {
+          const finalPdf = inc.pdfAttachment?.dataUrl
+            ? inc.pdfAttachment
+            : curr.pdfAttachment || inc.pdfAttachment;
           result[existIdx] = {
             ...curr,
-            pdfAttachment: inc.pdfAttachment
+            ...inc,
+            pdfAttachment: finalPdf,
+            versionVector: mergeVersionVectors(curr.versionVector, inc.versionVector),
+            updatedAt: incTs
           };
           changed = true;
+        } else if (incTs === currTs) {
+          const diffStatus = inc.status !== curr.status;
+          const diffQty = inc.totalOsdQuantity !== curr.totalOsdQuantity;
+          const diffItems = (inc.items?.length || 0) !== (curr.items?.length || 0);
+          const diffPdf =
+            (!curr.pdfAttachment && Boolean(inc.pdfAttachment)) ||
+            (Boolean(curr.pdfAttachment) && !curr.pdfAttachment?.dataUrl && Boolean(inc.pdfAttachment?.dataUrl));
+          if (diffStatus || diffQty || diffItems || diffPdf) {
+            // Có sự khác biệt dữ liệu trong cùng một mốc thời gian -> Hòa giải hội tụ tự động
+            const mergedOsd = resolveConcurrentOsd(curr, inc, actorId);
+            result[existIdx] = mergedOsd;
+            changed = true;
+            conflictsResolved++;
+          }
+        } else {
+          if (!curr.pdfAttachment?.dataUrl && inc.pdfAttachment?.dataUrl) {
+            result[existIdx] = {
+              ...curr,
+              pdfAttachment: inc.pdfAttachment
+            };
+            changed = true;
+          }
         }
       }
     }
@@ -2160,5 +2201,5 @@ export function mergeOsdReceiptsAdditive(
     return (b.osdCode || '').localeCompare(a.osdCode || '');
   });
 
-  return { list: result, changed };
+  return { list: result, changed, conflictsResolved };
 }

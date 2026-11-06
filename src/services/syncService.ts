@@ -23,6 +23,23 @@ import {
   computeOutboundReceiptDigest,
   canonicalUserSessionKey
 } from '../utils/additiveMerge';
+import {
+  compareVersionVectors,
+  mergeVersionVectors,
+  incrementVersionVector,
+  resolveConcurrentOsd,
+  type VersionVector,
+  type VectorComparison
+} from '../utils/versionVector';
+
+export {
+  compareVersionVectors,
+  mergeVersionVectors,
+  incrementVersionVector,
+  resolveConcurrentOsd,
+  type VersionVector,
+  type VectorComparison
+};
 
 interface ManifestReceiptEntry {
   code: string;
@@ -1433,7 +1450,7 @@ function setupBroadcastChannel(): void {
         }
       } else if (data.type === 'sync:osd_mutation') {
         if (Array.isArray(data.osd)) {
-          StorageService.applyRemoteOsdReceipts(data.osd);
+          StorageService.applyRemoteOsdReceipts(data.osd, SyncService.getActorId());
           notifyOsdListeners(StorageService.getOsdReceipts());
         }
       } else if (data.type === 'auth:session_force_logout') {
@@ -1529,7 +1546,7 @@ function connectWebSocket(force = false): void {
 
         if (msg.type === 'sync:osd_updated') {
           if (Array.isArray(msg.osd)) {
-            StorageService.applyRemoteOsdReceipts(msg.osd);
+            StorageService.applyRemoteOsdReceipts(msg.osd, SyncService.getActorId());
             notifyOsdListeners(StorageService.getOsdReceipts());
           }
           return;
@@ -1646,7 +1663,10 @@ export const SyncService = {
         void reconcileInternal();
       },
       onRemoteOsdChange: (remoteOsd) => {
-        const currentList = remoteOsd || StorageService.getOsdReceipts();
+        if (Array.isArray(remoteOsd)) {
+          StorageService.applyRemoteOsdReceipts(remoteOsd, SyncService.getActorId());
+        }
+        const currentList = StorageService.getOsdReceipts();
         notifyOsdListeners(currentList);
         // Bắc cầu: Đẩy dữ liệu OSD từ Cloud Firestore sang máy chủ /api/sync/osd để các thiết bị khác nhận được tức thì
         void fetchJson<{ ok: boolean; osdRevision: number }>('/api/sync/osd', {
@@ -1975,7 +1995,7 @@ export const SyncService = {
         });
 
         if (res.ok && Array.isArray(res.osd)) {
-          StorageService.applyRemoteOsdReceipts(res.osd);
+          StorageService.applyRemoteOsdReceipts(res.osd, this.getActorId());
           notifyOsdListeners(res.osd);
           serverOk = true;
           lastKnownOsdRev = Math.max(lastKnownOsdRev, Number(res.osdRevision) || 0);
@@ -2046,7 +2066,7 @@ export const SyncService = {
         })
       }).then((res) => {
         if (res.ok && Array.isArray(res.osd)) {
-          StorageService.applyRemoteOsdReceipts(res.osd);
+          StorageService.applyRemoteOsdReceipts(res.osd, this.getActorId());
           notifyOsdListeners(res.osd);
           lastKnownOsdRev = Math.max(lastKnownOsdRev, Number(res.osdRevision) || 0);
         }
@@ -3233,6 +3253,27 @@ export const SyncService = {
     return () => {
       osdUpdateListeners.delete(listener);
     };
+  },
+
+  getActorId(): string {
+    const current = getStoredUnifiedSession();
+    return current?.user?.username || current?.session?.deviceId || CLIENT_ID;
+  },
+
+  compareVersionVectors(v1?: VersionVector, v2?: VersionVector): VectorComparison {
+    return compareVersionVectors(v1, v2);
+  },
+
+  mergeVersionVectors(v1?: VersionVector, v2?: VersionVector): VersionVector {
+    return mergeVersionVectors(v1, v2);
+  },
+
+  incrementVersionVector(v: VersionVector | undefined, actorId?: string): VersionVector {
+    return incrementVersionVector(v, actorId || this.getActorId());
+  },
+
+  resolveConcurrentOsd(curr: OsdReceipt, inc: OsdReceipt, actorId?: string): OsdReceipt {
+    return resolveConcurrentOsd(curr, inc, actorId || this.getActorId());
   },
 
   stop(): void {

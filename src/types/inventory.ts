@@ -234,6 +234,7 @@ export interface OsdReceipt {
   updatedAt?: number;
   lastEditedBy?: string;
   lastEditedAt?: string;
+  versionVector?: Record<string, number>; // Vector phiên bản cho thuật toán Version-Vector Conflict Resolution
 }
 
 // Tổng hợp tồn kho theo các chiều phân tích
