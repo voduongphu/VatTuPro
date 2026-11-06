@@ -1026,6 +1026,7 @@ export const StorageService = {
       this.syncMaterialsFromReceipts({ emitMutation: false, notify: false });
       inventoryVersion++;
       isHydrated = true;
+      notifySubscribers();
     })();
 
     return initPromise;
@@ -2458,6 +2459,25 @@ export const StorageService = {
       return true;
     }
     return false;
+  },
+
+  cacheOsdPdfAttachment(id: string, dataUrl: string): boolean {
+    if (!id || !dataUrl) return false;
+    const list = [...this.getOsdReceipts()];
+    const idx = list.findIndex((r) => r.id === id || normKey(r.osdCode) === normKey(id));
+    if (idx === -1) return false;
+    const curr = list[idx];
+    if (!curr.pdfAttachment) return false;
+    if (curr.pdfAttachment.dataUrl === dataUrl) return false;
+    list[idx] = {
+      ...curr,
+      pdfAttachment: {
+        ...curr.pdfAttachment,
+        dataUrl
+      }
+    };
+    this.saveOsdReceipts(list);
+    return true;
   },
 
   // Reset về dữ liệu gốc (cả IndexedDB và localStorage)

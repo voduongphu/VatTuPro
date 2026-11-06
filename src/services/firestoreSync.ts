@@ -308,7 +308,8 @@ function isCloudAdmin(fbUser: FirebaseUser | null): boolean {
 function computeCloudSharedMetaDigest(
   users: User[],
   warehouses: Warehouse[],
-  tombstones: TombstoneMap
+  tombstones: TombstoneMap,
+  osdListInput?: OsdReceipt[]
 ): string {
   let sum1 = 0;
   let sum2 = 0;
@@ -336,7 +337,7 @@ function computeCloudSharedMetaDigest(
     xor1 = (xor1 ^ h2) >>> 0;
   }
 
-  const osdList = StorageService.getOsdReceipts();
+  const osdList = Array.isArray(osdListInput) ? osdListInput : StorageService.getOsdReceipts();
   for (let i = 0; i < osdList.length; i++) {
     const o = osdList[i];
     const [h1, h2] = hash32Pair(
@@ -789,10 +790,7 @@ async function getOsdPdfAttachment(osdId: string): Promise<string | null> {
 
         const fullDataUrl = chunks.join('');
         if (fullDataUrl && fullDataUrl.startsWith('data:')) {
-          if (matched && matched.pdfAttachment) {
-            matched.pdfAttachment.dataUrl = fullDataUrl;
-            StorageService.updateOsdReceipt(matched.id, { ...matched });
-          }
+          StorageService.cacheOsdPdfAttachment(osdId, fullDataUrl);
           return fullDataUrl;
         }
       }
@@ -807,10 +805,7 @@ async function getOsdPdfAttachment(osdId: string): Promise<string | null> {
       const json = await res.json();
       const url = json?.attachment?.dataUrl;
       if (url && typeof url === 'string') {
-        if (matched && matched.pdfAttachment) {
-          matched.pdfAttachment.dataUrl = url;
-          StorageService.updateOsdReceipt(matched.id, { ...matched });
-        }
+        StorageService.cacheOsdPdfAttachment(osdId, url);
         return url;
       }
     }
@@ -1030,7 +1025,7 @@ async function ensureWorkspaceReady(fbUser: FirebaseUser): Promise<boolean> {
         materialsChunkCount: 0,
         materialsDigest: cleanStr(computeMaterialsDigest([]), 128, '0:0:0:0'),
         metaDigest: cleanStr(
-          computeCloudSharedMetaDigest([], [], createEmptyTombstones()),
+          computeCloudSharedMetaDigest([], [], createEmptyTombstones(), []),
           128,
           '0.0.0:0:0:0'
         ),
@@ -2685,7 +2680,7 @@ export const FirestoreSyncService = {
           {
             workspaceId: WORKSPACE_ID,
             name: WORKSPACE_NAME,
-            ownerUid: fbUser.uid,
+            ownerUid: cleanStr(wsData.ownerUid || fbUser.uid, 128),
             status: 'active',
             allowSelfJoin: true
           },
@@ -3805,7 +3800,7 @@ export const FirestoreSyncService = {
           {
             workspaceId: WORKSPACE_ID,
             name: WORKSPACE_NAME,
-            ownerUid: fbUser.uid,
+            ownerUid: cleanStr(wsData.ownerUid || fbUser.uid, 128),
             status: 'active',
             allowSelfJoin: true
           },

@@ -74,6 +74,16 @@ export interface LoginServerResult {
   replacedSession?: ActiveUserSession;
 }
 
+export interface SyncResult {
+  success: boolean;
+  message: string;
+  isOffline?: boolean;
+  cloudSynced?: boolean;
+  localSynced?: boolean;
+  osdCount?: number;
+  error?: string;
+}
+
 const CLIENT_ID = `cli-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 const DEVICE_ID_STORAGE_KEY = 'vtp_device_id_v1';
 const UNIFIED_SESSION_STORAGE_KEY = 'vtp_auth_session_v5';
@@ -118,6 +128,21 @@ let pendingInvalidation: SessionInvalidationInfo | null = null;
 
 const syncStateListeners = new Set<(syncing: boolean) => void>();
 const sessionInvalidatedListeners = new Set<(info: SessionInvalidationInfo) => void>();
+const networkStatusListeners = new Set<(online: boolean) => void>();
+let cachedNetworkOnline = typeof navigator !== 'undefined' ? navigator.onLine : true;
+
+function updateNetworkStatus(online: boolean): void {
+  if (cachedNetworkOnline !== online) {
+    cachedNetworkOnline = online;
+    for (const listener of networkStatusListeners) {
+      try {
+        listener(online);
+      } catch (err) {
+        console.warn('Network status listener error:', err);
+      }
+    }
+  }
+}
 
 function getClientSessionIssuedAtMs(sess?: ActiveUserSession | null): number {
   if (!sess) return 0;
@@ -1081,8 +1106,11 @@ async function reconcileLocalServerOnly(): Promise<boolean> {
     warehouses: manifest.warehouses,
     tombstones: manifest.tombstones
   });
-  if (Array.isArray(manifest.osd) && manifest.osd.length > 0) {
-    StorageService.applyRemoteOsdReceipts(manifest.osd);
+  if (Array.isArray(manifest.osd)) {
+    const osdChanged = StorageService.applyRemoteOsdReceipts(manifest.osd);
+    if (osdChanged && (FirestoreSyncService.isCloudConnected() || FirestoreSyncService.hasAuthenticatedCloudUser())) {
+      void FirestoreSyncService.pushOsdRealtimeToCloud().catch(() => {});
+    }
   }
 
   // Fast-path: Nếu revision máy chủ không đổi và cục bộ không phát sinh thay đổi mới -> bỏ qua toàn bộ vòng lặp băm O(N)
@@ -1099,7 +1127,7 @@ async function reconcileLocalServerOnly(): Promise<boolean> {
   const localUsers = StorageService.getUsers();
   const localWhs = StorageService.getWarehouses();
   const localTombstones = StorageService.getTombstones();
-  const localMetaDigest = computeMetaDigest(localUsers, localWhs, localTombstones);
+  const localMetaDigest = computeMetaDigest(localUsers, localWhs, localTombstones, StorageService.getOsdReceipts());
 
   if (metaDirty || localMetaDigest !== manifest.metaDigest) {
     const metaRes = await fetchJson<{
@@ -1255,20 +1283,33 @@ async function reconcileLocalServerOnly(): Promise<boolean> {
   return pulledChanges;
 }
 
-async function reconcileInternal(): Promise<void> {
+async function reconcileInternal(): Promise<{ cloudSuccess: boolean; localSuccess: boolean; error?: string }> {
   // Không bao giờ chạy đồng bộ dữ liệu nặng tranh chấp băng thông khi người dùng đang thực hiện đăng nhập
   if (authTransitionCount > 0) {
     pendingReconcile = true;
-    return;
+    return { cloudSuccess: false, localSuccess: false };
   }
 
   if (isReconciling) {
     pendingReconcile = true;
-    return;
+    return { cloudSuccess: false, localSuccess: false };
+  }
+
+  if (typeof navigator !== 'undefined' && !navigator.onLine) {
+    updateNetworkStatus(false);
+    return {
+      cloudSuccess: false,
+      localSuccess: false,
+      error: 'Thiết bị đang ngoại tuyến (Mất kết nối mạng)'
+    };
   }
 
   isReconciling = true;
   notifySyncState(true);
+
+  let cloudSuccess = false;
+  let localSuccess = false;
+  let syncError: string | undefined;
 
   try {
     // 1. Ưu tiên đồng bộ 2 chiều thời gian thực qua Cloud Firestore cho mọi tài khoản Google đã xác thực (Admin & Nhân sự)
@@ -1276,12 +1317,26 @@ async function reconcileInternal(): Promise<void> {
       authTransitionCount === 0 &&
       (FirestoreSyncService.isCloudConnected() || FirestoreSyncService.hasAuthenticatedCloudUser())
     ) {
-      await FirestoreSyncService.reconcileWithCloudDetailed();
+      const cloudRes = await FirestoreSyncService.reconcileWithCloudDetailed();
+      cloudSuccess = cloudRes.ok;
+      if (cloudRes.ok) {
+        updateNetworkStatus(true);
+      }
+      // Bắc cầu đồng bộ OSD và Meta xuống máy chủ cục bộ /api/sync để thiết bị khác dùng tài khoản nội bộ cũng nhận được
+      try {
+        await reconcileLocalServerOnly();
+        localSuccess = true;
+      } catch {
+        // bỏ qua nếu máy chủ cục bộ không khả dụng
+      }
     } else {
       // 2. Fallback đồng bộ máy chủ cục bộ /api/sync khi chưa kết nối Google Cloud
       try {
         await reconcileLocalServerOnly();
+        localSuccess = true;
+        updateNetworkStatus(true);
       } catch (localErr) {
+        syncError = localErr instanceof Error ? localErr.message : String(localErr);
         if (!FirestoreSyncService.isCloudConnected()) {
           console.warn('Local server sync unavailable:', localErr);
         }
@@ -1290,6 +1345,7 @@ async function reconcileInternal(): Promise<void> {
 
     await StorageService.flush();
   } catch (err) {
+    syncError = err instanceof Error ? err.message : String(err);
     console.warn('Background sync skipped or deferred:', err);
   } finally {
     isReconciling = false;
@@ -1304,6 +1360,8 @@ async function reconcileInternal(): Promise<void> {
       }
     }
   }
+
+  return { cloudSuccess, localSuccess, error: syncError };
 }
 
 function schedulePush(delayMs = 150): void {
@@ -1646,7 +1704,13 @@ export const SyncService = {
 
       window.addEventListener('focus', wakeCheck);
       window.addEventListener('pageshow', wakeCheck);
-      window.addEventListener('online', wakeCheck);
+      window.addEventListener('online', () => {
+        updateNetworkStatus(true);
+        wakeCheck();
+      });
+      window.addEventListener('offline', () => {
+        updateNetworkStatus(false);
+      });
       window.addEventListener('storage', (ev) => {
         if (ev.key === STATIC_SESSIONS_STORAGE_KEY) {
           void verifySessionHeartbeat();
@@ -1687,6 +1751,48 @@ export const SyncService = {
     }
   },
 
+  isOnline(): boolean {
+    if (typeof navigator !== 'undefined') {
+      return Boolean(navigator.onLine);
+    }
+    return true;
+  },
+
+  async checkNetworkOnline(): Promise<boolean> {
+    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+      updateNetworkStatus(false);
+      return false;
+    }
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 2500);
+      const res = await fetch('/api/sync/manifest', {
+        method: 'GET',
+        cache: 'no-store',
+        signal: controller.signal
+      });
+      clearTimeout(timer);
+      const ok = res.ok || res.status === 401 || res.status === 403;
+      updateNetworkStatus(ok);
+      return ok;
+    } catch {
+      if (FirestoreSyncService.isCloudConnected()) {
+        updateNetworkStatus(true);
+        return true;
+      }
+      updateNetworkStatus(false);
+      return false;
+    }
+  },
+
+  subscribeNetworkStatus(listener: (online: boolean) => void): () => void {
+    networkStatusListeners.add(listener);
+    listener(this.isOnline());
+    return () => {
+      networkStatusListeners.delete(listener);
+    };
+  },
+
   async initialSync(timeoutMs = 4500): Promise<void> {
     await Promise.race([
       Promise.all([verifySessionHeartbeat(true), reconcileInternal()]),
@@ -1694,8 +1800,110 @@ export const SyncService = {
     ]);
   },
 
-  async syncNow(): Promise<void> {
-    await Promise.all([verifySessionHeartbeat(true), reconcileInternal()]);
+  async syncNow(): Promise<SyncResult> {
+    const online = this.isOnline();
+    if (!online) {
+      return {
+        success: false,
+        isOffline: true,
+        message: 'Thiết bị đang ngắt kết nối mạng. Dữ liệu biên bản OSD đã được bảo toàn trong bộ nhớ máy và sẽ tự động đồng bộ ngay khi có mạng trở lại.',
+        osdCount: StorageService.getOsdReceipts().length
+      };
+    }
+
+    try {
+      const [, res] = await Promise.all([
+        verifySessionHeartbeat(true),
+        reconcileInternal()
+      ]);
+
+      const osdCount = StorageService.getOsdReceipts().length;
+      if (res.cloudSuccess || res.localSuccess) {
+        return {
+          success: true,
+          message: FirestoreSyncService.isCloudConnected()
+            ? `Đã đồng bộ OSD thành công với Cloud Firestore (${osdCount} biên bản).`
+            : `Đã đồng bộ OSD thành công với máy chủ nội bộ (${osdCount} biên bản).`,
+          cloudSynced: res.cloudSuccess,
+          localSynced: res.localSuccess,
+          osdCount
+        };
+      } else if (res.error) {
+        return {
+          success: false,
+          error: res.error,
+          message: `Đồng bộ OSD bị gián đoạn: ${res.error}. Dữ liệu đã được lưu an toàn tại máy này.`,
+          osdCount
+        };
+      } else {
+        return {
+          success: true,
+          message: `Đã kiểm tra đồng bộ dữ liệu OSD (${osdCount} biên bản).`,
+          cloudSynced: res.cloudSuccess,
+          localSynced: res.localSuccess,
+          osdCount
+        };
+      }
+    } catch (err: any) {
+      const errMsg = err?.message || 'Lỗi không xác định khi đồng bộ';
+      return {
+        success: false,
+        error: errMsg,
+        message: `Đồng bộ OSD bị gián đoạn: ${errMsg}. Dữ liệu OSD vẫn an toàn trên máy cục bộ.`,
+        osdCount: StorageService.getOsdReceipts().length
+      };
+    }
+  },
+
+  async syncOsd(): Promise<SyncResult> {
+    if (!this.isOnline()) {
+      return {
+        success: false,
+        isOffline: true,
+        message: 'Thiết bị đang ngoại tuyến. Dữ liệu OSD đã được lưu cục bộ an toàn và sẽ tự động đẩy lên khi có kết nối.',
+        osdCount: StorageService.getOsdReceipts().length
+      };
+    }
+
+    try {
+      let cloudOk = false;
+      if (FirestoreSyncService.isCloudConnected() || FirestoreSyncService.hasAuthenticatedCloudUser()) {
+        cloudOk = await FirestoreSyncService.pushOsdRealtimeToCloud();
+      }
+      let localOk = false;
+      try {
+        await reconcileLocalServerOnly();
+        localOk = true;
+      } catch {
+        // ignore
+      }
+
+      await StorageService.flush();
+      const osdCount = StorageService.getOsdReceipts().length;
+
+      if (cloudOk || localOk) {
+        return {
+          success: true,
+          message: `Đồng bộ biên bản OSD thành công (${osdCount} biên bản)!`,
+          cloudSynced: cloudOk,
+          localSynced: localOk,
+          osdCount
+        };
+      } else {
+        return {
+          success: false,
+          message: 'Không thể kết nối đến máy chủ hoặc Đám mây để đồng bộ OSD. Dữ liệu đã được lưu trữ an toàn trên máy này.',
+          osdCount
+        };
+      }
+    } catch (err: any) {
+      return {
+        success: false,
+        error: err?.message || String(err),
+        message: `Đồng bộ OSD bị gián đoạn: ${err?.message || 'Lỗi kết nối mạng'}. Dữ liệu đã lưu cục bộ.`,
+        osdCount: StorageService.getOsdReceipts().length
+      };
+    }
   },
 
   getCloudState(): CloudSyncSnapshotState {

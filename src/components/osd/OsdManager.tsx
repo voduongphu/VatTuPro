@@ -11,6 +11,7 @@ import {
 } from '../../types/inventory';
 import { StorageService } from '../../services/storage';
 import { FirestoreSyncService } from '../../services/firestoreSync';
+import { SyncService } from '../../services/syncService';
 import { exportToExcel } from '../../services/excelService';
 import { generateNextOsdVoucherCode, roundQty } from '../../utils/additiveMerge';
 import { PaginationBar } from '../common/PaginationBar';
@@ -39,7 +40,10 @@ import {
   PackageOpen,
   Calendar,
   ExternalLink,
-  Loader2
+  Loader2,
+  Wifi,
+  WifiOff,
+  RefreshCw
 } from 'lucide-react';
 
 export const OsdManager: React.FC = () => {
@@ -69,6 +73,7 @@ export const OsdManager: React.FC = () => {
   const [osdToDelete, setOsdToDelete] = useState<OsdReceipt | null>(null);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
   const [loadingPdfId, setLoadingPdfId] = useState<string | null>(null);
+  const [isSyncing, setIsSyncing] = useState(false);
 
   const handleOpenPdf = async (pdf?: OsdPdfAttachment, osdId?: string) => {
     if (!pdf) return;
@@ -110,6 +115,13 @@ export const OsdManager: React.FC = () => {
   const [formPdf, setFormPdf] = useState<OsdPdfAttachment | undefined>(undefined);
   const [formItems, setFormItems] = useState<OsdItemDetail[]>([]);
   const [formError, setFormError] = useState('');
+  const [isOffline, setIsOffline] = useState(!SyncService.isOnline());
+  const [syncFeedback, setSyncFeedback] = useState<{
+    type: 'warning' | 'error' | 'success';
+    message: string;
+    interrupted?: boolean;
+    timestamp?: number;
+  } | null>(null);
 
   const showToast = (message: string, type: 'success' | 'error' = 'success') => {
     setToast({ message, type });
@@ -122,9 +134,97 @@ export const OsdManager: React.FC = () => {
     setWarehouses(StorageService.getWarehouses());
   };
 
+  const handleSyncNow = async () => {
+    setIsSyncing(true);
+    try {
+      const isOnline = await SyncService.checkNetworkOnline();
+      setIsOffline(!isOnline);
+      if (!isOnline) {
+        const msg = 'Thiết bị đang ngắt kết nối mạng. Toàn bộ dữ liệu OSD đã được bảo toàn an toàn trên máy này và sẽ tự động đồng bộ khi có kết nối trở lại.';
+        setSyncFeedback({ type: 'warning', message: msg, interrupted: true, timestamp: Date.now() });
+        showToast(msg, 'error');
+        return;
+      }
+
+      const res = await SyncService.syncNow();
+      loadData();
+      if (res.success) {
+        setSyncFeedback({ type: 'success', message: res.message, timestamp: Date.now() });
+        showToast(res.message, 'success');
+      } else if (res.isOffline) {
+        setIsOffline(true);
+        setSyncFeedback({ type: 'warning', message: res.message, interrupted: true, timestamp: Date.now() });
+        showToast(res.message, 'error');
+      } else {
+        setSyncFeedback({ type: 'error', message: res.message, interrupted: true, timestamp: Date.now() });
+        showToast(res.message, 'error');
+      }
+    } catch (err: any) {
+      const errMsg = `Đồng bộ OSD bị gián đoạn: ${err?.message || 'Lỗi mạng'}. Dữ liệu trên máy vẫn an toàn.`;
+      setSyncFeedback({ type: 'error', message: errMsg, interrupted: true, timestamp: Date.now() });
+      showToast(errMsg, 'error');
+    } finally {
+      setIsSyncing(false);
+    }
+  };
+
   useEffect(() => {
+    // 1. Nạp từ IndexedDB nếu chưa hydrate
+    void StorageService.init().then(() => {
+      loadData();
+    });
     loadData();
-    return StorageService.subscribe(loadData);
+
+    // 2. Lắng nghe thay đổi StorageService cục bộ
+    const unsubStorage = StorageService.subscribe(loadData);
+
+    // 3. Lắng nghe trạng thái đám mây Cloud Firestore
+    const unsubCloud = FirestoreSyncService.subscribeState(() => {
+      loadData();
+    });
+
+    // 4. Lắng nghe trạng thái mạng trực tuyến / ngoại tuyến
+    const unsubNetwork = SyncService.subscribeNetworkStatus((online) => {
+      setIsOffline(!online);
+      if (online) {
+        // Tự động kiểm tra đồng bộ khi vừa có mạng lại
+        void SyncService.syncNow().then((res) => {
+          loadData();
+          if (res.success) {
+            setSyncFeedback({ type: 'success', message: res.message, timestamp: Date.now() });
+          }
+        });
+      } else {
+        setSyncFeedback({
+          type: 'warning',
+          message: 'Thiết bị đang ngắt kết nối mạng. Dữ liệu biên bản OSD được lưu an toàn tại máy và sẽ tự động đồng bộ khi có mạng.',
+          interrupted: true,
+          timestamp: Date.now()
+        });
+      }
+    });
+
+    // 5. Lắng nghe nhịp đồng bộ của SyncService
+    const unsubSync = SyncService.subscribeSyncState((syncing) => {
+      setIsSyncing(syncing);
+      if (!syncing) {
+        loadData();
+      }
+    });
+
+    // 6. Chủ động kéo dữ liệu OSD mới nhất ngay khi mở trang
+    void SyncService.syncNow().then((res) => {
+      if (!res.success && res.error) {
+        setSyncFeedback({ type: 'error', message: res.message, interrupted: true, timestamp: Date.now() });
+      }
+    });
+
+    return () => {
+      unsubStorage();
+      unsubCloud();
+      unsubNetwork();
+      unsubSync();
+    };
   }, []);
 
   // Filtered OSD list
@@ -233,10 +333,23 @@ export const OsdManager: React.FC = () => {
       currentUser?.fullName || currentUser?.username
     );
     if (success) {
-      showToast(
-        `Đã chuyển trạng thái biên bản thành "${targetStatus === 'open' ? 'Mở' : 'Đóng'}"!`
-      );
       loadData();
+      if (!SyncService.isOnline()) {
+        showToast(
+          `Đã chuyển trạng thái sang "${targetStatus === 'open' ? 'Mở' : 'Đóng'}" (Lưu cục bộ, sẽ tự đồng bộ khi có mạng)`,
+          'success'
+        );
+      } else {
+        showToast(
+          `Đã chuyển trạng thái biên bản thành "${targetStatus === 'open' ? 'Mở' : 'Đóng'}"!`
+        );
+        void SyncService.syncNow().then((res) => {
+          loadData();
+          if (!res.success && res.error) {
+            setSyncFeedback({ type: 'warning', message: res.message, interrupted: true, timestamp: Date.now() });
+          }
+        });
+      }
     }
   };
 
@@ -478,7 +591,17 @@ export const OsdManager: React.FC = () => {
       if (formPdf?.dataUrl && formPdf.dataUrl.length > 50) {
         void FirestoreSyncService.pushSingleOsdAttachment(editingOsd.id, formPdf).catch(() => {});
       }
-      showToast(`Đã cập nhật biên bản OSD "${trimmedCode}" thành công!`);
+      if (!SyncService.isOnline()) {
+        showToast(`Đã cập nhật OSD "${trimmedCode}" (Lưu cục bộ an toàn, sẽ tự đồng bộ khi có Internet)`, 'success');
+      } else {
+        showToast(`Đã cập nhật biên bản OSD "${trimmedCode}" thành công!`);
+        void SyncService.syncNow().then((res) => {
+          loadData();
+          if (!res.success && res.error) {
+            setSyncFeedback({ type: 'warning', message: res.message, interrupted: true, timestamp: Date.now() });
+          }
+        });
+      }
     } else {
       const newOsd: OsdReceipt = {
         id: `osd-${Date.now()}`,
@@ -508,7 +631,17 @@ export const OsdManager: React.FC = () => {
       if (formPdf?.dataUrl && formPdf.dataUrl.length > 50) {
         void FirestoreSyncService.pushSingleOsdAttachment(newOsd.id, formPdf).catch(() => {});
       }
-      showToast(`Đã lập biên bản OSD "${trimmedCode}" thành công!`);
+      if (!SyncService.isOnline()) {
+        showToast(`Đã lập biên bản OSD "${trimmedCode}" (Lưu cục bộ an toàn, sẽ tự đồng bộ khi có Internet)`, 'success');
+      } else {
+        showToast(`Đã lập biên bản OSD "${trimmedCode}" thành công!`);
+        void SyncService.syncNow().then((res) => {
+          loadData();
+          if (!res.success && res.error) {
+            setSyncFeedback({ type: 'warning', message: res.message, interrupted: true, timestamp: Date.now() });
+          }
+        });
+      }
     }
 
     setIsModalOpen(false);
@@ -518,10 +651,21 @@ export const OsdManager: React.FC = () => {
   // Delete OSD
   const confirmDelete = () => {
     if (!osdToDelete) return;
+    const code = osdToDelete.osdCode;
     StorageService.deleteOsdReceipt(osdToDelete.id);
-    showToast(`Đã xóa biên bản OSD "${osdToDelete.osdCode}"`);
     setOsdToDelete(null);
     loadData();
+    if (!SyncService.isOnline()) {
+      showToast(`Đã xóa biên bản OSD "${code}" (Lưu cục bộ, sẽ tự đồng bộ khi có mạng)`);
+    } else {
+      showToast(`Đã xóa biên bản OSD "${code}"`);
+      void SyncService.syncNow().then((res) => {
+        loadData();
+        if (!res.success && res.error) {
+          setSyncFeedback({ type: 'warning', message: res.message, interrupted: true, timestamp: Date.now() });
+        }
+      });
+    }
   };
 
   // Export OSD to Excel
@@ -619,6 +763,30 @@ export const OsdManager: React.FC = () => {
           </button>
 
           <button
+            onClick={handleSyncNow}
+            disabled={isSyncing}
+            className={`flex items-center justify-center gap-1.5 px-3.5 py-2.5 rounded-xl text-xs font-semibold transition active:scale-95 min-h-[42px] border ${
+              isOffline
+                ? 'bg-amber-50 text-amber-800 border-amber-300 hover:bg-amber-100'
+                : isSyncing
+                  ? 'bg-blue-50 text-blue-700 border-blue-200 cursor-wait'
+                  : 'bg-white text-slate-700 hover:bg-slate-50 border-slate-300 shadow-xs'
+            }`}
+            title="Đồng bộ dữ liệu OSD hai chiều với Cloud Firestore và Máy chủ"
+          >
+            {isSyncing ? (
+              <Loader2 className="w-4 h-4 animate-spin text-blue-600 shrink-0" />
+            ) : isOffline ? (
+              <WifiOff className="w-4 h-4 text-amber-600 shrink-0" />
+            ) : (
+              <RefreshCw className="w-4 h-4 text-slate-600 shrink-0" />
+            )}
+            <span className="hidden sm:inline">
+              {isSyncing ? 'Đang đồng bộ...' : isOffline ? 'Mất kết nối' : 'Đồng bộ OSD'}
+            </span>
+          </button>
+
+          <button
             onClick={handleExportExcel}
             className="flex items-center justify-center gap-1.5 px-3.5 py-2.5 bg-emerald-700 hover:bg-emerald-800 text-white rounded-xl text-xs font-semibold shadow-md shadow-emerald-700/20 transition active:scale-95 min-h-[42px]"
             title="Xuất danh sách OSD ra file Excel"
@@ -628,6 +796,78 @@ export const OsdManager: React.FC = () => {
           </button>
         </div>
       </div>
+
+      {/* Cảnh báo trạng thái mạng ngắt kết nối (Offline) */}
+      {isOffline && (
+        <div className="bg-amber-50 border border-amber-300/80 rounded-2xl p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-xs animate-in fade-in duration-200">
+          <div className="flex items-start gap-3">
+            <div className="p-2.5 bg-amber-100 text-amber-800 rounded-xl shrink-0 mt-0.5 sm:mt-0">
+              <WifiOff className="w-5 h-5 text-amber-700" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <h4 className="text-sm font-bold text-amber-950">
+                  Thiết bị đang mất kết nối Internet (Ngoại tuyến)
+                </h4>
+                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-200/90 text-amber-900 uppercase tracking-wider">
+                  Chế độ lưu Offline
+                </span>
+              </div>
+              <p className="text-xs text-amber-900/90 mt-1 leading-relaxed">
+                Bạn vẫn có thể tạo, chỉnh sửa, đính kèm biên bản PDF hoặc chuyển trạng thái OSD bình thường. Tất cả dữ liệu được lưu an toàn trong bộ nhớ thiết bị này và sẽ tự động đồng bộ lên Đám mây &amp; máy chủ ngay khi có mạng trở lại.
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={handleSyncNow}
+            disabled={isSyncing}
+            className="w-full sm:w-auto px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white rounded-xl text-xs font-semibold shrink-0 transition flex items-center justify-center gap-1.5 shadow-sm active:scale-95 disabled:opacity-50"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${isSyncing ? 'animate-spin' : ''}`} />
+            <span>{isSyncing ? 'Đang kiểm tra...' : 'Kiểm tra kết nối lại'}</span>
+          </button>
+        </div>
+      )}
+
+      {/* Cảnh báo khi đồng bộ OSD bị gián đoạn */}
+      {!isOffline && syncFeedback?.interrupted && (
+        <div className="bg-rose-50 border border-rose-300/80 rounded-2xl p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-xs animate-in fade-in duration-200">
+          <div className="flex items-start gap-3">
+            <div className="p-2.5 bg-rose-100 text-rose-800 rounded-xl shrink-0 mt-0.5 sm:mt-0">
+              <AlertTriangle className="w-5 h-5 text-rose-700" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <h4 className="text-sm font-bold text-rose-950">
+                  Đồng bộ dữ liệu OSD bị gián đoạn
+                </h4>
+                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-200/90 text-rose-900 uppercase tracking-wider">
+                  Cần đồng bộ lại
+                </span>
+              </div>
+              <p className="text-xs text-rose-900/90 mt-1 leading-relaxed">
+                {syncFeedback.message} — Dữ liệu trên máy này vẫn an toàn. Vui lòng bấm &ldquo;Đồng bộ lại&rdquo; để kết nối lại với Cloud Firestore hoặc Máy chủ nội bộ.
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2 w-full sm:w-auto">
+            <button
+              onClick={() => setSyncFeedback(null)}
+              className="px-3 py-2 bg-white hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-xl text-xs font-semibold transition"
+            >
+              Bỏ qua
+            </button>
+            <button
+              onClick={handleSyncNow}
+              disabled={isSyncing}
+              className="flex-1 sm:flex-initial px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-semibold shrink-0 transition flex items-center justify-center gap-1.5 shadow-sm active:scale-95 disabled:opacity-50"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${isSyncing ? 'animate-spin' : ''}`} />
+              <span>{isSyncing ? 'Đang đồng bộ...' : 'Đồng bộ lại ngay'}</span>
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Bảng tổng hợp KPI các OSD (Bao nhiêu cái Mở, bao nhiêu cái Đóng) */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2.5 sm:gap-3">

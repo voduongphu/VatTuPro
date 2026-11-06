@@ -309,7 +309,8 @@ export function findMatchingUser(users: User[], rawIdentifier: string | undefine
 export function computeMetaDigest(
   users: User[],
   warehouses: Warehouse[],
-  tombstones: TombstoneMap
+  tombstones: TombstoneMap,
+  osd?: OsdReceipt[]
 ): string {
   let sum1 = 0;
   let sum2 = 0;
@@ -353,7 +354,18 @@ export function computeMetaDigest(
     }
   }
 
-  return `${users.length}.${warehouses.length}.${tombCount}:${sum1.toString(36)}:${sum2.toString(36)}:${xor1.toString(36)}`;
+  const osdList = Array.isArray(osd) ? osd : [];
+  for (let i = 0; i < osdList.length; i++) {
+    const o = osdList[i];
+    const [h1, h2] = hashPair(
+      `O|${normKey(o.osdCode || o.id)}|${o.osdDate || ''}|${o.inboundReceiptCode || ''}|${o.status || ''}|${o.resolvedBy || ''}|${Number(o.totalOsdQuantity) || 0}|${o.items?.length || 0}|${Number(o.updatedAt) || 0}`
+    );
+    sum1 = (sum1 + h1) >>> 0;
+    sum2 = (sum2 + h2) >>> 0;
+    xor1 = (xor1 ^ (h1 + h2)) >>> 0;
+  }
+
+  return `${users.length}.${warehouses.length}.${tombCount}.${osdList.length}:${sum1.toString(36)}:${sum2.toString(36)}:${xor1.toString(36)}`;
 }
 
 export function computeMaterialsDigest(materials: MaterialItem[]): string {
@@ -2079,7 +2091,7 @@ export function mergeOsdReceiptsAdditive(
       const curr = result[existIdx];
       const incTs = Number(inc.updatedAt) || 0;
       const currTs = Number(curr.updatedAt) || 0;
-      if (incTs >= currTs) {
+      if (incTs > currTs) {
         const finalPdf = inc.pdfAttachment?.dataUrl
           ? inc.pdfAttachment
           : curr.pdfAttachment || inc.pdfAttachment;
@@ -2087,11 +2099,30 @@ export function mergeOsdReceiptsAdditive(
           ...curr,
           ...inc,
           pdfAttachment: finalPdf,
-          updatedAt: Math.max(incTs, currTs)
+          updatedAt: incTs
         };
         changed = true;
+      } else if (incTs === currTs) {
+        const finalPdf = inc.pdfAttachment?.dataUrl
+          ? inc.pdfAttachment
+          : curr.pdfAttachment || inc.pdfAttachment;
+        const diffStatus = inc.status !== curr.status;
+        const diffQty = inc.totalOsdQuantity !== curr.totalOsdQuantity;
+        const diffItems = (inc.items?.length || 0) !== (curr.items?.length || 0);
+        const diffPdf =
+          (!curr.pdfAttachment && Boolean(inc.pdfAttachment)) ||
+          (Boolean(curr.pdfAttachment) && !curr.pdfAttachment?.dataUrl && Boolean(inc.pdfAttachment?.dataUrl));
+        if (diffStatus || diffQty || diffItems || diffPdf) {
+          result[existIdx] = {
+            ...curr,
+            ...inc,
+            pdfAttachment: finalPdf,
+            updatedAt: currTs
+          };
+          changed = true;
+        }
       } else {
-        if (!curr.pdfAttachment && inc.pdfAttachment) {
+        if (!curr.pdfAttachment?.dataUrl && inc.pdfAttachment?.dataUrl) {
           result[existIdx] = {
             ...curr,
             pdfAttachment: inc.pdfAttachment

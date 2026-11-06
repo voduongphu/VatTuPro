@@ -1504,7 +1504,7 @@ export function createSyncBackend(options: SyncBackendOptions = {}): SyncBackend
       materialsRevision: store.materialsRevision,
       materialsCount: store.materials.length,
       materialsDigest: getMaterialsDigestCached(),
-      metaDigest: computeMetaDigest(store.users, store.warehouses, store.tombstones),
+      metaDigest: computeMetaDigest(store.users, store.warehouses, store.tombstones, store.osd || []),
       activeSessions: store.activeSessions,
       users: store.users,
       warehouses: store.warehouses,
@@ -1591,7 +1591,7 @@ export function createSyncBackend(options: SyncBackendOptions = {}): SyncBackend
     }
 
     if (Array.isArray(req.body.osd)) {
-      const mergedO = mergeOsdReceiptsAdditive(store.osd || [], req.body.osd);
+      const mergedO = mergeOsdReceiptsAdditive(store.osd || [], req.body.osd, store.tombstones.osd);
       if (mergedO.changed) {
         store.osd = mergedO.list;
         anyChanged = true;
@@ -1608,7 +1608,7 @@ export function createSyncBackend(options: SyncBackendOptions = {}): SyncBackend
       ok: true,
       changed: anyChanged,
       serverRevision: store.serverRevision,
-      metaDigest: computeMetaDigest(store.users, store.warehouses, store.tombstones),
+      metaDigest: computeMetaDigest(store.users, store.warehouses, store.tombstones, store.osd || []),
       users: store.users,
       warehouses: store.warehouses,
       tombstones: store.tombstones,
