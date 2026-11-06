@@ -825,7 +825,14 @@ export function createSyncBackend(options: SyncBackendOptions = {}): SyncBackend
       return;
     }
 
-    const isReadSync = req.method === 'GET' || req.path === '/receipts-batch-pull';
+    const isDataSync =
+      req.method === 'GET' ||
+      req.path === '/osd' ||
+      req.path.startsWith('/osd') ||
+      req.path === '/receipts-batch-pull' ||
+      req.path === '/receipts-chunk-push' ||
+      req.path === '/meta';
+
     const check = validateSession({
       userKey: key,
       sessionToken: token,
@@ -850,7 +857,7 @@ export function createSyncBackend(options: SyncBackendOptions = {}): SyncBackend
           )
         );
       }
-      if (!isReadSync) {
+      if (!isDataSync) {
         res.status(401).json({
           error: 'Session invalid',
           reason,
