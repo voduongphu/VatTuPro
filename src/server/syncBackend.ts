@@ -328,7 +328,7 @@ export function createSyncBackend(options: SyncBackendOptions = {}): SyncBackend
           store.warehouses = mergedW.list;
         }
         if (Array.isArray(parsed.osd)) {
-          const mergedO = mergeOsdReceiptsAdditive(store.osd || [], parsed.osd);
+          const mergedO = mergeOsdReceiptsAdditive(store.osd || [], parsed.osd, store.tombstones.osd);
           store.osd = mergedO.list;
         }
         if (!isSeedSource) {
@@ -870,9 +870,9 @@ export function createSyncBackend(options: SyncBackendOptions = {}): SyncBackend
       password,
       deviceId,
       deviceLabel,
-      localUsers,
-      forceLogoutOtherDevice
+      localUsers
     } = req.body || {};
+    let forceLogoutOtherDevice = Boolean(req.body?.forceLogoutOtherDevice);
     const trimmedUser = String(username || '').trim();
     const passStr = String(password ?? '');
 
@@ -934,18 +934,11 @@ export function createSyncBackend(options: SyncBackendOptions = {}): SyncBackend
     const liveOtherSession = getLiveActiveSession(userKey, user, nowMs);
     if (
       liveOtherSession &&
-      liveOtherSession.deviceId !== cleanDeviceId &&
-      !forceLogoutOtherDevice
+      liveOtherSession.deviceId !== cleanDeviceId
     ) {
-      const otherLabel = liveOtherSession.deviceLabel || 'Thiết bị khác';
-      res.json({
-        success: false,
-        conflict: true,
-        code: 'ACTIVE_ON_OTHER_DEVICE',
-        activeSession: liveOtherSession,
-        message: `Tài khoản "${user.username}" hiện đang đăng nhập trên ${otherLabel}. Hệ thống không cho phép một tài khoản đăng nhập cùng lúc trên 2 thiết bị. Vui lòng nhấn "Yêu cầu đăng xuất trên thiết bị kia" để tiếp tục.`
-      });
-      return;
+      // Khi đăng nhập cùng tài khoản trên thiết bị mới: Tự động đăng xuất phiên trước trên thiết bị cũ,
+      // phiên đăng nhập hiện tại trên thiết bị mới này được ưu tiên kích hoạt thành công ngay lập tức!
+      forceLogoutOtherDevice = true;
     }
 
     const prevSession = store.activeSessions[userKey];
@@ -1028,9 +1021,9 @@ export function createSyncBackend(options: SyncBackendOptions = {}): SyncBackend
       uid,
       deviceId,
       deviceLabel,
-      localUsers,
-      forceLogoutOtherDevice
+      localUsers
     } = req.body || {};
+    let forceLogoutOtherDevice = Boolean(req.body?.forceLogoutOtherDevice);
 
     const emailLower = String(email || '').trim().toLowerCase();
     if (!emailLower || !emailLower.includes('@')) {
@@ -1107,19 +1100,10 @@ export function createSyncBackend(options: SyncBackendOptions = {}): SyncBackend
     const liveOtherSession = getLiveActiveSession(userKey, user, nowMs);
     if (
       liveOtherSession &&
-      liveOtherSession.deviceId !== cleanDeviceId &&
-      !forceLogoutOtherDevice
+      liveOtherSession.deviceId !== cleanDeviceId
     ) {
-      const otherLabel = liveOtherSession.deviceLabel || 'Thiết bị khác';
-      res.json({
-        success: false,
-        conflict: true,
-        code: 'ACTIVE_ON_OTHER_DEVICE',
-        activeSession: liveOtherSession,
-        user,
-        message: `Tài khoản Google "${emailLower}" hiện đang mở trên ${otherLabel}. Mỗi tài khoản chỉ hoạt động trên 1 thiết bị tại một thời điểm. Nhấn nút bên dưới để đăng xuất thiết bị kia và tiếp tục.`
-      });
-      return;
+      // Tự động thu hồi phiên đăng nhập trước trên thiết bị cũ và chuyển sang thiết bị mới hiện tại
+      forceLogoutOtherDevice = true;
     }
 
     const prevSession = store.activeSessions[userKey];
@@ -1595,6 +1579,12 @@ export function createSyncBackend(options: SyncBackendOptions = {}): SyncBackend
       if (mergedO.changed) {
         store.osd = mergedO.list;
         anyChanged = true;
+        broadcastRaw({
+          type: 'sync:osd_updated',
+          osd: store.osd,
+          tombstones: store.tombstones.osd,
+          serverRevision: store.serverRevision + 1
+        });
       }
     }
 
@@ -1632,6 +1622,12 @@ export function createSyncBackend(options: SyncBackendOptions = {}): SyncBackend
         store.osd[idx].pdfAttachment = attachment;
         store.serverRevision++;
         scheduleSaveMeta();
+        broadcastRaw({
+          type: 'sync:osd_updated',
+          osd: store.osd,
+          tombstones: store.tombstones.osd,
+          serverRevision: store.serverRevision
+        });
       }
     }
     res.json({ ok: true });

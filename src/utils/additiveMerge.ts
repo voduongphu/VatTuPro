@@ -2070,15 +2070,36 @@ export function mergeOsdReceiptsAdditive(
   }
 
   for (let i = 0; i < incoming.length; i++) {
-    const inc = incoming[i];
+    let inc = incoming[i];
     if (!inc) continue;
-    const cKey = normKey(inc.osdCode);
+    let cKey = normKey(inc.osdCode);
     if (isRecordDeleted(safeTombs, [inc.id, cKey, inc.osdCode], inc.updatedAt)) {
       continue;
     }
-    let existIdx = cKey ? indexByCode.get(cKey) : undefined;
-    if (existIdx === undefined && inc.id) {
-      existIdx = indexById.get(inc.id);
+
+    // 1. Khớp theo ID của biên bản trước tiên (định danh duy nhất của tài liệu)
+    let existIdx = inc.id ? indexById.get(inc.id) : undefined;
+
+    // 2. Nếu không tìm thấy theo ID mà tìm thấy theo mã biên bản (osdCode):
+    if (existIdx === undefined && cKey) {
+      const codeMatchedIdx = indexByCode.get(cKey);
+      if (codeMatchedIdx !== undefined) {
+        const existingItem = result[codeMatchedIdx];
+        if (!existingItem.id || !inc.id || existingItem.id === inc.id) {
+          existIdx = codeMatchedIdx;
+        } else {
+          // Xung đột mã số: Hai thiết bị cùng tạo độc lập hai biên bản khác nhau (khác ID) nhưng trùng mã.
+          // Bảo toàn cả hai biên bản: tự động thêm hậu tố cho biên bản đến sau để không làm mất biên bản kia!
+          let resolvedCode = `${inc.osdCode}-B`;
+          let counter = 2;
+          while (indexByCode.has(normKey(resolvedCode))) {
+            resolvedCode = `${inc.osdCode}-${counter++}`;
+          }
+          inc = { ...inc, osdCode: resolvedCode };
+          cKey = normKey(resolvedCode);
+          // existIdx tiếp tục là undefined để phiếu này được thêm mới vào danh sách
+        }
+      }
     }
 
     if (existIdx === undefined) {

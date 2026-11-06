@@ -212,7 +212,14 @@ export const OsdManager: React.FC = () => {
       }
     });
 
-    // 6. Chủ động kéo dữ liệu OSD mới nhất ngay khi mở trang
+    // 6. Trình nghe đồng bộ hai chiều thời gian thực cho dữ liệu OSD (WebSocket + BroadcastChannel + Cloud Firestore)
+    const unsubOsdRealtime = SyncService.subscribeOsd((newList) => {
+      if (Array.isArray(newList)) {
+        setOsdList(newList);
+      }
+    });
+
+    // 7. Chủ động kéo dữ liệu OSD mới nhất ngay khi mở trang
     void SyncService.syncNow().then((res) => {
       if (!res.success && res.error) {
         setSyncFeedback({ type: 'error', message: res.message, interrupted: true, timestamp: Date.now() });
@@ -224,6 +231,7 @@ export const OsdManager: React.FC = () => {
       unsubCloud();
       unsubNetwork();
       unsubSync();
+      unsubOsdRealtime();
     };
   }, []);
 
@@ -604,7 +612,7 @@ export const OsdManager: React.FC = () => {
       }
     } else {
       const newOsd: OsdReceipt = {
-        id: `osd-${Date.now()}`,
+        id: `osd-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
         osdCode: trimmedCode,
         osdDate: formOsdDate,
         inboundReceiptId: selectedInboundId,

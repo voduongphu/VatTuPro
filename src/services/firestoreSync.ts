@@ -147,6 +147,7 @@ let cloudMaterialsDirty = false;
 
 let externalOnRemoteWorkspaceChange: (() => void) | null = null;
 let externalOnRemoteSessionSnapshot: ((remoteData: Record<string, any>) => void) | null = null;
+let externalOnRemoteOsdChange: ((remoteOsd: OsdReceipt[]) => void) | null = null;
 let externalIsLocalSessionStillActive: ((sessionToken: string) => boolean) | null = null;
 
 const revokedCloudSessionTokens = new Set<string>();
@@ -1246,6 +1247,7 @@ function attachOsdRealtimeListener(): void {
       }
       StorageService.applyRemoteOsdReceipts(remoteOsd);
       void preloadOsdAttachments(remoteOsd);
+      externalOnRemoteOsdChange?.(remoteOsd);
       externalOnRemoteWorkspaceChange?.();
     },
     (err) => {
@@ -1451,6 +1453,7 @@ async function pullMetaFromCloud(wsData: WorkspaceManifestDoc, fbUser: FirebaseU
 
   StorageService.applyRemoteOsdReceipts(remoteOsd);
   void preloadOsdAttachments(remoteOsd);
+  externalOnRemoteOsdChange?.(remoteOsd);
 }
 
 async function pushMetaToCloud(fbUser: FirebaseUser): Promise<{
@@ -2028,10 +2031,12 @@ export const FirestoreSyncService = {
   init(callbacks: {
     onRemoteWorkspaceChange: () => void;
     onRemoteSessionSnapshot: (remoteData: Record<string, any>) => void;
+    onRemoteOsdChange?: (remoteOsd: OsdReceipt[]) => void;
     isLocalSessionStillActive?: (sessionToken: string) => boolean;
   }): void {
     externalOnRemoteWorkspaceChange = callbacks.onRemoteWorkspaceChange;
     externalOnRemoteSessionSnapshot = callbacks.onRemoteSessionSnapshot;
+    externalOnRemoteOsdChange = callbacks.onRemoteOsdChange || null;
     externalIsLocalSessionStillActive = callbacks.isLocalSessionStillActive || null;
 
     onAuthStateChanged(auth, async (fbUser) => {
@@ -2758,20 +2763,23 @@ export const FirestoreSyncService = {
       }
     }
 
-    // NẾU ĐÁM MÂY ĐANG CÓ MÃ PHIÊN KHÁC (do thiết bị khác vừa đăng nhập hoặc đã bị thay thế):
-    // Tuyệt đối KHÔNG GHI ĐÈ! Thiết bị này đã bị thay thế, phải kích hoạt đăng xuất ngay lập tức!
+    // NẾU ĐÁM MÂY ĐANG CÓ MÃ PHIÊN KHÁC:
+    // Kiểm tra xem phiên trên đám mây có mới hơn phiên này không.
+    // NGUYÊN TẮC: Phiên cũ (thiết bị trước) phải thoát, phiên mới (thiết bị hiện tại vừa đăng nhập) được giữ lại!
     if (prev && prevToken && prevToken !== session.sessionToken) {
       const prevIssued = Number(prev.issuedAtMs) || 0;
       const myIssued = Number(session.issuedAtMs) || 0;
       const revokedBefore = Number(prev.revokedBeforeMs) || 0;
+      // Chỉ kích hoạt đăng xuất thiết bị hiện tại nếu ĐÃ CÓ thiết bị khác phát hành phiên MỚI HƠN phiên này!
       if (
-        prev.deviceId !== session.deviceId ||
-        prevIssued >= myIssued - 5000 ||
+        (prev.deviceId !== session.deviceId && prevIssued > myIssued) ||
         (revokedBefore > 0 && myIssued <= revokedBefore)
       ) {
         externalOnRemoteSessionSnapshot?.(prev);
         return;
       }
+      // Phiên hiện tại mới hơn hoặc bằng: ghi nhận thu hồi phiên cũ trên đám mây để thiết bị cũ bị ngắt
+      rememberRevokedCloudToken(prevToken);
     }
 
     const monotonicIssued =

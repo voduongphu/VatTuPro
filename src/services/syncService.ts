@@ -129,7 +129,19 @@ let pendingInvalidation: SessionInvalidationInfo | null = null;
 const syncStateListeners = new Set<(syncing: boolean) => void>();
 const sessionInvalidatedListeners = new Set<(info: SessionInvalidationInfo) => void>();
 const networkStatusListeners = new Set<(online: boolean) => void>();
+const osdUpdateListeners = new Set<(osdList: OsdReceipt[]) => void>();
 let cachedNetworkOnline = typeof navigator !== 'undefined' ? navigator.onLine : true;
+
+function notifyOsdListeners(osdList?: OsdReceipt[]): void {
+  const current = osdList || StorageService.getOsdReceipts();
+  for (const listener of osdUpdateListeners) {
+    try {
+      listener(current);
+    } catch (err) {
+      console.warn('OSD update listener error:', err);
+    }
+  }
+}
 
 function updateNetworkStatus(online: boolean): void {
   if (cachedNetworkOnline !== online) {
@@ -1397,11 +1409,11 @@ function setupBroadcastChannel(): void {
           if (isUserMatch) {
             const myIssued = getClientSessionIssuedAtMs(current.session);
             const remoteIssued = Number(data.issuedAtMs) || 0;
+            // Chỉ ngắt phiên hiện tại nếu thiết bị khác phát hành phiên MỚI HƠN phiên này!
             if (
-              data.deviceId !== current.session.deviceId ||
-              !myIssued ||
-              !remoteIssued ||
-              remoteIssued >= myIssued - 5000
+              data.deviceId !== current.session.deviceId &&
+              data.sessionToken !== current.session.sessionToken &&
+              remoteIssued > myIssued
             ) {
               triggerLocalKickOut({
                 reason: 'replaced',
@@ -1412,6 +1424,11 @@ function setupBroadcastChannel(): void {
               });
             }
           }
+        }
+      } else if (data.type === 'sync:osd_mutation') {
+        if (Array.isArray(data.osd)) {
+          StorageService.applyRemoteOsdReceipts(data.osd);
+          notifyOsdListeners(StorageService.getOsdReceipts());
         }
       } else if (data.type === 'auth:session_force_logout') {
         const current = getStoredUnifiedSession();
@@ -1485,11 +1502,11 @@ function connectWebSocket(force = false): void {
               const myIssued = getClientSessionIssuedAtMs(current.session);
               const remoteIssued =
                 Number(msg.issuedAtMs) || (msg.loginAt ? Date.parse(msg.loginAt) : 0);
+              // Chỉ ngắt phiên hiện tại nếu thiết bị khác phát hành phiên MỚI HƠN phiên này!
               if (
-                msg.deviceId !== current.session.deviceId ||
-                !myIssued ||
-                !remoteIssued ||
-                remoteIssued >= myIssued - 5000
+                msg.deviceId !== current.session.deviceId &&
+                msg.activeSessionToken !== current.session.sessionToken &&
+                remoteIssued > myIssued
               ) {
                 triggerLocalKickOut({
                   reason: 'replaced',
@@ -1500,6 +1517,14 @@ function connectWebSocket(force = false): void {
                 });
               }
             }
+          }
+          return;
+        }
+
+        if (msg.type === 'sync:osd_updated') {
+          if (Array.isArray(msg.osd)) {
+            StorageService.applyRemoteOsdReceipts(msg.osd);
+            notifyOsdListeners(StorageService.getOsdReceipts());
           }
           return;
         }
@@ -1614,6 +1639,9 @@ export const SyncService = {
         void verifySessionHeartbeat(true);
         void reconcileInternal();
       },
+      onRemoteOsdChange: () => {
+        notifyOsdListeners(StorageService.getOsdReceipts());
+      },
       onRemoteSessionSnapshot: (remoteData) => {
         if (authTransitionCount > 0) return;
         const current = getStoredUnifiedSession();
@@ -1647,9 +1675,12 @@ export const SyncService = {
           return;
         }
 
+        // Chỉ ngắt phiên hiện tại nếu thiết bị khác phát hành phiên MỚI HƠN phiên này!
         if (
           remoteToken &&
-          (remoteData.deviceId !== current.session.deviceId || remoteIssued >= myIssued - 5000)
+          remoteToken !== current.session.sessionToken &&
+          remoteData.deviceId !== current.session.deviceId &&
+          remoteIssued > myIssued
         ) {
           triggerLocalKickOut({
             reason: 'replaced',
@@ -1670,6 +1701,15 @@ export const SyncService = {
       }
       FirestoreSyncService.markLocalMutation(kind);
       if (kind === 'osd') {
+        notifyOsdListeners(StorageService.getOsdReceipts());
+        try {
+          authChannel?.postMessage({
+            type: 'sync:osd_mutation',
+            osd: StorageService.getOsdReceipts()
+          });
+        } catch {
+          // ignore
+        }
         FirestoreSyncService.pushOsdRealtimeToCloud().catch(() => {});
       }
       schedulePush(150);
@@ -3066,6 +3106,18 @@ export const SyncService = {
     syncStateListeners.add(listener);
     return () => {
       syncStateListeners.delete(listener);
+    };
+  },
+
+  subscribeOsd(listener: (osdList: OsdReceipt[]) => void): () => void {
+    osdUpdateListeners.add(listener);
+    try {
+      listener(StorageService.getOsdReceipts());
+    } catch {
+      // ignore
+    }
+    return () => {
+      osdUpdateListeners.delete(listener);
     };
   },
 

@@ -299,7 +299,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const login = async (
     username: string,
     pass: string,
-    forceLogoutOtherDevice = false
+    forceLogoutOtherDevice = true
   ): Promise<LoginActionResult> => {
     clearSessionKickNotice();
     setReplacedOtherDeviceAlert(null);
