@@ -146,7 +146,7 @@ export const OsdManager: React.FC = () => {
         return;
       }
 
-      const res = await SyncService.syncNow();
+      const res = await SyncService.syncOsd();
       loadData();
       if (res.success) {
         setSyncFeedback({ type: 'success', message: res.message, timestamp: Date.now() });
@@ -219,8 +219,9 @@ export const OsdManager: React.FC = () => {
       }
     });
 
-    // 7. Chủ động kéo dữ liệu OSD mới nhất ngay khi mở trang
-    void SyncService.syncNow().then((res) => {
+    // 7. Chủ động kéo dữ liệu OSD mới nhất ngay khi mở trang qua giao thức OSD chuyên biệt
+    void SyncService.syncOsd().then((res) => {
+      loadData();
       if (!res.success && res.error) {
         setSyncFeedback({ type: 'error', message: res.message, interrupted: true, timestamp: Date.now() });
       }
@@ -596,6 +597,7 @@ export const OsdManager: React.FC = () => {
       };
 
       StorageService.updateOsdReceipt(editingOsd.id, updatedOsd);
+      void SyncService.pushOsdImmediately();
       if (formPdf?.dataUrl && formPdf.dataUrl.length > 50) {
         void FirestoreSyncService.pushSingleOsdAttachment(editingOsd.id, formPdf).catch(() => {});
       }
@@ -603,7 +605,7 @@ export const OsdManager: React.FC = () => {
         showToast(`Đã cập nhật OSD "${trimmedCode}" (Lưu cục bộ an toàn, sẽ tự đồng bộ khi có Internet)`, 'success');
       } else {
         showToast(`Đã cập nhật biên bản OSD "${trimmedCode}" thành công!`);
-        void SyncService.syncNow().then((res) => {
+        void SyncService.syncOsd().then((res) => {
           loadData();
           if (!res.success && res.error) {
             setSyncFeedback({ type: 'warning', message: res.message, interrupted: true, timestamp: Date.now() });
@@ -636,6 +638,7 @@ export const OsdManager: React.FC = () => {
       };
 
       StorageService.addOsdReceipt(newOsd);
+      void SyncService.pushOsdImmediately();
       if (formPdf?.dataUrl && formPdf.dataUrl.length > 50) {
         void FirestoreSyncService.pushSingleOsdAttachment(newOsd.id, formPdf).catch(() => {});
       }
@@ -643,7 +646,7 @@ export const OsdManager: React.FC = () => {
         showToast(`Đã lập biên bản OSD "${trimmedCode}" (Lưu cục bộ an toàn, sẽ tự đồng bộ khi có Internet)`, 'success');
       } else {
         showToast(`Đã lập biên bản OSD "${trimmedCode}" thành công!`);
-        void SyncService.syncNow().then((res) => {
+        void SyncService.syncOsd().then((res) => {
           loadData();
           if (!res.success && res.error) {
             setSyncFeedback({ type: 'warning', message: res.message, interrupted: true, timestamp: Date.now() });
@@ -661,13 +664,14 @@ export const OsdManager: React.FC = () => {
     if (!osdToDelete) return;
     const code = osdToDelete.osdCode;
     StorageService.deleteOsdReceipt(osdToDelete.id);
+    void SyncService.pushOsdImmediately();
     setOsdToDelete(null);
     loadData();
     if (!SyncService.isOnline()) {
       showToast(`Đã xóa biên bản OSD "${code}" (Lưu cục bộ, sẽ tự đồng bộ khi có mạng)`);
     } else {
       showToast(`Đã xóa biên bản OSD "${code}"`);
-      void SyncService.syncNow().then((res) => {
+      void SyncService.syncOsd().then((res) => {
         loadData();
         if (!res.success && res.error) {
           setSyncFeedback({ type: 'warning', message: res.message, interrupted: true, timestamp: Date.now() });

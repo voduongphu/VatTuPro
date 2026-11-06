@@ -119,9 +119,11 @@ let nextWsAllowedAtMs = 0;
 let ws: WebSocket | null = null;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let pollTimer: ReturnType<typeof setInterval> | null = null;
+let osdPollTimer: ReturnType<typeof setInterval> | null = null;
 let sessionHeartbeatTimer: ReturnType<typeof setInterval> | null = null;
 let pushDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 let authChannel: BroadcastChannel | null = null;
+let lastKnownOsdRev = 0;
 
 // Lưu thông báo đá phiên nếu xảy ra trong lúc Bootstrap trước khi AuthProvider kịp mount
 let pendingInvalidation: SessionInvalidationInfo | null = null;
@@ -1120,6 +1122,10 @@ async function reconcileLocalServerOnly(): Promise<boolean> {
   });
   if (Array.isArray(manifest.osd)) {
     const osdChanged = StorageService.applyRemoteOsdReceipts(manifest.osd);
+    if (osdChanged) {
+      notifyOsdListeners(StorageService.getOsdReceipts());
+    }
+    lastKnownOsdRev = Math.max(lastKnownOsdRev, Number((manifest as any).osdRevision) || 0);
     if (osdChanged && (FirestoreSyncService.isCloudConnected() || FirestoreSyncService.hasAuthenticatedCloudUser())) {
       void FirestoreSyncService.pushOsdRealtimeToCloud().catch(() => {});
     }
@@ -1639,8 +1645,23 @@ export const SyncService = {
         void verifySessionHeartbeat(true);
         void reconcileInternal();
       },
-      onRemoteOsdChange: () => {
-        notifyOsdListeners(StorageService.getOsdReceipts());
+      onRemoteOsdChange: (remoteOsd) => {
+        const currentList = remoteOsd || StorageService.getOsdReceipts();
+        notifyOsdListeners(currentList);
+        // Bắc cầu: Đẩy dữ liệu OSD từ Cloud Firestore sang máy chủ /api/sync/osd để các thiết bị khác nhận được tức thì
+        void fetchJson<{ ok: boolean; osdRevision: number }>('/api/sync/osd', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            clientId: CLIENT_ID,
+            osd: currentList,
+            tombstones: StorageService.getTombstones().osd || {}
+          })
+        }).then((res) => {
+          if (res.ok) {
+            lastKnownOsdRev = Math.max(lastKnownOsdRev, Number(res.osdRevision) || 0);
+          }
+        }).catch(() => {});
       },
       onRemoteSessionSnapshot: (remoteData) => {
         if (authTransitionCount > 0) return;
@@ -1782,12 +1803,36 @@ export const SyncService = {
 
       pollTimer = setInterval(() => {
         if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
-          // Khi đã có kết nối onSnapshot thời gian thực với Cloud Firestore, không cần quét dồn dập
-          if (!FirestoreSyncService.isCloudConnected()) {
-            void reconcileInternal();
-          }
+          void reconcileInternal();
         }
-      }, 6000);
+      }, 5000);
+
+      // Giao thức thăm dò OSD chuyên biệt siêu tốc (3.5s) đảm bảo các thiết bị khác tài khoản hội tụ liên tục
+      if (osdPollTimer) clearInterval(osdPollTimer);
+      osdPollTimer = setInterval(() => {
+        if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
+          void fetchJson<{
+            ok: boolean;
+            osdRevision: number;
+            osd: OsdReceipt[];
+            tombstones?: Record<string, number>;
+          }>(`/api/sync/osd?t=${Date.now()}`)
+            .then((res) => {
+              if (res.ok && Array.isArray(res.osd)) {
+                const currentRev = Number(res.osdRevision) || 0;
+                if (currentRev > lastKnownOsdRev) {
+                  lastKnownOsdRev = currentRev;
+                  const changed = StorageService.applyRemoteOsdReceipts(res.osd);
+                  notifyOsdListeners(res.osd);
+                  if (changed && (FirestoreSyncService.isCloudConnected() || FirestoreSyncService.hasAuthenticatedCloudUser())) {
+                    void FirestoreSyncService.pushOsdRealtimeToCloud().catch(() => {});
+                  }
+                }
+              }
+            })
+            .catch(() => {});
+        }
+      }, 3500);
     }
   },
 
@@ -1896,43 +1941,69 @@ export const SyncService = {
   },
 
   async syncOsd(): Promise<SyncResult> {
-    if (!this.isOnline()) {
+    const isNetOnline = await this.checkNetworkOnline();
+    if (!isNetOnline) {
       return {
         success: false,
         isOffline: true,
-        message: 'Thiết bị đang ngoại tuyến. Dữ liệu OSD đã được lưu cục bộ an toàn và sẽ tự động đẩy lên khi có kết nối.',
+        message: 'Thiết bị đang ngoại tuyến. Dữ liệu OSD đã được lưu cục bộ an toàn và sẽ tự động đồng bộ khi có kết nối.',
         osdCount: StorageService.getOsdReceipts().length
       };
     }
 
     try {
+      let serverOk = false;
       let cloudOk = false;
+
+      // 1. Giao thức đồng bộ chuyên biệt OSD với máy chủ qua /api/sync/osd
+      try {
+        const localOsd = StorageService.getOsdReceipts();
+        const localTombstones = StorageService.getTombstones();
+        const res = await fetchJson<{
+          ok: boolean;
+          osdRevision: number;
+          osd: OsdReceipt[];
+          tombstones?: Record<string, number>;
+        }>('/api/sync/osd', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            clientId: CLIENT_ID,
+            osd: localOsd,
+            tombstones: localTombstones.osd || {}
+          })
+        });
+
+        if (res.ok && Array.isArray(res.osd)) {
+          StorageService.applyRemoteOsdReceipts(res.osd);
+          notifyOsdListeners(res.osd);
+          serverOk = true;
+          lastKnownOsdRev = Math.max(lastKnownOsdRev, Number(res.osdRevision) || 0);
+        }
+      } catch (err) {
+        console.warn('Dedicated /api/sync/osd error:', err);
+      }
+
+      // 2. Đồng thời kiểm tra đồng bộ với Cloud Firestore nếu đang kết nối Google
       if (FirestoreSyncService.isCloudConnected() || FirestoreSyncService.hasAuthenticatedCloudUser()) {
         cloudOk = await FirestoreSyncService.pushOsdRealtimeToCloud();
-      }
-      let localOk = false;
-      try {
-        await reconcileLocalServerOnly();
-        localOk = true;
-      } catch {
-        // ignore
       }
 
       await StorageService.flush();
       const osdCount = StorageService.getOsdReceipts().length;
 
-      if (cloudOk || localOk) {
+      if (serverOk || cloudOk) {
         return {
           success: true,
           message: `Đồng bộ biên bản OSD thành công (${osdCount} biên bản)!`,
           cloudSynced: cloudOk,
-          localSynced: localOk,
+          localSynced: serverOk,
           osdCount
         };
       } else {
         return {
           success: false,
-          message: 'Không thể kết nối đến máy chủ hoặc Đám mây để đồng bộ OSD. Dữ liệu đã được lưu trữ an toàn trên máy này.',
+          message: 'Không thể kết nối đến máy chủ để đồng bộ OSD. Dữ liệu đã được lưu trữ an toàn trên máy.',
           osdCount
         };
       }
@@ -1943,6 +2014,49 @@ export const SyncService = {
         message: `Đồng bộ OSD bị gián đoạn: ${err?.message || 'Lỗi kết nối mạng'}. Dữ liệu đã lưu cục bộ.`,
         osdCount: StorageService.getOsdReceipts().length
       };
+    }
+  },
+
+  async pushOsdImmediately(): Promise<void> {
+    try {
+      const localOsd = StorageService.getOsdReceipts();
+      const localTombstones = StorageService.getTombstones();
+      notifyOsdListeners(localOsd);
+
+      try {
+        authChannel?.postMessage({
+          type: 'sync:osd_mutation',
+          osd: localOsd
+        });
+      } catch {
+        // ignore
+      }
+
+      void fetchJson<{
+        ok: boolean;
+        osdRevision: number;
+        osd: OsdReceipt[];
+      }>('/api/sync/osd', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          clientId: CLIENT_ID,
+          osd: localOsd,
+          tombstones: localTombstones.osd || {}
+        })
+      }).then((res) => {
+        if (res.ok && Array.isArray(res.osd)) {
+          StorageService.applyRemoteOsdReceipts(res.osd);
+          notifyOsdListeners(res.osd);
+          lastKnownOsdRev = Math.max(lastKnownOsdRev, Number(res.osdRevision) || 0);
+        }
+      }).catch(() => {});
+
+      if (FirestoreSyncService.isCloudConnected() || FirestoreSyncService.hasAuthenticatedCloudUser()) {
+        void FirestoreSyncService.pushOsdRealtimeToCloud().catch(() => {});
+      }
+    } catch {
+      // ignore
     }
   },
 
@@ -3123,6 +3237,7 @@ export const SyncService = {
 
   stop(): void {
     if (pollTimer) clearInterval(pollTimer);
+    if (osdPollTimer) clearInterval(osdPollTimer);
     if (sessionHeartbeatTimer) clearInterval(sessionHeartbeatTimer);
     if (reconnectTimer) clearTimeout(reconnectTimer);
     if (ws) ws.close();

@@ -263,6 +263,7 @@ function setItem<T>(key: string, value: T): void {
     key === STORAGE_KEYS.INBOUND ||
     key === STORAGE_KEYS.OUTBOUND ||
     key === STORAGE_KEYS.WAREHOUSES ||
+    key === STORAGE_KEYS.OSD ||
     key === STORAGE_KEYS.DELETED_INBOUND ||
     key === STORAGE_KEYS.DELETED_OUTBOUND
   ) {

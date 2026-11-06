@@ -69,6 +69,7 @@ export interface ServerStore {
   outbound: OutboundReceipt[];
   tombstones: TombstoneMap;
   osd: OsdReceipt[];
+  osdRevision: number;
   activeSessions: Record<string, ActiveUserSession>;
   revokedTokens: Record<string, number>;
   sessionRevokedBefore: Record<string, number>;
@@ -227,6 +228,7 @@ export function createSyncBackend(options: SyncBackendOptions = {}): SyncBackend
     outbound: [],
     tombstones: createEmptyTombstones(),
     osd: [],
+    osdRevision: 1,
     activeSessions: {},
     revokedTokens: {},
     sessionRevokedBefore: {},
@@ -300,6 +302,7 @@ export function createSyncBackend(options: SyncBackendOptions = {}): SyncBackend
           store.materialsRevision,
           Number(parsed.materialsRevision) || 1
         );
+        store.osdRevision = Math.max(store.osdRevision || 1, Number(parsed.osdRevision) || 1);
         if (parsed.tombstones) {
           mergeTombstones(store.tombstones, parsed.tombstones);
         }
@@ -501,6 +504,7 @@ export function createSyncBackend(options: SyncBackendOptions = {}): SyncBackend
       const payload = JSON.stringify({
         serverRevision: store.serverRevision,
         materialsRevision: store.materialsRevision,
+        osdRevision: store.osdRevision || 1,
         users: store.users,
         warehouses: store.warehouses,
         tombstones: store.tombstones,
@@ -1494,6 +1498,7 @@ export function createSyncBackend(options: SyncBackendOptions = {}): SyncBackend
       warehouses: store.warehouses,
       tombstones: store.tombstones,
       osd: store.osd || [],
+      osdRevision: store.osdRevision || 1,
       inboundManifest,
       outboundManifest
     });
@@ -1647,6 +1652,67 @@ export function createSyncBackend(options: SyncBackendOptions = {}): SyncBackend
       }
     }
     res.status(404).json({ ok: false, message: 'Không tìm thấy file đính kèm' });
+  });
+
+  // ==========================================================================
+  // GIAO THỨC ĐỒNG BỘ OSD CHUYÊN BIỆT (DEDICATED OSD PROTOCOL)
+  // Đồng bộ tức thì và bảo đảm hội tụ dữ liệu giữa tất cả người dùng và thiết bị
+  // ==========================================================================
+  app.get('/api/sync/osd', (req, res) => {
+    res.json({
+      ok: true,
+      serverRevision: store.serverRevision,
+      osdRevision: store.osdRevision || 1,
+      osd: store.osd || [],
+      tombstones: store.tombstones.osd || {}
+    });
+  });
+
+  app.post('/api/sync/osd', (req, res) => {
+    const { clientId, osd, tombstones } = req.body || {};
+    let changed = false;
+
+    if (tombstones && typeof tombstones === 'object') {
+      if (!store.tombstones.osd) store.tombstones.osd = {};
+      for (const [k, ts] of Object.entries(tombstones as Record<string, number>)) {
+        const num = Number(ts) || 0;
+        if (num > (store.tombstones.osd[k] || 0)) {
+          store.tombstones.osd[k] = num;
+          changed = true;
+        }
+      }
+    }
+
+    if (Array.isArray(osd)) {
+      const mergedO = mergeOsdReceiptsAdditive(store.osd || [], osd, store.tombstones.osd);
+      if (mergedO.changed) {
+        store.osd = mergedO.list;
+        changed = true;
+      }
+    }
+
+    if (changed) {
+      store.osdRevision = (store.osdRevision || 1) + 1;
+      store.serverRevision++;
+      scheduleSaveMeta();
+      broadcastRaw({
+        type: 'sync:osd_updated',
+        osd: store.osd,
+        tombstones: store.tombstones.osd || {},
+        osdRevision: store.osdRevision,
+        serverRevision: store.serverRevision
+      });
+      broadcastUpdate(clientId);
+    }
+
+    res.json({
+      ok: true,
+      changed,
+      serverRevision: store.serverRevision,
+      osdRevision: store.osdRevision || 1,
+      osd: store.osd || [],
+      tombstones: store.tombstones.osd || {}
+    });
   });
 
   app.get('/api/sync/materials', (req, res) => {
