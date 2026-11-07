@@ -57,7 +57,7 @@ export const LoginModal: React.FC<LoginModalProps> = ({ isOpen, onClose }) => {
   if (!isOpen) return null;
 
   const handleGoogleSignIn = async (
-    forceLogoutOtherDevice = true,
+    forceLogoutOtherDevice = false,
     forceSelectAccount = true,
     reuseExistingAccount = false
   ) => {
@@ -179,7 +179,7 @@ export const LoginModal: React.FC<LoginModalProps> = ({ isOpen, onClose }) => {
                   <span>
                     {isForcingLogout || isSubmitting
                       ? 'Đang chuyển phiên...'
-                      : 'Đăng xuất thiết bị kia & Đăng nhập ngay'}
+                      : 'Đăng xuất thiết bị kia từ xa & Đăng nhập tại đây'}
                   </span>
                 </button>
                 <button

@@ -2921,8 +2921,13 @@ export const FirestoreSyncService = {
       }
 
       if (prevActive && prevActive.deviceId !== deviceId && !forceLogoutOtherDevice) {
-        // Tự động thu hồi phiên cũ trên thiết bị khác để bảo đảm duy nhất 1 thiết bị hoạt động tại một thời điểm
-        forceLogoutOtherDevice = true;
+        return {
+          handled: true,
+          success: false,
+          conflict: true,
+          activeSession: prevActive,
+          message: `Tài khoản "${matched.username}" đang đăng nhập trên ${prevActive.deviceLabel || 'thiết bị khác'}. Không cho phép một tài khoản đăng nhập cùng lúc trên 2 thiết bị. Bạn có muốn đăng xuất thiết bị kia từ xa để đăng nhập tại đây không?`
+        };
       }
 
       if (prevActive?.sessionToken) {
@@ -3160,8 +3165,13 @@ export const FirestoreSyncService = {
         }
 
         if (prevActive && prevActive.deviceId !== deviceId && !forceLogoutOtherDevice) {
-          // Tự động thu hồi phiên cũ trên thiết bị khác để bảo đảm duy nhất 1 thiết bị hoạt động per user account
-          forceLogoutOtherDevice = true;
+          return {
+            handled: true,
+            success: false,
+            conflict: true,
+            activeSession: prevActive,
+            message: `Tài khoản Google "${matched.username}" (${matched.email}) đang đăng nhập trên ${prevActive.deviceLabel || 'thiết bị khác'}. Không cho phép một tài khoản đăng nhập cùng lúc trên 2 thiết bị. Bạn có muốn đăng xuất thiết bị kia từ xa để đăng nhập tại đây không?`
+          };
         }
 
         if (timedOut) {

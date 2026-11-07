@@ -942,14 +942,29 @@ export function createSyncBackend(options: SyncBackendOptions = {}): SyncBackend
     const cleanDeviceId = String(deviceId || `dev-${nowMs}`);
     const cleanDeviceLabel = String(deviceLabel || 'Thiết bị khác');
 
+    const isForceLogout = Boolean(forceLogoutOtherDevice);
     const liveOtherSession = getLiveActiveSession(userKey, user, nowMs);
     if (
       liveOtherSession &&
-      liveOtherSession.deviceId !== cleanDeviceId
+      liveOtherSession.deviceId !== cleanDeviceId &&
+      !isForceLogout
     ) {
-      // Khi đăng nhập cùng tài khoản trên thiết bị mới: Tự động đăng xuất phiên trước trên thiết bị cũ,
-      // phiên đăng nhập hiện tại trên thiết bị mới này được ưu tiên kích hoạt thành công ngay lập tức!
-      forceLogoutOtherDevice = true;
+      res.json({
+        success: false,
+        conflict: true,
+        message: `Tài khoản "${user.username}" đang đăng nhập trên ${liveOtherSession.deviceLabel || 'thiết bị khác'}. Không cho phép một tài khoản đăng nhập cùng lúc trên 2 thiết bị. Bạn có muốn đăng xuất thiết bị kia từ xa để đăng nhập tại đây không?`,
+        activeSession: {
+          userId: user.id,
+          username: user.username,
+          userKey,
+          sessionToken: liveOtherSession.sessionToken,
+          deviceId: liveOtherSession.deviceId,
+          deviceLabel: liveOtherSession.deviceLabel || 'Thiết bị khác',
+          loginAt: liveOtherSession.loginAt,
+          lastSeenAt: liveOtherSession.lastSeenAt
+        }
+      });
+      return;
     }
 
     const prevSession = store.activeSessions[userKey];
@@ -963,10 +978,12 @@ export function createSyncBackend(options: SyncBackendOptions = {}): SyncBackend
     if (prevSession && prevSession.sessionToken) {
       store.revokedTokens[prevSession.sessionToken] = issuedAtMs;
     }
-    if (forceLogoutOtherDevice) {
+    if (isForceLogout || (liveOtherSession && liveOtherSession.deviceId !== cleanDeviceId)) {
       store.sessionRevokedBefore[userKey] = forceRevokedAt;
+      store.forceLogoutMeta[userKey] = { at: nowIso, deviceLabel: cleanDeviceLabel };
+    } else {
+      delete store.forceLogoutMeta[userKey];
     }
-    delete store.forceLogoutMeta[userKey];
 
     const replacedPrevious =
       liveOtherSession && liveOtherSession.deviceId !== cleanDeviceId
@@ -1108,13 +1125,29 @@ export function createSyncBackend(options: SyncBackendOptions = {}): SyncBackend
     const cleanDeviceId = String(deviceId || `dev-${nowMs}`);
     const cleanDeviceLabel = String(deviceLabel || 'Thiết bị Web');
 
+    const isForceLogout = Boolean(forceLogoutOtherDevice);
     const liveOtherSession = getLiveActiveSession(userKey, user, nowMs);
     if (
       liveOtherSession &&
-      liveOtherSession.deviceId !== cleanDeviceId
+      liveOtherSession.deviceId !== cleanDeviceId &&
+      !isForceLogout
     ) {
-      // Tự động thu hồi phiên đăng nhập trước trên thiết bị cũ và chuyển sang thiết bị mới hiện tại
-      forceLogoutOtherDevice = true;
+      res.json({
+        success: false,
+        conflict: true,
+        message: `Tài khoản Google "${user.username}" (${user.email}) đang đăng nhập trên ${liveOtherSession.deviceLabel || 'thiết bị khác'}. Không cho phép một tài khoản đăng nhập cùng lúc trên 2 thiết bị. Bạn có muốn đăng xuất thiết bị kia từ xa để đăng nhập tại đây không?`,
+        activeSession: {
+          userId: user.id,
+          username: user.username,
+          userKey,
+          sessionToken: liveOtherSession.sessionToken,
+          deviceId: liveOtherSession.deviceId,
+          deviceLabel: liveOtherSession.deviceLabel || 'Thiết bị khác',
+          loginAt: liveOtherSession.loginAt,
+          lastSeenAt: liveOtherSession.lastSeenAt
+        }
+      });
+      return;
     }
 
     const prevSession = store.activeSessions[userKey];
@@ -1128,10 +1161,12 @@ export function createSyncBackend(options: SyncBackendOptions = {}): SyncBackend
     if (prevSession && prevSession.sessionToken) {
       store.revokedTokens[prevSession.sessionToken] = issuedAtMs;
     }
-    if (forceLogoutOtherDevice) {
+    if (isForceLogout || (liveOtherSession && liveOtherSession.deviceId !== cleanDeviceId)) {
       store.sessionRevokedBefore[userKey] = forceRevokedAt;
+      store.forceLogoutMeta[userKey] = { at: nowIso, deviceLabel: cleanDeviceLabel };
+    } else {
+      delete store.forceLogoutMeta[userKey];
     }
-    delete store.forceLogoutMeta[userKey];
 
     const replacedPrevious =
       liveOtherSession && liveOtherSession.deviceId !== cleanDeviceId

@@ -1975,7 +1975,7 @@ export const SyncService = {
       let serverOk = false;
       let cloudOk = false;
 
-      // 1. Giao thức đồng bộ chuyên biệt OSD với máy chủ qua /api/sync/osd
+      // 1. Giao thức đồng bộ chuyên biệt OSD 2 chiều với máy chủ qua POST /api/sync/osd
       try {
         const localOsd = StorageService.getOsdReceipts();
         const localTombstones = StorageService.getTombstones();
@@ -1996,18 +1996,47 @@ export const SyncService = {
 
         if (res.ok && Array.isArray(res.osd)) {
           StorageService.applyRemoteOsdReceipts(res.osd, this.getActorId());
-          notifyOsdListeners(res.osd);
+          if (res.tombstones && typeof res.tombstones === 'object') {
+            const tombs = StorageService.getTombstones();
+            tombs.osd = { ...(tombs.osd || {}), ...res.tombstones };
+            StorageService.saveTombstones(tombs);
+          }
+          notifyOsdListeners(StorageService.getOsdReceipts());
           serverOk = true;
           lastKnownOsdRev = Math.max(lastKnownOsdRev, Number(res.osdRevision) || 0);
         }
       } catch (err) {
-        console.warn('Dedicated /api/sync/osd error:', err);
+        console.warn('Dedicated POST /api/sync/osd error, trying GET fallback:', err);
+        // Fallback GET
+        try {
+          const fallbackRes = await fetchJson<{
+            ok: boolean;
+            osdRevision: number;
+            osd: OsdReceipt[];
+            tombstones?: Record<string, number>;
+          }>('/api/sync/osd', { method: 'GET' });
+          if (fallbackRes.ok && Array.isArray(fallbackRes.osd)) {
+            StorageService.applyRemoteOsdReceipts(fallbackRes.osd, this.getActorId());
+            notifyOsdListeners(StorageService.getOsdReceipts());
+            serverOk = true;
+          }
+        } catch (fbErr) {
+          console.warn('Dedicated GET /api/sync/osd fallback error:', fbErr);
+        }
       }
 
       // 2. Đồng thời kiểm tra đồng bộ với Cloud Firestore nếu đang kết nối Google
       if (FirestoreSyncService.isCloudConnected() || FirestoreSyncService.hasAuthenticatedCloudUser()) {
-        cloudOk = await FirestoreSyncService.pushOsdRealtimeToCloud();
+        try {
+          const pushOk = await FirestoreSyncService.pushOsdRealtimeToCloud();
+          cloudOk = Boolean(pushOk);
+        } catch (cErr) {
+          console.warn('Cloud Firestore OSD sync error:', cErr);
+        }
       }
+
+      // 3. Kích hoạt đồng bộ toàn bộ dữ liệu người dùng (tài khoản, kho, vật tư, phiếu) ngầm
+      void reconcileInternal().catch(() => {});
 
       await StorageService.flush();
       const osdCount = StorageService.getOsdReceipts().length;
@@ -2120,7 +2149,7 @@ export const SyncService = {
   }): Promise<LoginServerResult> {
     authTransitionCount++;
     ++authAttemptEpoch;
-    const forceFlag = options?.forceLogoutOtherDevice !== false;
+    const forceFlag = Boolean(options?.forceLogoutOtherDevice);
 
     // Dọn dẹp đồng bộ phiên cũ trong RAM/sessionStorage ngay trước khi gọi Google Popup (không await mạng để tránh Chrome chặn Popup)
     const prevUnified = getStoredUnifiedSession();

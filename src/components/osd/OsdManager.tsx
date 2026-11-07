@@ -149,7 +149,7 @@ export const OsdManager: React.FC = () => {
       const res = await SyncService.syncOsd();
       loadData();
       if (res.success) {
-        setSyncFeedback({ type: 'success', message: res.message, timestamp: Date.now() });
+        setSyncFeedback(null);
         showToast(res.message, 'success');
       } else if (res.isOffline) {
         setIsOffline(true);
@@ -222,7 +222,9 @@ export const OsdManager: React.FC = () => {
     // 7. Chủ động kéo dữ liệu OSD mới nhất ngay khi mở trang qua giao thức OSD chuyên biệt
     void SyncService.syncOsd().then((res) => {
       loadData();
-      if (!res.success && res.error) {
+      if (res.success) {
+        setSyncFeedback(null);
+      } else if (!res.success && res.error) {
         setSyncFeedback({ type: 'error', message: res.message, interrupted: true, timestamp: Date.now() });
       }
     });
@@ -607,7 +609,9 @@ export const OsdManager: React.FC = () => {
         showToast(`Đã cập nhật biên bản OSD "${trimmedCode}" thành công!`);
         void SyncService.syncOsd().then((res) => {
           loadData();
-          if (!res.success && res.error) {
+          if (res.success) {
+            setSyncFeedback(null);
+          } else if (res.error) {
             setSyncFeedback({ type: 'warning', message: res.message, interrupted: true, timestamp: Date.now() });
           }
         });
@@ -648,7 +652,9 @@ export const OsdManager: React.FC = () => {
         showToast(`Đã lập biên bản OSD "${trimmedCode}" thành công!`);
         void SyncService.syncOsd().then((res) => {
           loadData();
-          if (!res.success && res.error) {
+          if (res.success) {
+            setSyncFeedback(null);
+          } else if (res.error) {
             setSyncFeedback({ type: 'warning', message: res.message, interrupted: true, timestamp: Date.now() });
           }
         });
@@ -673,7 +679,9 @@ export const OsdManager: React.FC = () => {
       showToast(`Đã xóa biên bản OSD "${code}"`);
       void SyncService.syncOsd().then((res) => {
         loadData();
-        if (!res.success && res.error) {
+        if (res.success) {
+          setSyncFeedback(null);
+        } else if (res.error) {
           setSyncFeedback({ type: 'warning', message: res.message, interrupted: true, timestamp: Date.now() });
         }
       });

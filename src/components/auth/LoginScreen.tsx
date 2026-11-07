@@ -79,7 +79,7 @@ export const LoginScreen: React.FC = () => {
   const [isResettingSession, setIsResettingSession] = useState(false);
 
   const handleGoogleSignIn = async (
-    forceLogoutOtherDevice = true,
+    forceLogoutOtherDevice = false,
     forceSelectAccount = true,
     reuseExistingAccount = false
   ) => {
@@ -266,7 +266,7 @@ export const LoginScreen: React.FC = () => {
                       <span>
                         {isRequestingRemoteLogout || isAuthenticating
                           ? 'Đang chuyển phiên sang máy này...'
-                          : 'Đăng xuất thiết bị kia & Tiếp tục vào hệ thống'}
+                          : 'Đăng xuất thiết bị kia từ xa & Đăng nhập tại đây'}
                       </span>
                     </button>
                     <button

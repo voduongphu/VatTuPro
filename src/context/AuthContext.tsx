@@ -241,7 +241,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const loginWithGoogle = async (
-    forceLogoutOtherDevice = true,
+    forceLogoutOtherDevice = false,
     forceSelectAccount = false,
     reuseExistingAccount = false
   ): Promise<LoginActionResult> => {
@@ -299,7 +299,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const login = async (
     username: string,
     pass: string,
-    forceLogoutOtherDevice = true
+    forceLogoutOtherDevice = false
   ): Promise<LoginActionResult> => {
     clearSessionKickNotice();
     setReplacedOtherDeviceAlert(null);
