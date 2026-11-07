@@ -2389,11 +2389,13 @@ export const FirestoreSyncService = {
       }
     );
 
-    // Duy trì nhịp tim định kỳ cập nhật lastSeenAt mỗi 35 giây để session luôn tươi mới
+    // Duy trì nhịp tim định kỳ cập nhật lastSeenAt mỗi 35 giây nếu thiết bị này đang có phiên hoạt động
     sessionHeartbeatInterval = setInterval(async () => {
       try {
         const u = auth.currentUser;
         if (!u || !u.emailVerified) return;
+        // Không gửi heartbeat nếu máy này đã đăng xuất (đang ở màn hình login)
+        if (externalIsLocalSessionStillActive && !externalIsLocalSessionStillActive('')) return;
         await updateDoc(sessRef, {
           lastSeenAt: Date.now()
         });
@@ -3511,7 +3513,9 @@ export const FirestoreSyncService = {
 
       if (
         remoteToken &&
-        (d.deviceId !== mySession.deviceId || remoteIssued >= myIssued - 5000) &&
+        remoteToken !== mySession.sessionToken &&
+        d.deviceId !== mySession.deviceId &&
+        remoteIssued > myIssued &&
         !revokedCloudSessionTokens.has(remoteToken)
       ) {
         return {
