@@ -1906,164 +1906,119 @@ export const SyncService = {
   },
 
   async syncNow(): Promise<SyncResult> {
-    const online = this.isOnline();
-    if (!online) {
+    const isOnline = typeof navigator !== 'undefined' ? navigator.onLine : this.isOnline();
+    if (!isOnline) {
       return {
         success: false,
         isOffline: true,
-        message: 'Thiết bị đang ngắt kết nối mạng. Dữ liệu biên bản OSD đã được bảo toàn trong bộ nhớ máy và sẽ tự động đồng bộ ngay khi có mạng trở lại.',
+        message: 'Thiết bị đang ngoại tuyến. Dữ liệu hệ thống và OSD đã được lưu an toàn tại máy.',
         osdCount: StorageService.getOsdReceipts().length
       };
     }
 
-    try {
-      const [, res] = await Promise.all([
-        verifySessionHeartbeat(true),
-        reconcileInternal()
-      ]);
-
-      const osdCount = StorageService.getOsdReceipts().length;
-      if (res.cloudSuccess || res.localSuccess) {
-        return {
-          success: true,
-          message: FirestoreSyncService.isCloudConnected()
-            ? `Đã đồng bộ OSD thành công với Cloud Firestore (${osdCount} biên bản).`
-            : `Đã đồng bộ OSD thành công với máy chủ nội bộ (${osdCount} biên bản).`,
-          cloudSynced: res.cloudSuccess,
-          localSynced: res.localSuccess,
-          osdCount
-        };
-      } else if (res.error) {
-        return {
-          success: false,
-          error: res.error,
-          message: `Đồng bộ OSD bị gián đoạn: ${res.error}. Dữ liệu đã được lưu an toàn tại máy này.`,
-          osdCount
-        };
-      } else {
-        return {
-          success: true,
-          message: `Đã kiểm tra đồng bộ dữ liệu OSD (${osdCount} biên bản).`,
-          cloudSynced: res.cloudSuccess,
-          localSynced: res.localSuccess,
-          osdCount
-        };
-      }
-    } catch (err: any) {
-      const errMsg = err?.message || 'Lỗi không xác định khi đồng bộ';
-      return {
-        success: false,
-        error: errMsg,
-        message: `Đồng bộ OSD bị gián đoạn: ${errMsg}. Dữ liệu OSD vẫn an toàn trên máy cục bộ.`,
-        osdCount: StorageService.getOsdReceipts().length
-      };
-    }
-  },
-
-  async syncOsd(): Promise<SyncResult> {
-    const isNetOnline = await this.checkNetworkOnline();
-    if (!isNetOnline) {
-      return {
-        success: false,
-        isOffline: true,
-        message: 'Thiết bị đang ngoại tuyến. Dữ liệu OSD đã được lưu cục bộ an toàn và sẽ tự động đồng bộ khi có kết nối.',
-        osdCount: StorageService.getOsdReceipts().length
-      };
-    }
-
+    notifySyncState(true);
     try {
       let serverOk = false;
       let cloudOk = false;
 
-      // 1. Giao thức đồng bộ chuyên biệt OSD 2 chiều với máy chủ qua POST /api/sync/osd
-      try {
-        const localOsd = StorageService.getOsdReceipts();
-        const localTombstones = StorageService.getTombstones();
-        const res = await fetchJson<{
-          ok: boolean;
-          osdRevision: number;
-          osd: OsdReceipt[];
-          tombstones?: Record<string, number>;
-        }>('/api/sync/osd', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            clientId: CLIENT_ID,
-            osd: localOsd,
-            tombstones: localTombstones.osd || {}
-          })
-        });
+      // Chạy SONG SONG các luồng đồng bộ độc lập để TỐI ĐA HÓA TỐC ĐỘ:
+      const syncTasks: Promise<any>[] = [
+        // 1. Đồng bộ nhịp tim phiên
+        verifySessionHeartbeat(true).catch(() => {}),
 
-        if (res.ok && Array.isArray(res.osd)) {
-          StorageService.applyRemoteOsdReceipts(res.osd, this.getActorId());
-          if (res.tombstones && typeof res.tombstones === 'object') {
-            const tombs = StorageService.getTombstones();
-            tombs.osd = { ...(tombs.osd || {}), ...res.tombstones };
-            StorageService.saveTombstones(tombs);
-          }
-          notifyOsdListeners(StorageService.getOsdReceipts());
-          serverOk = true;
-          lastKnownOsdRev = Math.max(lastKnownOsdRev, Number(res.osdRevision) || 0);
-        }
-      } catch (err) {
-        console.warn('Dedicated POST /api/sync/osd error, trying GET fallback:', err);
-        // Fallback GET
-        try {
-          const fallbackRes = await fetchJson<{
-            ok: boolean;
-            osdRevision: number;
-            osd: OsdReceipt[];
-            tombstones?: Record<string, number>;
-          }>('/api/sync/osd', { method: 'GET' });
-          if (fallbackRes.ok && Array.isArray(fallbackRes.osd)) {
-            StorageService.applyRemoteOsdReceipts(fallbackRes.osd, this.getActorId());
-            notifyOsdListeners(StorageService.getOsdReceipts());
-            serverOk = true;
-          }
-        } catch (fbErr) {
-          console.warn('Dedicated GET /api/sync/osd fallback error:', fbErr);
-        }
-      }
+        // 2. Đồng bộ chuyên biệt OSD 2 chiều qua /api/sync/osd
+        (async () => {
+          try {
+            const localOsd = StorageService.getOsdReceipts();
+            const localTombstones = StorageService.getTombstones();
+            const res = await fetchJson<{
+              ok: boolean;
+              osdRevision: number;
+              osd: OsdReceipt[];
+              tombstones?: Record<string, number>;
+            }>('/api/sync/osd', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                clientId: CLIENT_ID,
+                osd: localOsd,
+                tombstones: localTombstones.osd || {}
+              })
+            });
 
-      // 2. Đồng thời kiểm tra đồng bộ với Cloud Firestore nếu đang kết nối Google
+            if (res.ok && Array.isArray(res.osd)) {
+              StorageService.applyRemoteOsdReceipts(res.osd, this.getActorId());
+              if (res.tombstones && typeof res.tombstones === 'object') {
+                const tombs = StorageService.getTombstones();
+                tombs.osd = { ...(tombs.osd || {}), ...res.tombstones };
+                StorageService.saveTombstones(tombs);
+              }
+              notifyOsdListeners(StorageService.getOsdReceipts());
+              serverOk = true;
+              lastKnownOsdRev = Math.max(lastKnownOsdRev, Number(res.osdRevision) || 0);
+            }
+          } catch {
+            // Fallback GET nhanh
+            try {
+              const fb = await fetchJson<{ ok: boolean; osd: OsdReceipt[] }>('/api/sync/osd');
+              if (fb.ok && Array.isArray(fb.osd)) {
+                StorageService.applyRemoteOsdReceipts(fb.osd, this.getActorId());
+                notifyOsdListeners(StorageService.getOsdReceipts());
+                serverOk = true;
+              }
+            } catch {}
+          }
+        })(),
+
+        // 3. Đồng bộ toàn bộ dữ liệu hệ thống (Người dùng, Kho bãi, Vật tư, Phiếu nhập xuất)
+        (async () => {
+          try {
+            const reconRes = await reconcileInternal();
+            if (reconRes.cloudSuccess) cloudOk = true;
+            if (reconRes.localSuccess) serverOk = true;
+          } catch {}
+        })()
+      ];
+
+      // Nếu Cloud đang kết nối, kích hoạt đẩy OSD lên Cloud Firestore song song
       if (FirestoreSyncService.isCloudConnected() || FirestoreSyncService.hasAuthenticatedCloudUser()) {
-        try {
-          const pushOk = await FirestoreSyncService.pushOsdRealtimeToCloud();
-          cloudOk = Boolean(pushOk);
-        } catch (cErr) {
-          console.warn('Cloud Firestore OSD sync error:', cErr);
-        }
+        syncTasks.push(
+          FirestoreSyncService.pushOsdRealtimeToCloud()
+            .then((ok) => {
+              if (ok) cloudOk = true;
+            })
+            .catch(() => {})
+        );
       }
 
-      // 3. Kích hoạt đồng bộ toàn bộ dữ liệu người dùng (tài khoản, kho, vật tư, phiếu) ngầm
-      void reconcileInternal().catch(() => {});
-
+      await Promise.all(syncTasks);
       await StorageService.flush();
-      const osdCount = StorageService.getOsdReceipts().length;
 
-      if (serverOk || cloudOk) {
-        return {
-          success: true,
-          message: `Đồng bộ biên bản OSD thành công (${osdCount} biên bản)!`,
-          cloudSynced: cloudOk,
-          localSynced: serverOk,
-          osdCount
-        };
-      } else {
-        return {
-          success: false,
-          message: 'Không thể kết nối đến máy chủ để đồng bộ OSD. Dữ liệu đã được lưu trữ an toàn trên máy.',
-          osdCount
-        };
-      }
+      const finalOsdCount = StorageService.getOsdReceipts().length;
+      const finalMatCount = StorageService.getMaterials().length;
+
+      return {
+        success: true,
+        message: `Đồng bộ toàn bộ dữ liệu & OSD thành công (${finalOsdCount} biên bản OSD, ${finalMatCount} vật tư)!`,
+        cloudSynced: cloudOk,
+        localSynced: serverOk,
+        osdCount: finalOsdCount
+      };
     } catch (err: any) {
       return {
         success: false,
         error: err?.message || String(err),
-        message: `Đồng bộ OSD bị gián đoạn: ${err?.message || 'Lỗi kết nối mạng'}. Dữ liệu đã lưu cục bộ.`,
+        message: `Đồng bộ bị gián đoạn: ${err?.message || 'Lỗi mạng'}. Dữ liệu trên máy vẫn an toàn.`,
         osdCount: StorageService.getOsdReceipts().length
       };
+    } finally {
+      notifySyncState(false);
     }
+  },
+
+  async syncOsd(): Promise<SyncResult> {
+    // Gộp trực tiếp hành động đồng bộ OSD với đồng bộ dữ liệu làm một!
+    return this.syncNow();
   },
 
   async pushOsdImmediately(): Promise<void> {

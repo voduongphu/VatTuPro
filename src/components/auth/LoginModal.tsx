@@ -99,15 +99,6 @@ export const LoginModal: React.FC<LoginModalProps> = ({ isOpen, onClose }) => {
     }
   };
 
-  const handleRemoteLogoutAndLoginDirect = async () => {
-    setIsForcingLogout(true);
-    try {
-      await handleGoogleSignIn(true, !activeGoogleEmail, Boolean(activeGoogleEmail));
-    } finally {
-      setIsForcingLogout(false);
-    }
-  };
-
   const handleRequestLogoutOtherOnly = async () => {
     setErrorMessage('');
     setSuccessMessage('');
@@ -219,22 +210,6 @@ export const LoginModal: React.FC<LoginModalProps> = ({ isOpen, onClose }) => {
                   </span>
                 </button>
 
-                {/* Nút xác nhận Đăng xuất thiết bị kia từ xa & Đăng nhập tại đây luôn hiển thị trên modal */}
-                <button
-                  type="button"
-                  onClick={handleRemoteLogoutAndLoginDirect}
-                  disabled={isBusy}
-                  title="Thu hồi phiên đang mở trên bất kỳ thiết bị nào khác và đăng nhập vào thiết bị này"
-                  className="w-full min-h-[44px] py-2.5 px-3 bg-amber-500 hover:bg-amber-400 text-slate-950 font-extrabold text-xs rounded-xl shadow-md transition flex items-center justify-center gap-2 disabled:opacity-70"
-                >
-                  <LogOut className="w-4 h-4 shrink-0" />
-                  <span>
-                    {isForcingLogout
-                      ? 'Đang đăng xuất thiết bị kia & Đăng nhập...'
-                      : 'Đăng xuất thiết bị kia từ xa & Đăng nhập tại đây'}
-                  </span>
-                </button>
-
                 <button
                   type="button"
                   onClick={() => handleGoogleSignIn(false, true, false)}
@@ -246,35 +221,17 @@ export const LoginModal: React.FC<LoginModalProps> = ({ isOpen, onClose }) => {
                 </button>
               </>
             ) : (
-              <div className="space-y-2.5">
-                <button
-                  type="button"
-                  onClick={() => handleGoogleSignIn(false, true, false)}
-                  disabled={isBusy}
-                  className="w-full min-h-[48px] py-3 px-4 bg-white hover:bg-slate-50 border-2 border-slate-200 hover:border-blue-400 text-slate-900 font-bold text-sm rounded-xl shadow-sm transition flex items-center justify-center gap-3 disabled:opacity-70"
-                >
-                  <GoogleLogoIcon className="w-5 h-5 shrink-0" />
-                  <span>
-                    {isSubmitting && !isForcingLogout ? 'Đang mở xác thực Google...' : 'Đăng nhập bằng tài khoản Google'}
-                  </span>
-                </button>
-
-                {/* Nút xác nhận Đăng xuất thiết bị kia từ xa & Đăng nhập tại đây luôn hiển thị trên modal */}
-                <button
-                  type="button"
-                  onClick={handleRemoteLogoutAndLoginDirect}
-                  disabled={isBusy}
-                  title="Thu hồi phiên đang mở trên bất kỳ thiết bị nào khác và đăng nhập vào thiết bị này"
-                  className="w-full min-h-[44px] py-2.5 px-3 bg-amber-500 hover:bg-amber-400 text-slate-950 font-extrabold text-xs rounded-xl shadow-md transition flex items-center justify-center gap-2 disabled:opacity-70"
-                >
-                  <LogOut className="w-4 h-4 shrink-0" />
-                  <span>
-                    {isForcingLogout
-                      ? 'Đang đăng xuất thiết bị kia & Đăng nhập...'
-                      : 'Đăng xuất thiết bị kia từ xa & Đăng nhập tại đây'}
-                  </span>
-                </button>
-              </div>
+              <button
+                type="button"
+                onClick={() => handleGoogleSignIn(false, true, false)}
+                disabled={isBusy}
+                className="w-full min-h-[48px] py-3 px-4 bg-white hover:bg-slate-50 border-2 border-slate-200 hover:border-blue-400 text-slate-900 font-bold text-sm rounded-xl shadow-sm transition flex items-center justify-center gap-3 disabled:opacity-70"
+              >
+                <GoogleLogoIcon className="w-5 h-5 shrink-0" />
+                <span>
+                  {isSubmitting && !isForcingLogout ? 'Đang mở xác thực Google...' : 'Đăng nhập bằng tài khoản Google'}
+                </span>
+              </button>
             )}
           </div>
 

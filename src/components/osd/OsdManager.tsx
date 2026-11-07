@@ -146,7 +146,7 @@ export const OsdManager: React.FC = () => {
         return;
       }
 
-      const res = await SyncService.syncOsd();
+      const res = await SyncService.syncNow();
       loadData();
       if (res.success) {
         setSyncFeedback(null);
@@ -219,8 +219,8 @@ export const OsdManager: React.FC = () => {
       }
     });
 
-    // 7. Chủ động kéo dữ liệu OSD mới nhất ngay khi mở trang qua giao thức OSD chuyên biệt
-    void SyncService.syncOsd().then((res) => {
+    // 7. Chủ động kéo dữ liệu đồng bộ hợp nhất mới nhất ngay khi mở trang
+    void SyncService.syncNow().then((res) => {
       loadData();
       if (res.success) {
         setSyncFeedback(null);
@@ -607,7 +607,7 @@ export const OsdManager: React.FC = () => {
         showToast(`Đã cập nhật OSD "${trimmedCode}" (Lưu cục bộ an toàn, sẽ tự đồng bộ khi có Internet)`, 'success');
       } else {
         showToast(`Đã cập nhật biên bản OSD "${trimmedCode}" thành công!`);
-        void SyncService.syncOsd().then((res) => {
+        void SyncService.syncNow().then((res) => {
           loadData();
           if (res.success) {
             setSyncFeedback(null);
@@ -650,7 +650,7 @@ export const OsdManager: React.FC = () => {
         showToast(`Đã lập biên bản OSD "${trimmedCode}" (Lưu cục bộ an toàn, sẽ tự đồng bộ khi có Internet)`, 'success');
       } else {
         showToast(`Đã lập biên bản OSD "${trimmedCode}" thành công!`);
-        void SyncService.syncOsd().then((res) => {
+        void SyncService.syncNow().then((res) => {
           loadData();
           if (res.success) {
             setSyncFeedback(null);
@@ -677,7 +677,7 @@ export const OsdManager: React.FC = () => {
       showToast(`Đã xóa biên bản OSD "${code}" (Lưu cục bộ, sẽ tự đồng bộ khi có mạng)`);
     } else {
       showToast(`Đã xóa biên bản OSD "${code}"`);
-      void SyncService.syncOsd().then((res) => {
+      void SyncService.syncNow().then((res) => {
         loadData();
         if (res.success) {
           setSyncFeedback(null);
@@ -792,7 +792,7 @@ export const OsdManager: React.FC = () => {
                   ? 'bg-blue-50 text-blue-700 border-blue-200 cursor-wait'
                   : 'bg-white text-slate-700 hover:bg-slate-50 border-slate-300 shadow-xs'
             }`}
-            title="Đồng bộ dữ liệu OSD hai chiều với Cloud Firestore và Máy chủ"
+            title="Đồng bộ hợp nhất toàn bộ dữ liệu hệ thống & OSD tốc độ cao"
           >
             {isSyncing ? (
               <Loader2 className="w-4 h-4 animate-spin text-blue-600 shrink-0" />
@@ -802,7 +802,7 @@ export const OsdManager: React.FC = () => {
               <RefreshCw className="w-4 h-4 text-slate-600 shrink-0" />
             )}
             <span className="hidden sm:inline">
-              {isSyncing ? 'Đang đồng bộ...' : isOffline ? 'Mất kết nối' : 'Đồng bộ OSD'}
+              {isSyncing ? 'Đang đồng bộ...' : isOffline ? 'Mất kết nối' : 'Đồng bộ dữ liệu & OSD'}
             </span>
           </button>
 

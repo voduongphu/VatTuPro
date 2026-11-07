@@ -119,15 +119,6 @@ export const LoginScreen: React.FC = () => {
     }
   };
 
-  const handleRemoteLogoutAndLogin = async () => {
-    setIsRequestingRemoteLogout(true);
-    try {
-      await handleGoogleSignIn(true, !activeGoogleEmail, Boolean(activeGoogleEmail));
-    } finally {
-      setIsRequestingRemoteLogout(false);
-    }
-  };
-
   const handleRequestLogoutOtherOnly = async () => {
     setErrorMessage('');
     setSuccessMessage('');
@@ -322,22 +313,6 @@ export const LoginScreen: React.FC = () => {
                       )}
                     </button>
 
-                    {/* Nút xác nhận Đăng xuất thiết bị kia từ xa & Đăng nhập tại đây luôn hiển thị trên màn hình */}
-                    <button
-                      type="button"
-                      onClick={handleRemoteLogoutAndLogin}
-                      disabled={isBusy}
-                      title="Thu hồi phiên đang mở trên bất kỳ thiết bị nào khác và đăng nhập vào thiết bị này"
-                      className="w-full min-h-[48px] py-3 px-4 bg-amber-500 hover:bg-amber-400 text-slate-950 font-extrabold text-xs sm:text-sm rounded-xl shadow-lg shadow-amber-950/40 transition active:scale-[0.99] flex items-center justify-center gap-2.5 disabled:opacity-70"
-                    >
-                      <LogOut className="w-4 h-4 shrink-0 text-slate-950" />
-                      <span>
-                        {isRequestingRemoteLogout
-                          ? 'Đang đăng xuất thiết bị kia & Đăng nhập...'
-                          : 'Đăng xuất thiết bị kia từ xa & Đăng nhập tại đây'}
-                      </span>
-                    </button>
-
                     <button
                       type="button"
                       onClick={() => handleGoogleSignIn(false, true, false)}
@@ -349,42 +324,24 @@ export const LoginScreen: React.FC = () => {
                     </button>
                   </div>
                 ) : (
-                  <div className="space-y-3">
-                    <button
-                      type="button"
-                      onClick={() => handleGoogleSignIn(false, true, false)}
-                      disabled={isBusy}
-                      className="w-full min-h-[54px] py-3.5 px-5 bg-white hover:bg-slate-100 text-slate-900 font-extrabold text-sm sm:text-base rounded-xl shadow-xl shadow-blue-950/50 transition active:scale-[0.99] flex items-center justify-center gap-3 disabled:opacity-70"
-                    >
-                      {isAuthenticating && !isRequestingRemoteLogout ? (
-                        <>
-                          <RefreshCw className="w-5 h-5 text-blue-600 animate-spin shrink-0" />
-                          <span>Đang mở xác thực Google...</span>
-                        </>
-                      ) : (
-                        <>
-                          <GoogleLogoIcon className="w-5 h-5 shrink-0" />
-                          <span>Đăng nhập bằng tài khoản Google</span>
-                        </>
-                      )}
-                    </button>
-
-                    {/* Nút xác nhận Đăng xuất thiết bị kia từ xa & Đăng nhập tại đây luôn hiển thị trên màn hình */}
-                    <button
-                      type="button"
-                      onClick={() => handleGoogleSignIn(true, true, false)}
-                      disabled={isBusy}
-                      title="Thu hồi phiên đang mở trên bất kỳ thiết bị nào khác và đăng nhập vào thiết bị này"
-                      className="w-full min-h-[48px] py-3 px-4 bg-amber-500 hover:bg-amber-400 text-slate-950 font-extrabold text-xs sm:text-sm rounded-xl shadow-lg shadow-amber-950/40 transition active:scale-[0.99] flex items-center justify-center gap-2.5 disabled:opacity-70"
-                    >
-                      <LogOut className="w-4 h-4 shrink-0 text-slate-950" />
-                      <span>
-                        {isRequestingRemoteLogout
-                          ? 'Đang đăng xuất thiết bị kia & Đăng nhập...'
-                          : 'Đăng xuất thiết bị kia từ xa & Đăng nhập tại đây'}
-                      </span>
-                    </button>
-                  </div>
+                  <button
+                    type="button"
+                    onClick={() => handleGoogleSignIn(false, true, false)}
+                    disabled={isBusy}
+                    className="w-full min-h-[54px] py-3.5 px-5 bg-white hover:bg-slate-100 text-slate-900 font-extrabold text-sm sm:text-base rounded-xl shadow-xl shadow-blue-950/50 transition active:scale-[0.99] flex items-center justify-center gap-3 disabled:opacity-70"
+                  >
+                    {isAuthenticating && !isRequestingRemoteLogout ? (
+                      <>
+                        <RefreshCw className="w-5 h-5 text-blue-600 animate-spin shrink-0" />
+                        <span>Đang mở xác thực Google...</span>
+                      </>
+                    ) : (
+                      <>
+                        <GoogleLogoIcon className="w-5 h-5 shrink-0" />
+                        <span>Đăng nhập bằng tài khoản Google</span>
+                      </>
+                    )}
+                  </button>
                 )}
 
                 <div className="pt-2 border-t border-slate-800/80 space-y-2 text-[11px] text-slate-400 leading-relaxed">
