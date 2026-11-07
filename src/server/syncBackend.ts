@@ -41,8 +41,8 @@ import {
 const SESSION_HMAC_SECRET =
   process.env.SESSION_SECRET || 'vtp-inventory-single-device-hmac-secret-2026-v2';
 
-// Phiên đang hoạt động gửi nhịp tim mỗi 2 giây; ngưỡng 90 giây đủ an toàn khi chuyển mạng di động và tự giải phóng khi đóng trình duyệt
-const ACTIVE_SESSION_TTL_MS = 90_000;
+// Ngưỡng 24 giờ bảo vệ toàn vẹn phiên; phiên chỉ giải phóng khi người dùng đăng xuất hoặc thiết bị khác force-logout
+const ACTIVE_SESSION_TTL_MS = 24 * 60 * 60 * 1000;
 
 const ROOT_ADMIN_FALLBACK: User = {
   id: 'user-admin-01',
@@ -946,8 +946,8 @@ export function createSyncBackend(options: SyncBackendOptions = {}): SyncBackend
     const liveOtherSession = getLiveActiveSession(userKey, user, nowMs);
     if (
       liveOtherSession &&
-      liveOtherSession.deviceId !== cleanDeviceId &&
-      !isForceLogout
+      !isForceLogout &&
+      (liveOtherSession.deviceId !== cleanDeviceId || liveOtherSession.sessionToken)
     ) {
       res.json({
         success: false,
@@ -1129,8 +1129,8 @@ export function createSyncBackend(options: SyncBackendOptions = {}): SyncBackend
     const liveOtherSession = getLiveActiveSession(userKey, user, nowMs);
     if (
       liveOtherSession &&
-      liveOtherSession.deviceId !== cleanDeviceId &&
-      !isForceLogout
+      !isForceLogout &&
+      (liveOtherSession.deviceId !== cleanDeviceId || liveOtherSession.sessionToken)
     ) {
       res.json({
         success: false,

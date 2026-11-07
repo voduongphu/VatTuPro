@@ -363,50 +363,45 @@ function clearBrowserAuthCookiesAndArtifacts(userKeyToClear?: string): void {
 
 export function getDeviceId(): string {
   if (memoryDeviceId) return memoryDeviceId;
-  let existing: string | null = null;
+  let tabId: string | null = null;
   try {
-    existing = localStorage.getItem(DEVICE_ID_STORAGE_KEY);
+    tabId = sessionStorage.getItem('__app_tab_instance_id__');
   } catch {
     // ignore
   }
-  if (!existing) {
+  if (!tabId) {
+    tabId =
+      typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+        ? `tab-${crypto.randomUUID().slice(0, 8)}`
+        : `tab-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
     try {
-      existing = sessionStorage.getItem(DEVICE_ID_STORAGE_KEY);
+      sessionStorage.setItem('__app_tab_instance_id__', tabId);
     } catch {
       // ignore
     }
-  }
-  if (existing) {
-    memoryDeviceId = existing;
-    try {
-      localStorage.setItem(DEVICE_ID_STORAGE_KEY, existing);
-    } catch {
-      // ignore
-    }
-    try {
-      sessionStorage.setItem(DEVICE_ID_STORAGE_KEY, existing);
-    } catch {
-      // ignore
-    }
-    return existing;
   }
 
-  const created =
-    typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
-      ? `dev-${crypto.randomUUID()}`
-      : `dev-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-  memoryDeviceId = created;
+  let hardwareId: string | null = null;
   try {
-    localStorage.setItem(DEVICE_ID_STORAGE_KEY, created);
+    hardwareId = localStorage.getItem(DEVICE_ID_STORAGE_KEY);
   } catch {
     // ignore
   }
-  try {
-    sessionStorage.setItem(DEVICE_ID_STORAGE_KEY, created);
-  } catch {
-    // ignore
+  if (!hardwareId) {
+    hardwareId =
+      typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+        ? `dev-${crypto.randomUUID().slice(0, 12)}`
+        : `dev-${Date.now().toString(36)}`;
+    try {
+      localStorage.setItem(DEVICE_ID_STORAGE_KEY, hardwareId);
+    } catch {
+      // ignore
+    }
   }
-  return created;
+
+  const combined = `${hardwareId}.${tabId}`;
+  memoryDeviceId = combined;
+  return combined;
 }
 
 export function getDeviceLabel(): string {
@@ -1705,7 +1700,7 @@ export const SyncService = {
         if (remoteToken === current.session.sessionToken) return;
         if (remoteToken && revokedLocalTokens.has(remoteToken)) return;
 
-        if (!remoteToken && revokedBefore > 0 && myIssued > 0 && myIssued <= revokedBefore) {
+        if (revokedBefore > 0 && myIssued > 0 && myIssued <= revokedBefore) {
           triggerLocalKickOut({
             reason: 'force_logout',
             deviceLabel: remoteData.forceLogoutDeviceLabel
@@ -1716,11 +1711,10 @@ export const SyncService = {
           return;
         }
 
-        // Chỉ ngắt phiên hiện tại nếu thiết bị khác phát hành phiên MỚI HƠN phiên này!
+        // Nếu có phiên khác token và mới hơn được phát hành trên tài khoản này
         if (
           remoteToken &&
           remoteToken !== current.session.sessionToken &&
-          remoteData.deviceId !== current.session.deviceId &&
           remoteIssued > myIssued
         ) {
           triggerLocalKickOut({
@@ -1728,6 +1722,7 @@ export const SyncService = {
             deviceLabel: remoteData.deviceLabel ? String(remoteData.deviceLabel) : undefined,
             loginAt: remoteData.loginAt ? String(remoteData.loginAt) : undefined
           });
+          return;
         }
       }
     });
@@ -2169,9 +2164,9 @@ export const SyncService = {
         if (
           cloudRes.handled &&
           cloudRes.conflict &&
+          !forceFlag &&
           cloudRes.activeSession &&
-          (cloudRes.activeSession.deviceId === deviceId ||
-            revokedLocalTokens.has(cloudRes.activeSession.sessionToken))
+          revokedLocalTokens.has(cloudRes.activeSession.sessionToken)
         ) {
           cloudRes = await FirestoreSyncService.loginWithGoogleIdentityOnCloud(
             authRes.fbUser,
@@ -2215,7 +2210,7 @@ export const SyncService = {
               deviceId,
               deviceLabel,
               localUsers: StorageService.getUsers(),
-              forceLogoutOtherDevice: true
+              forceLogoutOtherDevice: forceFlag
             })
           }).catch(() => {});
 
@@ -2278,8 +2273,7 @@ export const SyncService = {
           res.conflict &&
           !forceFlag &&
           res.activeSession &&
-          (res.activeSession.deviceId === deviceId ||
-            revokedLocalTokens.has(res.activeSession.sessionToken))
+          revokedLocalTokens.has(res.activeSession.sessionToken)
         ) {
           res = await attemptGoogleServerLogin(true);
         }
@@ -2604,8 +2598,7 @@ export const SyncService = {
             cloudRes.conflict &&
             !forceLogoutOtherDevice &&
             cloudRes.activeSession &&
-            (cloudRes.activeSession.deviceId === deviceId ||
-              revokedLocalTokens.has(cloudRes.activeSession.sessionToken))
+            revokedLocalTokens.has(cloudRes.activeSession.sessionToken)
           ) {
             cloudRes = await FirestoreSyncService.loginWithCloud(
               cleanUsername,
@@ -2697,13 +2690,11 @@ export const SyncService = {
         res = await attemptLogin(forceLogoutOtherDevice);
       }
 
-      // Nếu máy chủ còn giữ mã phiên vừa bấm Đăng xuất của chính trình duyệt này, tự động giải phóng và cấp phiên mới ngay
       if (
         res.conflict &&
         !forceLogoutOtherDevice &&
         res.activeSession &&
-        (res.activeSession.deviceId === deviceId ||
-          revokedLocalTokens.has(res.activeSession.sessionToken))
+        revokedLocalTokens.has(res.activeSession.sessionToken)
       ) {
         res = await attemptLogin(true);
       }

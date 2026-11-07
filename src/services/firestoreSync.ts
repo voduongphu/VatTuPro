@@ -113,7 +113,7 @@ const WORKSPACE_NAME = 'Hệ Thống Quản Lý Nhập Xuất Tồn Vật Tư';
 const BOOTSTRAPPED_ADMIN_EMAIL = 'voduongphu@gmail.com';
 const CLOUD_CHUNK_SIZE = 200;
 const BATCH_OP_LIMIT = 380;
-const ACTIVE_SESSION_TTL_MS = 90_000;
+const ACTIVE_SESSION_TTL_MS = 24 * 60 * 60 * 1000; // 24 giờ bảo vệ toàn vẹn phiên
 
 const knownExistingPaths = new Set<string>();
 const stateListeners = new Set<(state: CloudSyncSnapshotState) => void>();
@@ -130,6 +130,7 @@ let currentState: CloudSyncSnapshotState = {
 
 let workspaceUnsub: Unsubscribe | null = null;
 let sessionUnsub: Unsubscribe | null = null;
+let sessionHeartbeatInterval: ReturnType<typeof setInterval> | null = null;
 let osdUnsub: Unsubscribe | null = null;
 let watchedSessionDocId: string | null = null;
 let workspaceReadyPromise: Promise<boolean> | null = null;
@@ -1301,8 +1302,12 @@ function detachAllListeners(): void {
   if (sessionUnsub) {
     sessionUnsub();
     sessionUnsub = null;
-    watchedSessionDocId = null;
   }
+  if (sessionHeartbeatInterval) {
+    clearInterval(sessionHeartbeatInterval);
+    sessionHeartbeatInterval = null;
+  }
+  watchedSessionDocId = null;
 }
 
 // ============================================================================
@@ -2343,8 +2348,12 @@ export const FirestoreSyncService = {
       if (sessionUnsub) {
         sessionUnsub();
         sessionUnsub = null;
-        watchedSessionDocId = null;
       }
+      if (sessionHeartbeatInterval) {
+        clearInterval(sessionHeartbeatInterval);
+        sessionHeartbeatInterval = null;
+      }
+      watchedSessionDocId = null;
       return;
     }
 
@@ -2355,6 +2364,10 @@ export const FirestoreSyncService = {
     if (sessionUnsub) {
       sessionUnsub();
       sessionUnsub = null;
+    }
+    if (sessionHeartbeatInterval) {
+      clearInterval(sessionHeartbeatInterval);
+      sessionHeartbeatInterval = null;
     }
     watchedSessionDocId = sessionDocId;
     const sessPath = `workspaces/${WORKSPACE_ID}/sessions/${sessionDocId}`;
@@ -2375,6 +2388,19 @@ export const FirestoreSyncService = {
         }
       }
     );
+
+    // Duy trì nhịp tim định kỳ cập nhật lastSeenAt mỗi 35 giây để session luôn tươi mới
+    sessionHeartbeatInterval = setInterval(async () => {
+      try {
+        const u = auth.currentUser;
+        if (!u || !u.emailVerified) return;
+        await updateDoc(sessRef, {
+          lastSeenAt: Date.now()
+        });
+      } catch {
+        // ignore heartbeat error
+      }
+    }, 35_000);
   },
 
   async reconcileWithCloud(): Promise<boolean> {
@@ -2904,8 +2930,13 @@ export const FirestoreSyncService = {
         prevRevoked = Math.max(prevRevoked, Number(d.revokedBeforeMs) || 0);
         const existingToken = String(d.sessionToken || '');
         const hasToken = Boolean(existingToken) && !revokedCloudSessionTokens.has(existingToken);
-        const isFresh = isSessionHeartbeatFresh(nowMs, Number(d.lastSeenAt) || 0, ACTIVE_SESSION_TTL_MS);
-        if (hasToken && isFresh) {
+        const isFresh = isSessionHeartbeatFresh(
+          nowMs,
+          Number(d.lastSeenAt) || Number(d.issuedAtMs) || 0,
+          ACTIVE_SESSION_TTL_MS
+        );
+        const isUnrevoked = prevRevoked === 0 || prevIssued > prevRevoked;
+        if (hasToken && isFresh && isUnrevoked) {
           prevActive = {
             userId: String(d.userId || matched.id),
             username: String(d.username || matched.username),
@@ -2920,14 +2951,16 @@ export const FirestoreSyncService = {
         }
       }
 
-      if (prevActive && prevActive.deviceId !== deviceId && !forceLogoutOtherDevice) {
-        return {
-          handled: true,
-          success: false,
-          conflict: true,
-          activeSession: prevActive,
-          message: `Tài khoản "${matched.username}" đang đăng nhập trên ${prevActive.deviceLabel || 'thiết bị khác'}. Không cho phép một tài khoản đăng nhập cùng lúc trên 2 thiết bị. Bạn có muốn đăng xuất thiết bị kia từ xa để đăng nhập tại đây không?`
-        };
+      if (prevActive && !forceLogoutOtherDevice) {
+        if (prevActive.deviceId !== deviceId || prevActive.sessionToken) {
+          return {
+            handled: true,
+            success: false,
+            conflict: true,
+            activeSession: prevActive,
+            message: `Tài khoản "${matched.username}" đang đăng nhập trên ${prevActive.deviceLabel || 'thiết bị khác'}. Không cho phép một tài khoản đăng nhập cùng lúc trên 2 thiết bị. Bạn có muốn đăng xuất thiết bị kia từ xa để đăng nhập tại đây không?`
+          };
+        }
       }
 
       if (prevActive?.sessionToken) {
@@ -3146,10 +3179,11 @@ export const FirestoreSyncService = {
           const hasToken = Boolean(existingToken) && !revokedCloudSessionTokens.has(existingToken);
           const isFresh = isSessionHeartbeatFresh(
             nowMs,
-            Number(d.lastSeenAt) || 0,
+            Number(d.lastSeenAt) || Number(d.issuedAtMs) || 0,
             ACTIVE_SESSION_TTL_MS
           );
-          if (hasToken && isFresh) {
+          const isUnrevoked = prevRevoked === 0 || prevIssued > prevRevoked;
+          if (hasToken && isFresh && isUnrevoked) {
             prevActive = {
               userId: String(d.userId || matched.id),
               username: String(d.username || matched.username),
@@ -3164,14 +3198,16 @@ export const FirestoreSyncService = {
           }
         }
 
-        if (prevActive && prevActive.deviceId !== deviceId && !forceLogoutOtherDevice) {
-          return {
-            handled: true,
-            success: false,
-            conflict: true,
-            activeSession: prevActive,
-            message: `Tài khoản Google "${matched.username}" (${matched.email}) đang đăng nhập trên ${prevActive.deviceLabel || 'thiết bị khác'}. Không cho phép một tài khoản đăng nhập cùng lúc trên 2 thiết bị. Bạn có muốn đăng xuất thiết bị kia từ xa để đăng nhập tại đây không?`
-          };
+        if (prevActive && !forceLogoutOtherDevice) {
+          if (prevActive.deviceId !== deviceId || prevActive.sessionToken) {
+            return {
+              handled: true,
+              success: false,
+              conflict: true,
+              activeSession: prevActive,
+              message: `Tài khoản Google "${matched.username}" (${matched.email}) đang đăng nhập trên ${prevActive.deviceLabel || 'thiết bị khác'}. Không cho phép một tài khoản đăng nhập cùng lúc trên 2 thiết bị. Bạn có muốn đăng xuất thiết bị kia từ xa để đăng nhập tại đây không?`
+            };
+          }
         }
 
         if (timedOut) {

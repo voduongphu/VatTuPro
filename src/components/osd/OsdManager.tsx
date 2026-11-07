@@ -783,30 +783,6 @@ export const OsdManager: React.FC = () => {
           </button>
 
           <button
-            onClick={handleSyncNow}
-            disabled={isSyncing}
-            className={`flex items-center justify-center gap-1.5 px-3.5 py-2.5 rounded-xl text-xs font-semibold transition active:scale-95 min-h-[42px] border ${
-              isOffline
-                ? 'bg-amber-50 text-amber-800 border-amber-300 hover:bg-amber-100'
-                : isSyncing
-                  ? 'bg-blue-50 text-blue-700 border-blue-200 cursor-wait'
-                  : 'bg-white text-slate-700 hover:bg-slate-50 border-slate-300 shadow-xs'
-            }`}
-            title="Đồng bộ hợp nhất toàn bộ dữ liệu hệ thống & OSD tốc độ cao"
-          >
-            {isSyncing ? (
-              <Loader2 className="w-4 h-4 animate-spin text-blue-600 shrink-0" />
-            ) : isOffline ? (
-              <WifiOff className="w-4 h-4 text-amber-600 shrink-0" />
-            ) : (
-              <RefreshCw className="w-4 h-4 text-slate-600 shrink-0" />
-            )}
-            <span className="hidden sm:inline">
-              {isSyncing ? 'Đang đồng bộ...' : isOffline ? 'Mất kết nối' : 'Đồng bộ dữ liệu & OSD'}
-            </span>
-          </button>
-
-          <button
             onClick={handleExportExcel}
             className="flex items-center justify-center gap-1.5 px-3.5 py-2.5 bg-emerald-700 hover:bg-emerald-800 text-white rounded-xl text-xs font-semibold shadow-md shadow-emerald-700/20 transition active:scale-95 min-h-[42px]"
             title="Xuất danh sách OSD ra file Excel"
@@ -838,14 +814,6 @@ export const OsdManager: React.FC = () => {
               </p>
             </div>
           </div>
-          <button
-            onClick={handleSyncNow}
-            disabled={isSyncing}
-            className="w-full sm:w-auto px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white rounded-xl text-xs font-semibold shrink-0 transition flex items-center justify-center gap-1.5 shadow-sm active:scale-95 disabled:opacity-50"
-          >
-            <RefreshCw className={`w-3.5 h-3.5 ${isSyncing ? 'animate-spin' : ''}`} />
-            <span>{isSyncing ? 'Đang kiểm tra...' : 'Kiểm tra kết nối lại'}</span>
-          </button>
         </div>
       )}
 
@@ -862,28 +830,20 @@ export const OsdManager: React.FC = () => {
                   Đồng bộ dữ liệu OSD bị gián đoạn
                 </h4>
                 <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-200/90 text-rose-900 uppercase tracking-wider">
-                  Cần đồng bộ lại
+                  Thông báo
                 </span>
               </div>
               <p className="text-xs text-rose-900/90 mt-1 leading-relaxed">
-                {syncFeedback.message} — Dữ liệu trên máy này vẫn an toàn. Vui lòng bấm &ldquo;Đồng bộ lại&rdquo; để kết nối lại với Cloud Firestore hoặc Máy chủ nội bộ.
+                {syncFeedback.message} — Dữ liệu trên máy này vẫn an toàn. Vui lòng sử dụng nút &ldquo;Đồng Bộ Cloud&rdquo; trên thanh tiêu đề chính khi kết nối mạng ổn định.
               </p>
             </div>
           </div>
           <div className="flex items-center gap-2 w-full sm:w-auto">
             <button
               onClick={() => setSyncFeedback(null)}
-              className="px-3 py-2 bg-white hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-xl text-xs font-semibold transition"
+              className="px-3.5 py-2 bg-white hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-xl text-xs font-semibold transition"
             >
-              Bỏ qua
-            </button>
-            <button
-              onClick={handleSyncNow}
-              disabled={isSyncing}
-              className="flex-1 sm:flex-initial px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-semibold shrink-0 transition flex items-center justify-center gap-1.5 shadow-sm active:scale-95 disabled:opacity-50"
-            >
-              <RefreshCw className={`w-3.5 h-3.5 ${isSyncing ? 'animate-spin' : ''}`} />
-              <span>{isSyncing ? 'Đang đồng bộ...' : 'Đồng bộ lại ngay'}</span>
+              Đã hiểu & Bỏ qua
             </button>
           </div>
         </div>
