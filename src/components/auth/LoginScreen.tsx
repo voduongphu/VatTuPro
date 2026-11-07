@@ -62,7 +62,6 @@ export const LoginScreen: React.FC = () => {
     loginWithGoogle,
     requestLogoutOtherDeviceWithGoogle,
     cloudState,
-    resetBrowserAuthState,
     sessionKickNotice,
     sessionKickAlert,
     isKickModalOpen,
@@ -76,7 +75,6 @@ export const LoginScreen: React.FC = () => {
   const [conflictMessage, setConflictMessage] = useState('');
   const [isAuthenticating, setIsAuthenticating] = useState(false);
   const [isRequestingRemoteLogout, setIsRequestingRemoteLogout] = useState(false);
-  const [isResettingSession, setIsResettingSession] = useState(false);
 
   const handleGoogleSignIn = async (
     forceLogoutOtherDevice = false,
@@ -121,6 +119,15 @@ export const LoginScreen: React.FC = () => {
     }
   };
 
+  const handleRemoteLogoutAndLogin = async () => {
+    setIsRequestingRemoteLogout(true);
+    try {
+      await handleGoogleSignIn(true, !activeGoogleEmail, Boolean(activeGoogleEmail));
+    } finally {
+      setIsRequestingRemoteLogout(false);
+    }
+  };
+
   const handleRequestLogoutOtherOnly = async () => {
     setErrorMessage('');
     setSuccessMessage('');
@@ -140,23 +147,8 @@ export const LoginScreen: React.FC = () => {
     }
   };
 
-  const handleResetBrowserSession = async () => {
-    setErrorMessage('');
-    setSuccessMessage('');
-    setConflictSession(null);
-    setConflictMessage('');
-    clearSessionKickNotice();
-    setIsResettingSession(true);
-    try {
-      const res = await resetBrowserAuthState();
-      setSuccessMessage(res.message);
-    } finally {
-      setIsResettingSession(false);
-    }
-  };
-
   const activeGoogleEmail = (cloudState.cloudEmail || '').trim();
-  const isBusy = isAuthenticating || isRequestingRemoteLogout || isResettingSession;
+  const isBusy = isAuthenticating || isRequestingRemoteLogout;
 
   return (
     <div className="min-h-dvh w-full bg-slate-950 overflow-x-auto overflow-y-auto relative font-sans">
@@ -283,26 +275,9 @@ export const LoginScreen: React.FC = () => {
 
               {/* Thông báo lỗi */}
               {errorMessage && (
-                <div className="p-3.5 bg-rose-950/75 border border-rose-800 rounded-2xl text-rose-200 text-xs space-y-2.5">
-                  <div className="flex items-start gap-2.5">
-                    <AlertCircle className="w-4 h-4 shrink-0 text-rose-400 mt-0.5" />
-                    <span className="font-medium leading-relaxed">{errorMessage}</span>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={handleResetBrowserSession}
-                    disabled={isBusy}
-                    className="w-full min-h-[38px] px-3 py-2 bg-slate-900/90 hover:bg-slate-800 border border-rose-700/60 text-rose-100 font-semibold text-xs rounded-xl transition flex items-center justify-center gap-1.5 disabled:opacity-60"
-                  >
-                    <RefreshCw
-                      className={`w-3.5 h-3.5 shrink-0 ${isResettingSession ? 'animate-spin' : ''}`}
-                    />
-                    <span>
-                      {isResettingSession
-                        ? 'Đang làm mới phiên đăng nhập...'
-                        : 'Làm mới phiên & Xóa dữ liệu đăng nhập Google cũ'}
-                    </span>
-                  </button>
+                <div className="p-3.5 bg-rose-950/75 border border-rose-800 rounded-2xl text-rose-200 text-xs flex items-start gap-2.5">
+                  <AlertCircle className="w-4 h-4 shrink-0 text-rose-400 mt-0.5" />
+                  <span className="font-medium leading-relaxed">{errorMessage}</span>
                 </div>
               )}
 
@@ -334,7 +309,7 @@ export const LoginScreen: React.FC = () => {
                       disabled={isBusy}
                       className="w-full min-h-[52px] py-3.5 px-4 bg-white hover:bg-slate-100 text-slate-900 font-bold text-sm rounded-xl shadow-lg shadow-blue-950/40 transition active:scale-[0.99] flex items-center justify-center gap-3 disabled:opacity-70"
                     >
-                      {isAuthenticating ? (
+                      {isAuthenticating && !isRequestingRemoteLogout ? (
                         <>
                           <RefreshCw className="w-5 h-5 text-blue-600 animate-spin shrink-0" />
                           <span>Đang xác thực & đồng bộ dữ liệu...</span>
@@ -345,6 +320,22 @@ export const LoginScreen: React.FC = () => {
                           <span className="truncate">Tiếp tục với {activeGoogleEmail}</span>
                         </>
                       )}
+                    </button>
+
+                    {/* Nút xác nhận Đăng xuất thiết bị kia từ xa & Đăng nhập tại đây luôn hiển thị trên màn hình */}
+                    <button
+                      type="button"
+                      onClick={handleRemoteLogoutAndLogin}
+                      disabled={isBusy}
+                      title="Thu hồi phiên đang mở trên bất kỳ thiết bị nào khác và đăng nhập vào thiết bị này"
+                      className="w-full min-h-[48px] py-3 px-4 bg-amber-500 hover:bg-amber-400 text-slate-950 font-extrabold text-xs sm:text-sm rounded-xl shadow-lg shadow-amber-950/40 transition active:scale-[0.99] flex items-center justify-center gap-2.5 disabled:opacity-70"
+                    >
+                      <LogOut className="w-4 h-4 shrink-0 text-slate-950" />
+                      <span>
+                        {isRequestingRemoteLogout
+                          ? 'Đang đăng xuất thiết bị kia & Đăng nhập...'
+                          : 'Đăng xuất thiết bị kia từ xa & Đăng nhập tại đây'}
+                      </span>
                     </button>
 
                     <button
@@ -358,24 +349,42 @@ export const LoginScreen: React.FC = () => {
                     </button>
                   </div>
                 ) : (
-                  <button
-                    type="button"
-                    onClick={() => handleGoogleSignIn(false, true, false)}
-                    disabled={isBusy}
-                    className="w-full min-h-[54px] py-3.5 px-5 bg-white hover:bg-slate-100 text-slate-900 font-extrabold text-sm sm:text-base rounded-xl shadow-xl shadow-blue-950/50 transition active:scale-[0.99] flex items-center justify-center gap-3 disabled:opacity-70"
-                  >
-                    {isAuthenticating ? (
-                      <>
-                        <RefreshCw className="w-5 h-5 text-blue-600 animate-spin shrink-0" />
-                        <span>Đang mở xác thực Google...</span>
-                      </>
-                    ) : (
-                      <>
-                        <GoogleLogoIcon className="w-5 h-5 shrink-0" />
-                        <span>Đăng nhập bằng tài khoản Google</span>
-                      </>
-                    )}
-                  </button>
+                  <div className="space-y-3">
+                    <button
+                      type="button"
+                      onClick={() => handleGoogleSignIn(false, true, false)}
+                      disabled={isBusy}
+                      className="w-full min-h-[54px] py-3.5 px-5 bg-white hover:bg-slate-100 text-slate-900 font-extrabold text-sm sm:text-base rounded-xl shadow-xl shadow-blue-950/50 transition active:scale-[0.99] flex items-center justify-center gap-3 disabled:opacity-70"
+                    >
+                      {isAuthenticating && !isRequestingRemoteLogout ? (
+                        <>
+                          <RefreshCw className="w-5 h-5 text-blue-600 animate-spin shrink-0" />
+                          <span>Đang mở xác thực Google...</span>
+                        </>
+                      ) : (
+                        <>
+                          <GoogleLogoIcon className="w-5 h-5 shrink-0" />
+                          <span>Đăng nhập bằng tài khoản Google</span>
+                        </>
+                      )}
+                    </button>
+
+                    {/* Nút xác nhận Đăng xuất thiết bị kia từ xa & Đăng nhập tại đây luôn hiển thị trên màn hình */}
+                    <button
+                      type="button"
+                      onClick={() => handleGoogleSignIn(true, true, false)}
+                      disabled={isBusy}
+                      title="Thu hồi phiên đang mở trên bất kỳ thiết bị nào khác và đăng nhập vào thiết bị này"
+                      className="w-full min-h-[48px] py-3 px-4 bg-amber-500 hover:bg-amber-400 text-slate-950 font-extrabold text-xs sm:text-sm rounded-xl shadow-lg shadow-amber-950/40 transition active:scale-[0.99] flex items-center justify-center gap-2.5 disabled:opacity-70"
+                    >
+                      <LogOut className="w-4 h-4 shrink-0 text-slate-950" />
+                      <span>
+                        {isRequestingRemoteLogout
+                          ? 'Đang đăng xuất thiết bị kia & Đăng nhập...'
+                          : 'Đăng xuất thiết bị kia từ xa & Đăng nhập tại đây'}
+                      </span>
+                    </button>
+                  </div>
                 )}
 
                 <div className="pt-2 border-t border-slate-800/80 space-y-2 text-[11px] text-slate-400 leading-relaxed">
@@ -394,30 +403,8 @@ export const LoginScreen: React.FC = () => {
                 </div>
               </div>
 
-              {/* Nút dọn sạch phiên Google cũ nếu trình duyệt bị lưu cache */}
-              <div className="space-y-2">
-                <button
-                  type="button"
-                  onClick={handleResetBrowserSession}
-                  disabled={isBusy}
-                  title="Dùng khi muốn xóa sạch phiên Google cũ trên trình duyệt để chọn lại tài khoản mới"
-                  className="w-full min-h-[40px] py-2 px-3 bg-slate-900/60 hover:bg-slate-800/80 border border-slate-800 hover:border-slate-700 text-slate-300 font-medium text-xs rounded-xl transition flex items-center justify-center gap-1.5 disabled:opacity-60"
-                >
-                  <RefreshCw
-                    className={`w-3.5 h-3.5 shrink-0 text-blue-400 ${
-                      isResettingSession ? 'animate-spin' : ''
-                    }`}
-                  />
-                  <span>
-                    {isResettingSession
-                      ? 'Đang làm mới phiên & ngắt kết nối Google cũ...'
-                      : 'Làm mới phiên / Xóa dữ liệu đăng nhập Google cũ'}
-                  </span>
-                </button>
-
-                <div className="text-center text-xs text-slate-500">
-                  Mỗi tài khoản Google chỉ hoạt động trên <strong className="text-slate-300">1 thiết bị</strong> tại một thời điểm để bảo vệ toàn vẹn tồn kho.
-                </div>
+              <div className="text-center text-xs text-slate-500">
+                Mỗi tài khoản Google chỉ hoạt động trên <strong className="text-slate-300">1 thiết bị</strong> tại một thời điểm để bảo vệ toàn vẹn tồn kho.
               </div>
             </div>
           </div>
