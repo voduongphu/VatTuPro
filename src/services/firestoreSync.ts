@@ -3883,5 +3883,250 @@ export const FirestoreSyncService = {
 
   pushSingleOsdAttachment(osdId: string, pdf: OsdPdfAttachment): Promise<void> {
     return pushSingleOsdAttachment(osdId, pdf);
+  },
+
+  async forcePushUsersOnlyToCloud(): Promise<{
+    success: boolean;
+    message: string;
+    count?: number;
+  }> {
+    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+      return {
+        success: false,
+        message: 'Thiết bị đang ngoại tuyến. Dữ liệu tài khoản đã lưu an toàn tại máy.'
+      };
+    }
+
+    const fbUser = auth.currentUser;
+    if (!fbUser || !fbUser.emailVerified) {
+      return {
+        success: false,
+        message: 'Chưa kết nối tài khoản Google Cloud. Vui lòng bấm "Đồng Bộ Cloud" trên thanh tiêu đề để đăng nhập Google trước.'
+      };
+    }
+
+    try {
+      const ready = await ensureWorkspaceReady(fbUser);
+      if (!ready) {
+        return {
+          success: false,
+          message: 'Không thể kết nối không gian làm việc Cloud Firestore.'
+        };
+      }
+
+      const wsPath = `workspaces/${WORKSPACE_ID}`;
+      const wsRef = doc(db, 'workspaces', WORKSPACE_ID);
+      const wsSnap = await safeGetDoc(wsRef, wsPath);
+      if (!wsSnap.exists()) {
+        return { success: false, message: 'Workspace không tồn tại trên Cloud.' };
+      }
+      const wsData = wsSnap.data() as WorkspaceManifestDoc;
+
+      // Đẩy Meta (Users + PII + Warehouses + Tombstones)
+      const pushedMeta = await pushMetaToCloud(fbUser);
+      const nextServerRev = (Number(wsData.serverRevision) || 0) + 1;
+      const nextMetaRev = (Number(wsData.metaRevision) || 0) + 1;
+
+      knownExistingPaths.add(wsRef.path);
+      await writeSingleProtectedDoc(
+        wsRef,
+        wsPath,
+        {
+          workspaceId: WORKSPACE_ID,
+          name: WORKSPACE_NAME,
+          ownerUid: cleanStr(wsData.ownerUid || fbUser.uid, 128),
+          status: 'active',
+          allowSelfJoin: true
+        },
+        {
+          serverRevision: nextServerRev,
+          metaRevision: nextMetaRev,
+          materialsRevision: Number(wsData.materialsRevision) || 0,
+          materialsCount: Number(wsData.materialsCount) || 0,
+          materialsChunkCount: Number(wsData.materialsChunkCount) || 0,
+          materialsDigest: String(wsData.materialsDigest || '0:0:0:0'),
+          metaDigest: pushedMeta.metaDigest,
+          accountChunkCount: pushedMeta.accountChunkCount,
+          warehouseChunkCount: pushedMeta.warehouseChunkCount,
+          tombstoneChunkCount: pushedMeta.tombstoneChunkCount,
+          inboundIndexChunkCount: Number(wsData.inboundIndexChunkCount) || 0,
+          outboundIndexChunkCount: Number(wsData.outboundIndexChunkCount) || 0
+        }
+      );
+      lastAppliedCloudServerRev = nextServerRev;
+      lastAppliedCloudMetaRev = nextMetaRev;
+      cloudMetaDirty = false;
+
+      // Hoàn tất cập nhật Cloud Firestore metadata
+
+      emitCloudState({
+        status: 'connected',
+        lastSyncedAt: Date.now(),
+        errorMessage: null
+      });
+
+      const totalUsers = StorageService.getUsers().length;
+      return {
+        success: true,
+        count: totalUsers,
+        message: `Đã đồng bộ ${totalUsers} tài khoản người dùng lên Cloud Firestore thành công!`
+      };
+    } catch (err: any) {
+      console.error('forcePushUsersOnlyToCloud error:', err);
+      return {
+        success: false,
+        message: `Lỗi đồng bộ tài khoản lên Cloud: ${err?.message || String(err)}`
+      };
+    }
+  },
+
+  async forcePushAllLocalDataToCloud(): Promise<{
+    success: boolean;
+    message: string;
+    stats?: {
+      users: number;
+      warehouses: number;
+      materials: number;
+      inbound: number;
+      outbound: number;
+      osd: number;
+    };
+  }> {
+    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+      return {
+        success: false,
+        message: 'Thiết bị đang ngoại tuyến. Vui lòng kết nối Internet để đồng bộ lên Cloud.'
+      };
+    }
+
+    const fbUser = auth.currentUser;
+    if (!fbUser || !fbUser.emailVerified) {
+      return {
+        success: false,
+        message: 'Chưa kết nối tài khoản Google Cloud. Vui lòng bấm "Đồng Bộ Cloud" trên thanh tiêu đề để đăng nhập Google trước.'
+      };
+    }
+
+    try {
+      emitCloudState({ status: 'connecting', errorMessage: null });
+      const ready = await ensureWorkspaceReady(fbUser);
+      if (!ready) {
+        emitCloudState({ status: 'error', errorMessage: 'Không thể kết nối Workspace trên Cloud.' });
+        return {
+          success: false,
+          message: 'Không thể kết nối không gian làm việc Cloud Firestore.'
+        };
+      }
+
+      const wsPath = `workspaces/${WORKSPACE_ID}`;
+      const wsRef = doc(db, 'workspaces', WORKSPACE_ID);
+      const wsSnap = await safeGetDoc(wsRef, wsPath);
+      if (!wsSnap.exists()) {
+        return { success: false, message: 'Workspace không tồn tại trên Cloud.' };
+      }
+      const wsData = wsSnap.data() as WorkspaceManifestDoc;
+
+      // 1. Push Meta (Users + Warehouses + OSD + Tombstones)
+      const pushedMeta = await pushMetaToCloud(fbUser);
+      cloudMetaDirty = false;
+
+      // 2. Push Materials
+      const pushedMats = await pushMaterialsToCloud();
+      cloudMaterialsDirty = false;
+
+      // 3. Push Inbound Receipts
+      const localInbounds = StorageService.getInboundReceipts();
+      const inMap = new Map<string, CloudReceiptIndexEntry>();
+      for (let i = 0; i < localInbounds.length; i += 6) {
+        const slice = localInbounds.slice(i, i + 6);
+        const updatedEntries = await Promise.all(slice.map((r) => pushSingleInboundToCloud(r)));
+        for (let j = 0; j < slice.length; j++) {
+          inMap.set(slice[j].receiptCode || slice[j].id, updatedEntries[j]);
+        }
+      }
+      const nextInboundIndexChunkCount = await writeReceiptIndexChunks('inbound', inMap);
+
+      // 4. Push Outbound Receipts
+      const localOutbounds = StorageService.getOutboundReceipts();
+      const outMap = new Map<string, CloudReceiptIndexEntry>();
+      for (let i = 0; i < localOutbounds.length; i += 6) {
+        const slice = localOutbounds.slice(i, i + 6);
+        const updatedEntries = await Promise.all(slice.map((r) => pushSingleOutboundToCloud(r)));
+        for (let j = 0; j < slice.length; j++) {
+          outMap.set(slice[j].issueCode || slice[j].id, updatedEntries[j]);
+        }
+      }
+      const nextOutboundIndexChunkCount = await writeReceiptIndexChunks('outbound', outMap);
+
+      // 5. Update WorkspaceManifest
+      const nextServerRev = (Number(wsData.serverRevision) || 0) + 1;
+      const nextMetaRev = (Number(wsData.metaRevision) || 0) + 1;
+      const nextMatRev = (Number(wsData.materialsRevision) || 0) + 1;
+
+      knownExistingPaths.add(wsRef.path);
+      await writeSingleProtectedDoc(
+        wsRef,
+        wsPath,
+        {
+          workspaceId: WORKSPACE_ID,
+          name: WORKSPACE_NAME,
+          ownerUid: cleanStr(wsData.ownerUid || fbUser.uid, 128),
+          status: 'active',
+          allowSelfJoin: true
+        },
+        {
+          serverRevision: nextServerRev,
+          metaRevision: nextMetaRev,
+          materialsRevision: nextMatRev,
+          materialsCount: pushedMats.materialsCount,
+          materialsChunkCount: pushedMats.materialsChunkCount,
+          materialsDigest: pushedMats.materialsDigest,
+          metaDigest: pushedMeta.metaDigest,
+          accountChunkCount: pushedMeta.accountChunkCount,
+          warehouseChunkCount: pushedMeta.warehouseChunkCount,
+          tombstoneChunkCount: pushedMeta.tombstoneChunkCount,
+          inboundIndexChunkCount: nextInboundIndexChunkCount,
+          outboundIndexChunkCount: nextOutboundIndexChunkCount
+        }
+      );
+      lastAppliedCloudServerRev = nextServerRev;
+      lastAppliedCloudMetaRev = nextMetaRev;
+
+      // 6. Hoàn tất ghi dữ liệu lên Cloud Firestore
+
+      await StorageService.flush();
+      emitCloudState({
+        status: 'connected',
+        lastSyncedAt: Date.now(),
+        errorMessage: null
+      });
+
+      const users = StorageService.getUsers();
+      const whs = StorageService.getWarehouses();
+      const osd = StorageService.getOsdReceipts();
+
+      return {
+        success: true,
+        message: `Đã đồng bộ toàn bộ dữ liệu cục bộ lên Cloud Firestore thành công! (${users.length} tài khoản, ${whs.length} kho, ${pushedMats.materialsCount} vật tư, ${localInbounds.length} phiếu nhập, ${localOutbounds.length} phiếu xuất, ${osd.length} phiếu OSD)`,
+        stats: {
+          users: users.length,
+          warehouses: whs.length,
+          materials: pushedMats.materialsCount,
+          inbound: localInbounds.length,
+          outbound: localOutbounds.length,
+          osd: osd.length
+        }
+      };
+    } catch (err: any) {
+      console.error('forcePushAllLocalDataToCloud error:', err);
+      emitCloudState({
+        status: 'error',
+        errorMessage: err?.message || 'Lỗi khi đồng bộ lên Cloud Firestore'
+      });
+      return {
+        success: false,
+        message: `Đồng bộ lên Cloud Firestore thất bại: ${err?.message || String(err)}`
+      };
+    }
   }
 };

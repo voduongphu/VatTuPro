@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useAuth } from '../../context/AuthContext';
 import { User, UserRole } from '../../types/inventory';
 import {
@@ -16,7 +16,10 @@ import {
   Phone,
   Mail,
   Lock,
-  Unlock
+  Unlock,
+  Cloud,
+  CloudUpload,
+  RefreshCw
 } from 'lucide-react';
 import { ConfirmDeleteModal } from '../common/ConfirmDeleteModal';
 import {
@@ -25,11 +28,18 @@ import {
   isBootstrappedAdminUser,
   normUserKey
 } from '../../utils/additiveMerge';
+import { SyncService } from '../../services/syncService';
 
 export const UserManager: React.FC = () => {
   const { users, isAdmin, addUser, updateUser, deleteUser } = useAuth();
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedRole, setSelectedRole] = useState<string>('all');
+  const [isSyncingCloud, setIsSyncingCloud] = useState(false);
+  const [cloudState, setCloudState] = useState(() => SyncService.getCloudState());
+
+  useEffect(() => {
+    return SyncService.subscribeCloudState((st) => setCloudState(st));
+  }, []);
 
   // Modals state
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
@@ -142,8 +152,17 @@ export const UserManager: React.FC = () => {
       setIsAddModalOpen(false);
       showNotify(
         'success',
-        `Đã cấp quyền cho tài khoản Google "${cleanEmail}" (${cleanFullName}).`
+        `Đã tạo tài khoản Google "${cleanEmail}" (${cleanFullName}). Đang đồng bộ lên Cloud Firestore...`
       );
+
+      // Đẩy đồng bộ tức thì lên Cloud Firestore & máy chủ nội bộ
+      void SyncService.syncUsersToCloudImmediately().then((res) => {
+        if (res.success) {
+          showNotify('success', `Đã cấp quyền và đồng bộ tài khoản "${cleanEmail}" lên Cloud Firestore thành công!`);
+        } else {
+          showNotify('error', `Tài khoản đã lưu tại máy. ${res.message}`);
+        }
+      });
     } catch (err: any) {
       setFormError(err.message || 'Lỗi khi tạo người dùng');
     }
@@ -197,7 +216,12 @@ export const UserManager: React.FC = () => {
     });
 
     setEditingUser(null);
-    showNotify('success', `Đã cập nhật phân quyền cho "${cleanFullName}" (${cleanEmail}).`);
+    showNotify('success', `Đã cập nhật phân quyền cho "${cleanFullName}". Đang đồng bộ Cloud...`);
+    void SyncService.syncUsersToCloudImmediately().then((res) => {
+      if (res.success) {
+        showNotify('success', `Đã đồng bộ cập nhật tài khoản "${cleanEmail}" lên Cloud Firestore thành công!`);
+      }
+    });
   };
 
   const handleToggleActive = (u: User) => {
@@ -213,6 +237,7 @@ export const UserManager: React.FC = () => {
         ? `Đã mở khóa cho phép "${u.fullName}" đăng nhập Google.`
         : `Đã khóa quyền đăng nhập của "${u.fullName}".`
     );
+    void SyncService.syncUsersToCloudImmediately();
   };
 
   const handleDelete = (u: User) => {
@@ -229,12 +254,33 @@ export const UserManager: React.FC = () => {
     if (ok) {
       showNotify(
         'success',
-        `Đã xóa tài khoản "${userToDelete.fullName}" (${userToDelete.email || userToDelete.username}) thành công.`
+        `Đã xóa tài khoản "${userToDelete.fullName}" (${userToDelete.email || userToDelete.username}). Đang đồng bộ Cloud...`
       );
+      void SyncService.syncUsersToCloudImmediately().then((res) => {
+        if (res.success) {
+          showNotify('success', 'Đã xóa và cập nhật đồng bộ lên Cloud Firestore thành công.');
+        }
+      });
     } else {
       showNotify('error', 'Không thể xóa tài khoản này.');
     }
     setUserToDelete(null);
+  };
+
+  const handleForceSyncUsersToCloud = async () => {
+    setIsSyncingCloud(true);
+    try {
+      const res = await SyncService.syncUsersToCloudImmediately();
+      if (res.success) {
+        showNotify('success', res.message);
+      } else {
+        showNotify('error', res.message);
+      }
+    } catch (err: any) {
+      showNotify('error', `Lỗi đồng bộ: ${err?.message || String(err)}`);
+    } finally {
+      setIsSyncingCloud(false);
+    }
   };
 
   const normalizedSearch = searchTerm.normalize('NFC').toLowerCase();
@@ -316,13 +362,31 @@ export const UserManager: React.FC = () => {
         </div>
 
         {isAdmin ? (
-          <button
-            onClick={openAddModal}
-            className="w-full md:w-auto flex items-center justify-center gap-2 px-4 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-semibold text-sm shadow-md shadow-blue-500/20 transition active:scale-95 min-h-[42px]"
-          >
-            <UserPlus className="w-4 h-4 shrink-0" />
-            <span>Thêm Tài Khoản Google</span>
-          </button>
+          <div className="flex items-center gap-2 flex-wrap w-full md:w-auto">
+            <button
+              type="button"
+              onClick={handleForceSyncUsersToCloud}
+              disabled={isSyncingCloud}
+              className="flex-1 md:flex-initial flex items-center justify-center gap-2 px-3.5 py-2.5 bg-emerald-700 hover:bg-emerald-800 text-white rounded-xl font-semibold text-xs sm:text-sm shadow-md shadow-emerald-700/20 transition active:scale-95 disabled:opacity-70 min-h-[42px]"
+              title="Đẩy toàn bộ danh sách tài khoản người dùng lên Cloud Firestore ngay lập tức"
+            >
+              {isSyncingCloud ? (
+                <RefreshCw className="w-4 h-4 animate-spin shrink-0" />
+              ) : (
+                <CloudUpload className="w-4 h-4 shrink-0" />
+              )}
+              <span>{isSyncingCloud ? 'Đang đẩy lên Cloud...' : 'Đồng Bộ Tài Khoản Lên Cloud'}</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={openAddModal}
+              className="flex-1 md:flex-initial flex items-center justify-center gap-2 px-4 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-semibold text-xs sm:text-sm shadow-md shadow-blue-500/20 transition active:scale-95 min-h-[42px]"
+            >
+              <UserPlus className="w-4 h-4 shrink-0" />
+              <span>Thêm Tài Khoản Google</span>
+            </button>
+          </div>
         ) : (
           <div className="text-xs bg-amber-50 text-amber-800 px-3 py-2 rounded-lg border border-amber-200 flex items-center gap-1.5">
             <ShieldAlert className="w-4 h-4 text-amber-600 shrink-0" />
@@ -330,6 +394,46 @@ export const UserManager: React.FC = () => {
           </div>
         )}
       </div>
+
+      {/* Cloud Connection Status Banner */}
+      {cloudState.status === 'connected' ? (
+        <div className="flex items-center justify-between gap-3 px-4 py-2.5 rounded-2xl bg-emerald-50/80 border border-emerald-200 text-xs text-emerald-950 shadow-xs">
+          <div className="flex items-center gap-2.5">
+            <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 shrink-0 animate-pulse" />
+            <span>
+              Trạng thái Cloud Firestore: <strong>Đã kết nối ({cloudState.cloudEmail || BOOTSTRAPPED_ADMIN_EMAIL})</strong>. Mọi tài khoản tạo mới hoặc cập nhật phân quyền sẽ tự động đồng bộ tức thì sang tất cả thiết bị khác.
+            </span>
+          </div>
+          <span className="text-[11px] font-semibold text-emerald-700 uppercase tracking-wider shrink-0 hidden sm:inline">
+            Realtime Active
+          </span>
+        </div>
+      ) : (
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 px-4 py-3 rounded-2xl bg-amber-50 border border-amber-300 text-xs text-amber-950 shadow-xs">
+          <div className="flex items-start sm:items-center gap-2.5">
+            <span className="w-2.5 h-2.5 rounded-full bg-amber-500 shrink-0 mt-0.5 sm:mt-0" />
+            <span>
+              Thiết bị chưa kết nối Google Cloud Firestore. Mọi tài khoản mới đang được lưu trữ an toàn tại máy này. Vui lòng bấm &ldquo;Kết Nối Google Cloud&rdquo; để tài khoản có thể đăng nhập trên thiết bị khác.
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={async () => {
+              setIsSyncingCloud(true);
+              try {
+                const res = await SyncService.connectCloudSync();
+                showNotify(res.success ? 'success' : 'error', res.message);
+              } finally {
+                setIsSyncingCloud(false);
+              }
+            }}
+            disabled={isSyncingCloud}
+            className="px-3.5 py-1.5 bg-amber-600 hover:bg-amber-700 text-white rounded-xl font-semibold shrink-0 transition active:scale-95 text-xs shadow-xs"
+          >
+            {isSyncingCloud ? 'Đang kết nối...' : 'Kết Nối Google Cloud Ngay'}
+          </button>
+        </div>
+      )}
 
       {/* Filters & Search */}
       <div className="bg-white rounded-2xl p-3.5 sm:p-4 border border-slate-200/80 shadow-sm flex flex-col sm:flex-row items-center gap-3">

@@ -11,6 +11,7 @@ import {
   AlertCircle,
   Cloud,
   CloudOff,
+  CloudUpload,
   LogIn,
   ChevronDown,
   Menu,
@@ -50,23 +51,64 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenMobileMenu }) => {
     if (!remoteLogoutNotice) return;
     const timer = setTimeout(() => {
       setRemoteLogoutNotice(null);
-    }, 6000);
+    }, 7000);
     return () => clearTimeout(timer);
   }, [remoteLogoutNotice]);
 
-  const handleUnifiedSync = async () => {
-    if (cloudState.status === 'connected' || SyncService.hasAuthenticatedCloudUser()) {
-      await SyncService.syncNow();
-      return;
-    }
+  const handleForcePushAllToCloud = async () => {
     setIsUserMenuOpen(false);
-    setIsConnectingCloud(true);
+    setIsSyncing(true);
     try {
-      const res = await connectCloudSync();
+      const res = await SyncService.forcePushAllLocalDataToCloud();
       setRemoteLogoutNotice({
         success: res.success,
         message: res.message
       });
+    } catch (err: any) {
+      setRemoteLogoutNotice({
+        success: false,
+        message: `Lỗi đồng bộ: ${err?.message || String(err)}`
+      });
+    } finally {
+      setIsSyncing(false);
+    }
+  };
+
+  const handleUnifiedSync = async () => {
+    setIsUserMenuOpen(false);
+    if (cloudState.status === 'connected' || SyncService.hasAuthenticatedCloudUser()) {
+      setIsSyncing(true);
+      try {
+        const res = await SyncService.forcePushAllLocalDataToCloud();
+        setRemoteLogoutNotice({
+          success: res.success,
+          message: res.message
+        });
+      } catch (err: any) {
+        setRemoteLogoutNotice({
+          success: false,
+          message: `Lỗi đồng bộ: ${err?.message || String(err)}`
+        });
+      } finally {
+        setIsSyncing(false);
+      }
+      return;
+    }
+    setIsConnectingCloud(true);
+    try {
+      const res = await connectCloudSync();
+      if (res.success) {
+        const pushRes = await SyncService.forcePushAllLocalDataToCloud();
+        setRemoteLogoutNotice({
+          success: pushRes.success,
+          message: pushRes.message
+        });
+      } else {
+        setRemoteLogoutNotice({
+          success: res.success,
+          message: res.message
+        });
+      }
     } finally {
       setIsConnectingCloud(false);
     }
@@ -240,6 +282,16 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenMobileMenu }) => {
                           </span>
                         </div>
                       </div>
+
+                      <button
+                        type="button"
+                        onClick={handleForcePushAllToCloud}
+                        disabled={isSyncing || isConnectingCloud}
+                        className="w-full min-h-[44px] px-4 py-2.5 text-left hover:bg-emerald-50 text-emerald-800 flex items-center gap-2.5 font-semibold disabled:opacity-60 border-b border-slate-100"
+                      >
+                        <CloudUpload className="w-4 h-4 text-emerald-600 shrink-0" />
+                        <span>Đồng bộ toàn bộ dữ liệu máy lên Cloud Firestore</span>
+                      </button>
 
                       <button
                         type="button"

@@ -2104,6 +2104,62 @@ export const SyncService = {
     }
   },
 
+  async syncUsersToCloudImmediately(): Promise<{ success: boolean; message: string; count?: number }> {
+    metaDirty = true;
+    FirestoreSyncService.markLocalMutation('meta');
+    // Luôn bắc cầu xuống /api/sync/meta của server Express
+    void fetch('/api/sync/meta', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        clientId: CLIENT_ID,
+        users: StorageService.getUsers(),
+        warehouses: StorageService.getWarehouses(),
+        tombstones: StorageService.getTombstones(),
+        osd: StorageService.getOsdReceipts()
+      })
+    }).catch(() => {});
+
+    if (FirestoreSyncService.isCloudConnected() || FirestoreSyncService.hasAuthenticatedCloudUser()) {
+      return await FirestoreSyncService.forcePushUsersOnlyToCloud();
+    }
+
+    return {
+      success: true,
+      count: StorageService.getUsers().length,
+      message: 'Đã lưu tài khoản người dùng tại máy và máy chủ nội bộ. Vui lòng bấm "Đồng Bộ Cloud" để đồng bộ sang thiết bị khác.'
+    };
+  },
+
+  async forcePushAllLocalDataToCloud(): Promise<{
+    success: boolean;
+    message: string;
+    stats?: {
+      users: number;
+      warehouses: number;
+      materials: number;
+      inbound: number;
+      outbound: number;
+      osd: number;
+    };
+  }> {
+    notifySyncState(true);
+    try {
+      if (!FirestoreSyncService.isCloudConnected() && !FirestoreSyncService.hasAuthenticatedCloudUser()) {
+        const connRes = await this.connectCloudSync();
+        if (!connRes.success) {
+          return {
+            success: false,
+            message: connRes.message || 'Chưa thể kết nối Google Cloud để đồng bộ dữ liệu.'
+          };
+        }
+      }
+      return await FirestoreSyncService.forcePushAllLocalDataToCloud();
+    } finally {
+      notifySyncState(false);
+    }
+  },
+
   async disconnectCloudSync(): Promise<void> {
     await FirestoreSyncService.disconnectGoogleAccount();
   },
