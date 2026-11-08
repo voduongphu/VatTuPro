@@ -2496,12 +2496,7 @@ export const FirestoreSyncService = {
         pulledChanges = true;
       }
 
-      const localMetaDigestAfter = computeCloudSharedMetaDigest(
-        StorageService.getUsers(),
-        StorageService.getWarehouses(),
-        StorageService.getTombstones()
-      );
-      if (cloudMetaDirty || localMetaDigestAfter !== nextMetaDigest) {
+      if (cloudMetaDirty) {
         const pushedMeta = await pushMetaToCloud(fbUser);
         nextAccountChunkCount = pushedMeta.accountChunkCount;
         nextWarehouseChunkCount = pushedMeta.warehouseChunkCount;
@@ -2509,6 +2504,7 @@ export const FirestoreSyncService = {
         nextMetaDigest = pushedMeta.metaDigest;
         nextMetaRevision = (Number(wsData.metaRevision) || 0) + 1;
         lastAppliedCloudMetaRev = nextMetaRevision;
+        cloudMetaDirty = false;
         manifestMutated = true;
       }
 
@@ -2687,19 +2683,20 @@ export const FirestoreSyncService = {
       }
 
       // 4. Đồng bộ Danh Mục Vật Tư (Materials)
-      const preMatDigest = computeMaterialsDigest(StorageService.getMaterials());
-      if (nextMaterialsChunkCount > 0 && preMatDigest !== nextMaterialsDigest) {
+      const currentMats = StorageService.getMaterials();
+      const preMatDigest = computeMaterialsDigest(currentMats);
+      if (nextMaterialsChunkCount > 0 && (currentMats.length === 0 || preMatDigest !== nextMaterialsDigest)) {
         await pullMaterialsFromCloud(nextMaterialsChunkCount);
         pulledChanges = true;
       }
 
-      const postMatDigest = computeMaterialsDigest(StorageService.getMaterials());
-      if (cloudMaterialsDirty || postMatDigest !== nextMaterialsDigest) {
+      if (cloudMaterialsDirty) {
         const pushedMats = await pushMaterialsToCloud();
         nextMaterialsCount = pushedMats.materialsCount;
         nextMaterialsChunkCount = pushedMats.materialsChunkCount;
         nextMaterialsDigest = pushedMats.materialsDigest;
         nextMaterialsRevision = (Number(wsData.materialsRevision) || 0) + 1;
+        cloudMaterialsDirty = false;
         manifestMutated = true;
       }
 
@@ -2953,16 +2950,14 @@ export const FirestoreSyncService = {
         }
       }
 
-      if (prevActive && !forceLogoutOtherDevice) {
-        if (prevActive.deviceId !== deviceId || prevActive.sessionToken) {
-          return {
-            handled: true,
-            success: false,
-            conflict: true,
-            activeSession: prevActive,
-            message: `Tài khoản "${matched.username}" đang đăng nhập trên ${prevActive.deviceLabel || 'thiết bị khác'}. Không cho phép một tài khoản đăng nhập cùng lúc trên 2 thiết bị. Bạn có muốn đăng xuất thiết bị kia từ xa để đăng nhập tại đây không?`
-          };
-        }
+      if (prevActive && !forceLogoutOtherDevice && prevActive.deviceId !== deviceId) {
+        return {
+          handled: true,
+          success: false,
+          conflict: true,
+          activeSession: prevActive,
+          message: `Tài khoản "${matched.username}" đang đăng nhập trên ${prevActive.deviceLabel || 'thiết bị khác'}. Không cho phép một tài khoản đăng nhập cùng lúc trên 2 thiết bị. Bạn có muốn đăng xuất thiết bị kia từ xa để đăng nhập tại đây không?`
+        };
       }
 
       if (prevActive?.sessionToken) {
@@ -3200,16 +3195,14 @@ export const FirestoreSyncService = {
           }
         }
 
-        if (prevActive && !forceLogoutOtherDevice) {
-          if (prevActive.deviceId !== deviceId || prevActive.sessionToken) {
-            return {
-              handled: true,
-              success: false,
-              conflict: true,
-              activeSession: prevActive,
-              message: `Tài khoản Google "${matched.username}" (${matched.email}) đang đăng nhập trên ${prevActive.deviceLabel || 'thiết bị khác'}. Không cho phép một tài khoản đăng nhập cùng lúc trên 2 thiết bị. Bạn có muốn đăng xuất thiết bị kia từ xa để đăng nhập tại đây không?`
-            };
-          }
+        if (prevActive && !forceLogoutOtherDevice && prevActive.deviceId !== deviceId) {
+          return {
+            handled: true,
+            success: false,
+            conflict: true,
+            activeSession: prevActive,
+            message: `Tài khoản Google "${matched.username}" (${matched.email}) đang đăng nhập trên ${prevActive.deviceLabel || 'thiết bị khác'}. Không cho phép một tài khoản đăng nhập cùng lúc trên 2 thiết bị. Bạn có muốn đăng xuất thiết bị kia từ xa để đăng nhập tại đây không?`
+          };
         }
 
         if (timedOut) {
@@ -3495,18 +3488,7 @@ export const FirestoreSyncService = {
       }
 
       if (!remoteToken) {
-        if (revokedBefore > 0 && myIssued > 0 && myIssued <= revokedBefore) {
-          return {
-            handled: true,
-            valid: false,
-            reason: 'force_logout',
-            forceLogoutBy: {
-              deviceLabel: String(d.forceLogoutDeviceLabel || ''),
-              at: String(d.forceLogoutAt || '')
-            }
-          };
-        }
-        // Phiên địa phương mới đăng nhập trước khi kết nối đám mây -> ghi nhận lên đám mây
+        // Tài khoản không có thiết bị nào đang giữ phiên (thiết bị trước đã đăng xuất) -> bảo toàn phiên hiện tại và ghi nhận lên đám mây
         await this.syncActiveSessionToCloudIfConnected(mySession);
         return { handled: true, valid: true };
       }
@@ -3514,6 +3496,7 @@ export const FirestoreSyncService = {
       if (
         remoteToken &&
         remoteToken !== mySession.sessionToken &&
+        d.deviceId &&
         d.deviceId !== mySession.deviceId &&
         remoteIssued > myIssued &&
         !revokedCloudSessionTokens.has(remoteToken)

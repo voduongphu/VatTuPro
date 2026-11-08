@@ -1159,7 +1159,7 @@ async function reconcileLocalServerOnly(): Promise<boolean> {
   const localTombstones = StorageService.getTombstones();
   const localMetaDigest = computeMetaDigest(localUsers, localWhs, localTombstones, StorageService.getOsdReceipts());
 
-  if (metaDirty || localMetaDigest !== manifest.metaDigest) {
+  if (metaDirty) {
     const metaRes = await fetchJson<{
       serverRevision: number;
       users: User[];
@@ -1297,15 +1297,16 @@ async function reconcileLocalServerOnly(): Promise<boolean> {
     await pushReceiptsChunked('outbound', outboundsToPush);
   }
 
-  const prePullMatDigest = computeMaterialsDigest(StorageService.getMaterials());
-  if (manifest.materialsCount > 0 && prePullMatDigest !== manifest.materialsDigest) {
+  const currentMats = StorageService.getMaterials();
+  const prePullMatDigest = computeMaterialsDigest(currentMats);
+  if (manifest.materialsCount > 0 && (currentMats.length === 0 || prePullMatDigest !== manifest.materialsDigest)) {
     await pullAllMaterials();
     pulledChanges = true;
   }
 
-  const postPullMatDigest = computeMaterialsDigest(StorageService.getMaterials());
-  if (materialsDirty || postPullMatDigest !== manifest.materialsDigest) {
+  if (materialsDirty) {
     await pushAllMaterialsChunked();
+    materialsDirty = false;
   }
 
   lastKnownServerRev = Math.max(lastKnownServerRev, manifest.serverRevision);
@@ -1314,6 +1315,11 @@ async function reconcileLocalServerOnly(): Promise<boolean> {
 }
 
 async function reconcileInternal(): Promise<{ cloudSuccess: boolean; localSuccess: boolean; error?: string }> {
+  // Chỉ chạy đồng bộ khi người dùng đã đăng nhập (tránh việc thiết bị vừa xóa cache chưa login đẩy data rỗng)
+  if (!getStoredUnifiedSession() && !FirestoreSyncService.hasAuthenticatedCloudUser()) {
+    return { cloudSuccess: false, localSuccess: false };
+  }
+
   // Không bao giờ chạy đồng bộ dữ liệu nặng tranh chấp băng thông khi người dùng đang thực hiện đăng nhập
   if (authTransitionCount > 0) {
     pendingReconcile = true;
@@ -1697,10 +1703,19 @@ export const SyncService = {
         const revokedBefore = Number(remoteData.revokedBeforeMs) || 0;
         const myIssued = getClientSessionIssuedAtMs(current.session);
 
-        if (remoteToken === current.session.sessionToken) return;
+        // Nếu remoteToken rỗng (do thiết bị trước đã đăng xuất) hoặc đúng mã phiên này hoặc cùng thiết bị -> bỏ qua
+        if (!remoteToken || remoteToken === current.session.sessionToken) return;
+        if (remoteData.deviceId && remoteData.deviceId === current.session.deviceId) return;
         if (remoteToken && revokedLocalTokens.has(remoteToken)) return;
 
-        if (revokedBefore > 0 && myIssued > 0 && myIssued <= revokedBefore) {
+        // Chỉ ngắt phiên nếu có thiết bị khác thực sự yêu cầu force logout
+        if (
+          remoteData.deviceId &&
+          remoteData.deviceId !== current.session.deviceId &&
+          revokedBefore > 0 &&
+          myIssued > 0 &&
+          myIssued <= revokedBefore
+        ) {
           triggerLocalKickOut({
             reason: 'force_logout',
             deviceLabel: remoteData.forceLogoutDeviceLabel
@@ -1711,10 +1726,11 @@ export const SyncService = {
           return;
         }
 
-        // Nếu có phiên khác token và mới hơn được phát hành trên tài khoản này
+        // Nếu có phiên khác token và mới hơn được phát hành trên thiết bị KHÁC
         if (
           remoteToken &&
           remoteToken !== current.session.sessionToken &&
+          remoteData.deviceId !== current.session.deviceId &&
           remoteIssued > myIssued
         ) {
           triggerLocalKickOut({
@@ -2209,8 +2225,10 @@ export const SyncService = {
               uid,
               deviceId,
               deviceLabel,
+              sessionToken: cloudRes.session.sessionToken,
+              issuedAtMs: cloudRes.session.issuedAtMs,
               localUsers: StorageService.getUsers(),
-              forceLogoutOtherDevice: forceFlag
+              forceLogoutOtherDevice: true
             })
           }).catch(() => {});
 
@@ -3127,10 +3145,8 @@ export const SyncService = {
             saveStaticSessionEntry(current.session.userKey, null);
           }
 
-          if (
-            !current.session.sessionToken.startsWith('static-') &&
-            !current.session.sessionToken.startsWith('cloud.')
-          ) {
+          // Luôn dọn dẹp phiên trên máy chủ Express nội bộ để không bị kẹt phiên cũ khi đổi sang điện thoại
+          if (!current.session.sessionToken.startsWith('static-')) {
             await Promise.race([
               fetch('/api/auth/logout', {
                 method: 'POST',

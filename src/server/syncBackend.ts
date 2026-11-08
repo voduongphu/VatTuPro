@@ -676,7 +676,8 @@ export function createSyncBackend(options: SyncBackendOptions = {}): SyncBackend
       return { valid: true, session: active };
     }
 
-    const sigCheck = verifySignedSessionToken(token, key, params.deviceId);
+    const isCloudToken = token.startsWith('cloud.');
+    const isStaticToken = token.startsWith('static-');
 
     if (store.revokedTokens[token]) {
       if (active && active.sessionToken !== token) {
@@ -692,17 +693,31 @@ export function createSyncBackend(options: SyncBackendOptions = {}): SyncBackend
       return { valid: false, reason: 'expired' };
     }
 
-    if (!sigCheck.validSignature) {
-      if (active) {
-        return { valid: false, reason: 'replaced', replacedBy: active };
+    let tokenIssuedAtMs = 0;
+    let tokenDeviceId = params.deviceId || 'dev-recovered';
+
+    if (isCloudToken) {
+      const parts = token.split('.');
+      const ts = Number(parts[1]);
+      tokenIssuedAtMs = Number.isFinite(ts) && ts > 0 ? ts : nowMs;
+    } else if (isStaticToken) {
+      const parts = token.split('-');
+      const ts = Number(parts[1]);
+      tokenIssuedAtMs = Number.isFinite(ts) && ts > 0 ? ts : nowMs;
+    } else {
+      const sigCheck = verifySignedSessionToken(token, key, params.deviceId);
+      if (!sigCheck.validSignature) {
+        if (active) {
+          return { valid: false, reason: 'replaced', replacedBy: active };
+        }
+        return { valid: false, reason: user ? 'expired' : 'missing' };
       }
-      return { valid: false, reason: user ? 'expired' : 'missing' };
+      tokenIssuedAtMs = sigCheck.issuedAtMs;
+      tokenDeviceId = sigCheck.deviceId || tokenDeviceId;
     }
 
-    const tokenIssuedAtMs = sigCheck.issuedAtMs;
-
     if (revokedBefore > 0 && tokenIssuedAtMs <= revokedBefore) {
-      if (active && getSessionIssuedAtMs(active) > tokenIssuedAtMs) {
+      if (active && getSessionIssuedAtMs(active) > tokenIssuedAtMs && active.deviceId !== params.deviceId) {
         return { valid: false, reason: 'replaced', replacedBy: active };
       }
       if (store.forceLogoutMeta[key]) {
@@ -716,8 +731,7 @@ export function createSyncBackend(options: SyncBackendOptions = {}): SyncBackend
     }
 
     const activeIssuedAtMs = getSessionIssuedAtMs(active);
-    if (!active || tokenIssuedAtMs > activeIssuedAtMs) {
-      // Phiên gửi lên có chữ ký HMAC hợp lệ và mới hơn phiên cũ đang lưu trên instance này -> Nâng cấp phiên ngay cả khi instance mới khởi tạo chưa đồng bộ kịp danh sách users!
+    if (!active || tokenIssuedAtMs >= activeIssuedAtMs || (isCloudToken && active.sessionToken.startsWith('static-'))) {
       if (active && active.sessionToken && active.sessionToken !== token) {
         store.revokedTokens[active.sessionToken] = tokenIssuedAtMs;
       }
@@ -727,8 +741,8 @@ export function createSyncBackend(options: SyncBackendOptions = {}): SyncBackend
         userKey: key,
         sessionToken: token,
         issuedAtMs: tokenIssuedAtMs,
-        deviceId: params.deviceId || sigCheck.deviceId || 'dev-recovered',
-        deviceLabel: params.deviceLabel || 'Thiết bị hiện tại',
+        deviceId: params.deviceId || tokenDeviceId,
+        deviceLabel: params.deviceLabel || (isCloudToken ? 'Thiết bị Cloud' : 'Thiết bị hiện tại'),
         loginAt: params.loginAt || new Date(tokenIssuedAtMs).toISOString(),
         lastSeenAt: nowMs
       };
@@ -737,11 +751,18 @@ export function createSyncBackend(options: SyncBackendOptions = {}): SyncBackend
       return { valid: true, session: upgraded };
     }
 
-    return {
-      valid: false,
-      reason: 'replaced',
-      replacedBy: active
-    };
+    // Nếu active trên server có deviceId khác và phát hành mới hơn phiên này
+    if (active.deviceId && params.deviceId && active.deviceId !== params.deviceId) {
+      return {
+        valid: false,
+        reason: 'replaced',
+        replacedBy: active
+      };
+    }
+
+    // Nếu cùng deviceId: coi là phiên hợp lệ
+    active.lastSeenAt = nowMs;
+    return { valid: true, session: active };
   }
 
   const app = express();
@@ -947,7 +968,7 @@ export function createSyncBackend(options: SyncBackendOptions = {}): SyncBackend
     if (
       liveOtherSession &&
       !isForceLogout &&
-      (liveOtherSession.deviceId !== cleanDeviceId || liveOtherSession.sessionToken)
+      liveOtherSession.deviceId !== cleanDeviceId
     ) {
       res.json({
         success: false,
@@ -1130,7 +1151,7 @@ export function createSyncBackend(options: SyncBackendOptions = {}): SyncBackend
     if (
       liveOtherSession &&
       !isForceLogout &&
-      (liveOtherSession.deviceId !== cleanDeviceId || liveOtherSession.sessionToken)
+      liveOtherSession.deviceId !== cleanDeviceId
     ) {
       res.json({
         success: false,
@@ -1153,12 +1174,15 @@ export function createSyncBackend(options: SyncBackendOptions = {}): SyncBackend
     const prevSession = store.activeSessions[userKey];
     const prevIssuedAt = getSessionIssuedAtMs(prevSession);
     const prevRevoked = getRevokedBeforeMs(userKey, user);
-    const issuedAtMs = Math.max(nowMs, prevIssuedAt + 2, prevRevoked + 2);
+    const clientProvidedToken = typeof req.body?.sessionToken === 'string' ? req.body.sessionToken.trim() : '';
+    const clientProvidedIssuedAt = Number(req.body?.issuedAtMs) || 0;
+    const computedIssuedAt = Math.max(nowMs, prevIssuedAt + 2, prevRevoked + 2);
+    const issuedAtMs = clientProvidedIssuedAt > 0 ? clientProvidedIssuedAt : computedIssuedAt;
     const forceRevokedAt = issuedAtMs - 1;
     const nowIso = new Date(nowMs).toISOString();
-    const sessionToken = createSignedSessionToken(userKey, cleanDeviceId, issuedAtMs);
+    const sessionToken = clientProvidedToken || createSignedSessionToken(userKey, cleanDeviceId, issuedAtMs);
 
-    if (prevSession && prevSession.sessionToken) {
+    if (prevSession && prevSession.sessionToken && prevSession.sessionToken !== sessionToken) {
       store.revokedTokens[prevSession.sessionToken] = issuedAtMs;
     }
     if (isForceLogout || (liveOtherSession && liveOtherSession.deviceId !== cleanDeviceId)) {
@@ -1242,12 +1266,14 @@ export function createSyncBackend(options: SyncBackendOptions = {}): SyncBackend
       const activeMatchesToken = Boolean(
         currentActive &&
           ((token && currentActive.sessionToken === token) ||
-            (!token && deviceId && currentActive.deviceId === String(deviceId)))
+            (token && token.startsWith('cloud.')) ||
+            (deviceId && currentActive.deviceId === String(deviceId)) ||
+            (!token && !deviceId))
       );
 
       // Chỉ giải phóng đúng phiên vừa đăng xuất; tuyệt đối không xóa phiên mới nếu người dùng vừa đăng nhập lại ngay lập tức
       // và không nâng user.sessionRevokedAt khi thoát chủ động để tránh xung đột lệch đồng hồ giữa các thiết bị
-      if (activeMatchesToken) {
+      if (activeMatchesToken || !currentActive) {
         delete store.activeSessions[key];
       }
 
