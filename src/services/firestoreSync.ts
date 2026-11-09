@@ -459,6 +459,7 @@ interface StagedDocWrite {
   pathLabel: string;
   immutableCreateFields: Record<string, any>;
   mutableFields: Record<string, any>;
+  isKnownNew?: boolean;
 }
 
 async function commitStagedWrites(writes: StagedDocWrite[]): Promise<void> {
@@ -466,19 +467,28 @@ async function commitStagedWrites(writes: StagedDocWrite[]): Promise<void> {
   const uid = auth.currentUser?.uid;
   if (!uid) throw new Error('Chưa kết nối tài khoản đám mây.');
 
-  // Kiểm tra sự tồn tại trước cho các doc chưa biết trạng thái để chọn đúng set (create) hay update
-  const unknownWrites = writes.filter((w) => !knownExistingPaths.has(w.ref.path));
-  for (let i = 0; i < unknownWrites.length; i += 25) {
-    const slice = unknownWrites.slice(i, i + 25);
-    await Promise.all(slice.map((w) => safeGetDoc(w.ref, w.pathLabel)));
+  for (let i = 0; i < writes.length; i++) {
+    if (writes[i].isKnownNew) {
+      knownExistingPaths.delete(writes[i].ref.path);
+    }
   }
 
+  // Chỉ kiểm tra sự tồn tại cho các doc chưa rõ trạng thái và không được đánh dấu là mới
+  const unknownWrites = writes.filter((w) => !w.isKnownNew && !knownExistingPaths.has(w.ref.path));
+  if (unknownWrites.length > 0) {
+    for (let i = 0; i < unknownWrites.length; i += 50) {
+      const slice = unknownWrites.slice(i, i + 50);
+      await Promise.all(slice.map((w) => safeGetDoc(w.ref, w.pathLabel)));
+    }
+  }
+
+  const batchTasks: Array<Promise<void>> = [];
   for (let start = 0; start < writes.length; start += BATCH_OP_LIMIT) {
     const chunk = writes.slice(start, start + BATCH_OP_LIMIT);
     const batch = writeBatch(db);
     for (let i = 0; i < chunk.length; i++) {
       const w = chunk[i];
-      if (knownExistingPaths.has(w.ref.path)) {
+      if (!w.isKnownNew && knownExistingPaths.has(w.ref.path)) {
         batch.update(w.ref, {
           ...w.mutableFields,
           updatedByUid: uid,
@@ -495,18 +505,23 @@ async function commitStagedWrites(writes: StagedDocWrite[]): Promise<void> {
       }
     }
 
-    try {
-      await batch.commit();
-      for (let i = 0; i < chunk.length; i++) {
-        knownExistingPaths.add(chunk[i].ref.path);
+    const commitTask = (async () => {
+      try {
+        await batch.commit();
+        for (let i = 0; i < chunk.length; i++) {
+          knownExistingPaths.add(chunk[i].ref.path);
+        }
+      } catch (err) {
+        if (isPermissionError(err)) {
+          handleFirestoreError(err, OperationType.WRITE, chunk[0]?.pathLabel || `workspaces/${WORKSPACE_ID}`);
+        }
+        throw err;
       }
-    } catch (err) {
-      if (isPermissionError(err)) {
-        handleFirestoreError(err, OperationType.WRITE, chunk[0]?.pathLabel || `workspaces/${WORKSPACE_ID}`);
-      }
-      throw err;
-    }
+    })();
+    batchTasks.push(commitTask);
   }
+
+  await Promise.all(batchTasks);
 }
 
 // ============================================================================
@@ -1713,7 +1728,10 @@ async function pullSingleInboundFromCloud(entry: CloudReceiptIndexEntry): Promis
   };
 }
 
-async function pushSingleInboundToCloud(rcp: InboundReceipt): Promise<CloudReceiptIndexEntry> {
+function prepareInboundStagedWrites(rcp: InboundReceipt, isKnownNew = false): {
+  entry: CloudReceiptIndexEntry;
+  staged: StagedDocWrite[];
+} {
   const code = normKey(rcp.receiptCode || rcp.id);
   const docId = makeSafeDocId('in', code);
   const items = Array.isArray(rcp.items) ? rcp.items : [];
@@ -1756,7 +1774,6 @@ async function pushSingleInboundToCloud(rcp: InboundReceipt): Promise<CloudRecei
     lastEditedAt: cleanStr(rcp.lastEditedAt, 64, '')
   };
 
-  // Ghi Header trước (hoặc cùng lô đầu tiên) để thỏa mãn điều kiện exists/existsAfter trên inboundItems
   const staged: StagedDocWrite[] = [
     {
       ref: doc(db, 'workspaces', WORKSPACE_ID, 'inboundReceipts', docId),
@@ -1765,7 +1782,8 @@ async function pushSingleInboundToCloud(rcp: InboundReceipt): Promise<CloudRecei
         workspaceId: WORKSPACE_ID,
         docId
       },
-      mutableFields: headerFields
+      mutableFields: headerFields,
+      isKnownNew
     }
   ];
 
@@ -1781,22 +1799,50 @@ async function pushSingleInboundToCloud(rcp: InboundReceipt): Promise<CloudRecei
       },
       mutableFields: {
         items: itemChunks[i]
-      }
+      },
+      isKnownNew
     });
   }
 
-  await commitStagedWrites(staged);
-
   return {
-    docId,
-    code,
-    id: headerFields.id,
-    itemCount: items.length,
-    chunkCount: itemChunks.length,
-    appUpdatedAt: headerFields.appUpdatedAt,
-    itemsReplacedAt: headerFields.itemsReplacedAt,
-    digest
+    entry: {
+      docId,
+      code,
+      id: headerFields.id,
+      itemCount: items.length,
+      chunkCount: itemChunks.length,
+      appUpdatedAt: headerFields.appUpdatedAt,
+      itemsReplacedAt: headerFields.itemsReplacedAt,
+      digest
+    },
+    staged
   };
+}
+
+async function pushSingleInboundToCloud(rcp: InboundReceipt): Promise<CloudReceiptIndexEntry> {
+  const prep = prepareInboundStagedWrites(rcp);
+  await commitStagedWrites(prep.staged);
+  return prep.entry;
+}
+
+async function pushBulkInboundsToCloud(
+  receipts: InboundReceipt[],
+  existingIndexMap?: Map<string, CloudReceiptIndexEntry>
+): Promise<CloudReceiptIndexEntry[]> {
+  if (receipts.length === 0) return [];
+  const allStaged: StagedDocWrite[] = [];
+  const entries: CloudReceiptIndexEntry[] = [];
+
+  for (let i = 0; i < receipts.length; i++) {
+    const code = normKey(receipts[i].receiptCode || receipts[i].id);
+    const isBrandNew = existingIndexMap ? !existingIndexMap.has(code) : false;
+    const prep = prepareInboundStagedWrites(receipts[i], isBrandNew);
+    entries.push(prep.entry);
+    allStaged.push(...prep.staged);
+  }
+
+  await commitStagedWrites(allStaged);
+  return entries;
 }
 
 async function pullSingleOutboundFromCloud(entry: CloudReceiptIndexEntry): Promise<OutboundReceipt | null> {
@@ -1857,7 +1903,10 @@ async function pullSingleOutboundFromCloud(entry: CloudReceiptIndexEntry): Promi
   };
 }
 
-async function pushSingleOutboundToCloud(rcp: OutboundReceipt): Promise<CloudReceiptIndexEntry> {
+function prepareOutboundStagedWrites(rcp: OutboundReceipt, isKnownNew = false): {
+  entry: CloudReceiptIndexEntry;
+  staged: StagedDocWrite[];
+} {
   const code = normKey(rcp.issueCode || rcp.id);
   const docId = makeSafeDocId('out', code);
   const items = Array.isArray(rcp.items) ? rcp.items : [];
@@ -1902,7 +1951,8 @@ async function pushSingleOutboundToCloud(rcp: OutboundReceipt): Promise<CloudRec
         workspaceId: WORKSPACE_ID,
         docId
       },
-      mutableFields: headerFields
+      mutableFields: headerFields,
+      isKnownNew
     }
   ];
 
@@ -1918,22 +1968,50 @@ async function pushSingleOutboundToCloud(rcp: OutboundReceipt): Promise<CloudRec
       },
       mutableFields: {
         items: itemChunks[i]
-      }
+      },
+      isKnownNew
     });
   }
 
-  await commitStagedWrites(staged);
-
   return {
-    docId,
-    code,
-    id: headerFields.id,
-    itemCount: items.length,
-    chunkCount: itemChunks.length,
-    appUpdatedAt: headerFields.appUpdatedAt,
-    itemsReplacedAt: headerFields.itemsReplacedAt,
-    digest
+    entry: {
+      docId,
+      code,
+      id: headerFields.id,
+      itemCount: items.length,
+      chunkCount: itemChunks.length,
+      appUpdatedAt: headerFields.appUpdatedAt,
+      itemsReplacedAt: headerFields.itemsReplacedAt,
+      digest
+    },
+    staged
   };
+}
+
+async function pushSingleOutboundToCloud(rcp: OutboundReceipt): Promise<CloudReceiptIndexEntry> {
+  const prep = prepareOutboundStagedWrites(rcp);
+  await commitStagedWrites(prep.staged);
+  return prep.entry;
+}
+
+async function pushBulkOutboundsToCloud(
+  receipts: OutboundReceipt[],
+  existingIndexMap?: Map<string, CloudReceiptIndexEntry>
+): Promise<CloudReceiptIndexEntry[]> {
+  if (receipts.length === 0) return [];
+  const allStaged: StagedDocWrite[] = [];
+  const entries: CloudReceiptIndexEntry[] = [];
+
+  for (let i = 0; i < receipts.length; i++) {
+    const code = normKey(receipts[i].issueCode || receipts[i].id);
+    const isBrandNew = existingIndexMap ? !existingIndexMap.has(code) : false;
+    const prep = prepareOutboundStagedWrites(receipts[i], isBrandNew);
+    entries.push(prep.entry);
+    allStaged.push(...prep.staged);
+  }
+
+  await commitStagedWrites(allStaged);
+  return entries;
 }
 
 async function writeReceiptIndexChunks(
@@ -2389,7 +2467,7 @@ export const FirestoreSyncService = {
       }
     );
 
-    // Duy trì nhịp tim định kỳ cập nhật lastSeenAt mỗi 35 giây nếu thiết bị này đang có phiên hoạt động
+    // Duy trì nhịp tim định kỳ cập nhật lastSeenAt mỗi 20 giây nếu thiết bị này đang có phiên hoạt động
     sessionHeartbeatInterval = setInterval(async () => {
       try {
         const u = auth.currentUser;
@@ -2397,12 +2475,14 @@ export const FirestoreSyncService = {
         // Không gửi heartbeat nếu máy này đã đăng xuất (đang ở màn hình login)
         if (externalIsLocalSessionStillActive && !externalIsLocalSessionStillActive('')) return;
         await updateDoc(sessRef, {
-          lastSeenAt: Date.now()
+          lastSeenAt: Date.now(),
+          updatedByUid: u.uid,
+          updatedAt: serverTimestamp()
         });
       } catch {
         // ignore heartbeat error
       }
-    }, 35_000);
+    }, 20_000);
   },
 
   async reconcileWithCloud(): Promise<boolean> {
@@ -2590,12 +2670,9 @@ export const FirestoreSyncService = {
       }
 
       if (inboundsToPush.length > 0) {
-        for (let i = 0; i < inboundsToPush.length; i += 6) {
-          const slice = inboundsToPush.slice(i, i + 6);
-          const updatedEntries = await Promise.all(slice.map((item) => pushSingleInboundToCloud(item.rcp)));
-          for (let j = 0; j < slice.length; j++) {
-            cloudInMap.set(slice[j].code, updatedEntries[j]);
-          }
+        const updatedEntries = await pushBulkInboundsToCloud(inboundsToPush.map((x) => x.rcp), cloudInMap);
+        for (let j = 0; j < inboundsToPush.length; j++) {
+          cloudInMap.set(inboundsToPush[j].code, updatedEntries[j]);
         }
         inboundIndexChanged = true;
       }
@@ -2667,12 +2744,9 @@ export const FirestoreSyncService = {
       }
 
       if (outboundsToPush.length > 0) {
-        for (let i = 0; i < outboundsToPush.length; i += 6) {
-          const slice = outboundsToPush.slice(i, i + 6);
-          const updatedEntries = await Promise.all(slice.map((item) => pushSingleOutboundToCloud(item.rcp)));
-          for (let j = 0; j < slice.length; j++) {
-            cloudOutMap.set(slice[j].code, updatedEntries[j]);
-          }
+        const updatedEntries = await pushBulkOutboundsToCloud(outboundsToPush.map((x) => x.rcp), cloudOutMap);
+        for (let j = 0; j < outboundsToPush.length; j++) {
+          cloudOutMap.set(outboundsToPush[j].code, updatedEntries[j]);
         }
         outboundIndexChanged = true;
       }
@@ -2789,21 +2863,12 @@ export const FirestoreSyncService = {
     }
 
     // NẾU ĐÁM MÂY ĐANG CÓ MÃ PHIÊN KHÁC:
-    // Kiểm tra xem phiên trên đám mây có mới hơn phiên này không.
-    // NGUYÊN TẮC: Phiên cũ (thiết bị trước) phải thoát, phiên mới (thiết bị hiện tại vừa đăng nhập) được giữ lại!
     if (prev && prevToken && prevToken !== session.sessionToken) {
-      const prevIssued = Number(prev.issuedAtMs) || 0;
-      const myIssued = Number(session.issuedAtMs) || 0;
-      const revokedBefore = Number(prev.revokedBeforeMs) || 0;
-      // Chỉ kích hoạt đăng xuất thiết bị hiện tại nếu ĐÃ CÓ thiết bị khác phát hành phiên MỚI HƠN phiên này!
-      if (
-        (prev.deviceId !== session.deviceId && prevIssued > myIssued) ||
-        (revokedBefore > 0 && myIssued <= revokedBefore)
-      ) {
+      // Nếu thiết bị khác đang giữ phiên hoạt động trên đám mây:
+      if (prev.deviceId && prev.deviceId !== session.deviceId) {
         externalOnRemoteSessionSnapshot?.(prev);
         return;
       }
-      // Phiên hiện tại mới hơn hoặc bằng: ghi nhận thu hồi phiên cũ trên đám mây để thiết bị cũ bị ngắt
       rememberRevokedCloudToken(prevToken);
     }
 
@@ -2989,6 +3054,7 @@ export const FirestoreSyncService = {
           userKey: cleanStr(userKey, 160, 'user')
         },
         {
+          userKey: cleanStr(userKey, 160, 'user'),
           userId: cleanStr(matched.id, 160, 'user-0'),
           username: cleanStr(matched.username, 160, 'user'),
           sessionToken: newToken,
@@ -3230,6 +3296,7 @@ export const FirestoreSyncService = {
         };
 
         const sessionMutablePayload = {
+          userKey: cleanStr(userKey, 160, 'user'),
           userId: cleanStr(matched.id, 160, 'user-0'),
           username: cleanStr(matched.username, 160, 'user'),
           sessionToken: newToken,
@@ -3252,7 +3319,6 @@ export const FirestoreSyncService = {
             await setDoc(sessRef, {
               workspaceId: WORKSPACE_ID,
               sessionDocId,
-              userKey: cleanStr(userKey, 160, 'user'),
               ...sessionMutablePayload,
               createdAt: sessSnap.data()?.createdAt || serverTimestamp()
             });
@@ -3261,7 +3327,6 @@ export const FirestoreSyncService = {
           await setDoc(sessRef, {
             workspaceId: WORKSPACE_ID,
             sessionDocId,
-            userKey: cleanStr(userKey, 160, 'user'),
             ...sessionMutablePayload,
             createdAt: serverTimestamp()
           });
@@ -3497,9 +3562,7 @@ export const FirestoreSyncService = {
         remoteToken &&
         remoteToken !== mySession.sessionToken &&
         d.deviceId &&
-        d.deviceId !== mySession.deviceId &&
-        remoteIssued > myIssued &&
-        !revokedCloudSessionTokens.has(remoteToken)
+        d.deviceId !== mySession.deviceId
       ) {
         return {
           handled: true,
@@ -3519,7 +3582,11 @@ export const FirestoreSyncService = {
         };
       }
 
-      // Phiên địa phương mới hơn phiên cũ trên đám mây -> nâng cấp đám mây
+      if (d.deviceId && d.deviceId !== mySession.deviceId) {
+        return { handled: true, valid: false, reason: 'replaced' };
+      }
+
+      // Chỉ cập nhật đám mây nếu đúng là phiên của cùng thiết bị này hoặc đám mây chưa có thiết bị nào
       await this.syncActiveSessionToCloudIfConnected(mySession);
       return { handled: true, valid: true };
     } catch {
@@ -4034,27 +4101,21 @@ export const FirestoreSyncService = {
       const pushedMats = await pushMaterialsToCloud();
       cloudMaterialsDirty = false;
 
-      // 3. Push Inbound Receipts
+      // 3. Push Inbound Receipts (Bulk Siêu Tốc)
       const localInbounds = StorageService.getInboundReceipts();
       const inMap = new Map<string, CloudReceiptIndexEntry>();
-      for (let i = 0; i < localInbounds.length; i += 6) {
-        const slice = localInbounds.slice(i, i + 6);
-        const updatedEntries = await Promise.all(slice.map((r) => pushSingleInboundToCloud(r)));
-        for (let j = 0; j < slice.length; j++) {
-          inMap.set(slice[j].receiptCode || slice[j].id, updatedEntries[j]);
-        }
+      const updatedInEntries = await pushBulkInboundsToCloud(localInbounds);
+      for (let j = 0; j < localInbounds.length; j++) {
+        inMap.set(localInbounds[j].receiptCode || localInbounds[j].id, updatedInEntries[j]);
       }
       const nextInboundIndexChunkCount = await writeReceiptIndexChunks('inbound', inMap);
 
-      // 4. Push Outbound Receipts
+      // 4. Push Outbound Receipts (Bulk Siêu Tốc)
       const localOutbounds = StorageService.getOutboundReceipts();
       const outMap = new Map<string, CloudReceiptIndexEntry>();
-      for (let i = 0; i < localOutbounds.length; i += 6) {
-        const slice = localOutbounds.slice(i, i + 6);
-        const updatedEntries = await Promise.all(slice.map((r) => pushSingleOutboundToCloud(r)));
-        for (let j = 0; j < slice.length; j++) {
-          outMap.set(slice[j].issueCode || slice[j].id, updatedEntries[j]);
-        }
+      const updatedOutEntries = await pushBulkOutboundsToCloud(localOutbounds);
+      for (let j = 0; j < localOutbounds.length; j++) {
+        outMap.set(localOutbounds[j].issueCode || localOutbounds[j].id, updatedOutEntries[j]);
       }
       const nextOutboundIndexChunkCount = await writeReceiptIndexChunks('outbound', outMap);
 

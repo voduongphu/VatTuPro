@@ -848,17 +848,17 @@ function inspectManifestActiveSessions(
   activeSessions?: Record<string, ActiveUserSession>,
   manifestUsers?: User[]
 ): boolean {
-  if (authTransitionCount > 0 || FirestoreSyncService.isCloudConnected()) return true;
+  if (authTransitionCount > 0) return true;
   const current = getStoredUnifiedSession();
   if (!current) return true;
 
-  if (current.session.sessionToken.startsWith('cloud.')) {
-    return true;
-  }
-
   const mySession = current.session;
   const myIssuedAt = getClientSessionIssuedAtMs(mySession);
-  const remote = activeSessions?.[mySession.userKey];
+  const myCanonical = canonicalUserSessionKey(current.user) || normUserKey(mySession.userKey);
+  const remote =
+    activeSessions?.[mySession.userKey] ||
+    activeSessions?.[myCanonical] ||
+    (current.user?.username ? activeSessions?.[normUserKey(current.user.username)] : undefined);
 
   let matchedUser: User | undefined;
   if (Array.isArray(manifestUsers)) {
@@ -871,22 +871,27 @@ function inspectManifestActiveSessions(
     }
   }
 
-  // Cho phép phiên static- hoạt động ổn định nếu máy chủ không từ chối hoặc chưa có phiên mới hơn thay thế
-  if (mySession.sessionToken.startsWith('static-')) {
-    if (
-      remote &&
-      remote.sessionToken !== mySession.sessionToken &&
-      !revokedLocalTokens.has(remote.sessionToken) &&
-      getClientSessionIssuedAtMs(remote) > myIssuedAt
-    ) {
-      triggerLocalKickOut({
-        reason: 'replaced',
-        deviceLabel: remote.deviceLabel,
-        loginAt: remote.loginAt
-      });
-      return false;
-    }
+  // Khi đang kết nối Google Cloud Firestore, Firestore là nguồn sự thật duy nhất về phiên.
+  // Tránh việc manifest cũ từ máy chủ nội bộ /api/sync can thiệp gây đăng xuất sai.
+  if (FirestoreSyncService.isCloudConnected()) {
     return true;
+  }
+
+  // Nếu máy chủ xác nhận phiên khác trên thiết bị khác đang hoạt động -> tự động thoát phiên này ngay!
+  if (
+    remote &&
+    remote.sessionToken &&
+    remote.sessionToken !== mySession.sessionToken &&
+    remote.deviceId &&
+    remote.deviceId !== mySession.deviceId &&
+    !revokedLocalTokens.has(remote.sessionToken)
+  ) {
+    triggerLocalKickOut({
+      reason: 'replaced',
+      deviceLabel: remote.deviceLabel,
+      loginAt: remote.loginAt
+    });
+    return false;
   }
 
   // Nếu máy chủ xác nhận đúng mã phiên hiện tại đang hoạt động thì giữ nguyên phiên (tránh lệch múi giờ/đồng hồ sessionRevokedAt)
@@ -1523,14 +1528,9 @@ function connectWebSocket(force = false): void {
               normUserKey(current.session.userKey) === normUserKey(msg.userKey);
 
             if (isUserMatch) {
-              const myIssued = getClientSessionIssuedAtMs(current.session);
-              const remoteIssued =
-                Number(msg.issuedAtMs) || (msg.loginAt ? Date.parse(msg.loginAt) : 0);
-              // Chỉ ngắt phiên hiện tại nếu thiết bị khác phát hành phiên MỚI HƠN phiên này!
               if (
                 msg.deviceId !== current.session.deviceId &&
-                msg.activeSessionToken !== current.session.sessionToken &&
-                remoteIssued > myIssued
+                msg.activeSessionToken !== current.session.sessionToken
               ) {
                 triggerLocalKickOut({
                   reason: 'replaced',
@@ -1689,57 +1689,37 @@ export const SyncService = {
         const current = getStoredUnifiedSession();
         if (!current) return;
         const myCanonical = canonicalUserSessionKey(current.user) || normUserKey(current.session.userKey);
+        const remoteUserKey = String(remoteData.userKey || (remoteData as any).username || '');
         const remoteCanonical =
           canonicalUserSessionKey({ email: (remoteData as any).email, username: (remoteData as any).username }) ||
-          normUserKey(remoteData.userKey);
+          normUserKey(remoteUserKey);
         const isMatch =
+          !remoteUserKey ||
           myCanonical === remoteCanonical ||
           (current.session.userId && remoteData.userId && current.session.userId === remoteData.userId) ||
-          normUserKey(current.session.userKey) === normUserKey(remoteData.userKey);
+          normUserKey(current.session.userKey) === normUserKey(remoteUserKey) ||
+          normUserKey(current.session.username) === normUserKey(remoteData.username);
         if (!isMatch) return;
 
         const remoteToken = String(remoteData.sessionToken || '');
-        const remoteIssued = Number(remoteData.issuedAtMs) || 0;
         const revokedBefore = Number(remoteData.revokedBeforeMs) || 0;
-        const myIssued = getClientSessionIssuedAtMs(current.session);
 
         // Nếu remoteToken rỗng (do thiết bị trước đã đăng xuất) hoặc đúng mã phiên này hoặc cùng thiết bị -> bỏ qua
         if (!remoteToken || remoteToken === current.session.sessionToken) return;
         if (remoteData.deviceId && remoteData.deviceId === current.session.deviceId) return;
         if (remoteToken && revokedLocalTokens.has(remoteToken)) return;
 
-        // Chỉ ngắt phiên nếu có thiết bị khác thực sự yêu cầu force logout
-        if (
-          remoteData.deviceId &&
-          remoteData.deviceId !== current.session.deviceId &&
-          revokedBefore > 0 &&
-          myIssued > 0 &&
-          myIssued <= revokedBefore
-        ) {
-          triggerLocalKickOut({
-            reason: 'force_logout',
-            deviceLabel: remoteData.forceLogoutDeviceLabel
-              ? String(remoteData.forceLogoutDeviceLabel)
-              : undefined,
-            loginAt: remoteData.forceLogoutAt ? String(remoteData.forceLogoutAt) : undefined
-          });
-          return;
-        }
-
-        // Nếu có phiên khác token và mới hơn được phát hành trên thiết bị KHÁC
-        if (
-          remoteToken &&
-          remoteToken !== current.session.sessionToken &&
-          remoteData.deviceId !== current.session.deviceId &&
-          remoteIssued > myIssued
-        ) {
-          triggerLocalKickOut({
-            reason: 'replaced',
-            deviceLabel: remoteData.deviceLabel ? String(remoteData.deviceLabel) : undefined,
-            loginAt: remoteData.loginAt ? String(remoteData.loginAt) : undefined
-          });
-          return;
-        }
+        // Bất kỳ khi nào phát hiện phiên hoạt động khác trên thiết bị khác:
+        // Không cho phép 1 tài khoản đăng nhập trên 2 thiết bị -> Thiết bị này lập tức tự động thoát!
+        triggerLocalKickOut({
+          reason: revokedBefore > 0 ? 'force_logout' : 'replaced',
+          deviceLabel: remoteData.forceLogoutDeviceLabel || remoteData.deviceLabel
+            ? String(remoteData.forceLogoutDeviceLabel || remoteData.deviceLabel)
+            : 'Thiết bị khác',
+          loginAt: remoteData.forceLogoutAt || remoteData.loginAt
+            ? String(remoteData.forceLogoutAt || remoteData.loginAt)
+            : undefined
+        });
       }
     });
 

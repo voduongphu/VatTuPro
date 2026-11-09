@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo, useDeferredValue } from 'react';
 import { useAuth } from '../../context/AuthContext';
 import { InboundReceipt, InboundItemDetail, Warehouse, MaterialItem } from '../../types/inventory';
 import { StorageService } from '../../services/storage';
+import { SyncService } from '../../services/syncService';
 import { ExcelImportModal } from '../common/ExcelImportModal';
 import { ReceiptPrintModal } from '../common/ReceiptPrintModal';
 import { ConfirmDeleteModal } from '../common/ConfirmDeleteModal';
@@ -818,6 +819,7 @@ export const InboundManager: React.FC = () => {
     showToast(
       `Đã import thành công ${newReceipts.length.toLocaleString('vi-VN')} phiếu nhập kho (${importedItems.length.toLocaleString('vi-VN')} mục hàng)! Tự động cập nhật ${result.newMaterialsCount.toLocaleString('vi-VN')} vật tư mới.`
     );
+    void SyncService.syncNow();
   };
 
   const handleSaveCreate = (e: React.FormEvent) => {

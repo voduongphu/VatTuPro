@@ -8,6 +8,7 @@ import {
   MaterialItem
 } from '../../types/inventory';
 import { StorageService } from '../../services/storage';
+import { SyncService } from '../../services/syncService';
 import { ExcelImportModal } from '../common/ExcelImportModal';
 import { ReceiptPrintModal } from '../common/ReceiptPrintModal';
 import { ConfirmDeleteModal } from '../common/ConfirmDeleteModal';
@@ -663,6 +664,7 @@ export const OutboundManager: React.FC = () => {
     showToast(
       `Đã import thành công ${newReceipts.length.toLocaleString('vi-VN')} phiếu xuất kho (${imported.length.toLocaleString('vi-VN')} mục hàng)!`
     );
+    void SyncService.syncNow();
   };
 
   const handleSaveCreate = (e: React.FormEvent) => {
