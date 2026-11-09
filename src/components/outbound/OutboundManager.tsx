@@ -72,7 +72,9 @@ function getStockItemMatchKey(item: {
   packingListNo?: string;
   shipment?: string;
   materialCode?: string;
+  materialName?: string;
   packageNo?: string;
+  batchCode?: string;
   drawingNo?: string;
   category?: string;
 }): string {
@@ -80,7 +82,14 @@ function getStockItemMatchKey(item: {
     const trimmed = (v || '').trim();
     return !trimmed || trimmed.toUpperCase() === 'N/A' ? 'N/A' : trimmed.toUpperCase();
   };
-  return `${norm(item.packingListNo)}__${norm(item.shipment)}__${norm(item.materialCode)}__${norm(item.packageNo)}__${norm(item.drawingNo)}__${norm(item.category)}`;
+  const pl = norm(item.packingListNo);
+  const shp = norm(item.shipment);
+  const code = norm(item.materialCode);
+  const name = norm(item.materialName);
+  const pkg = norm(item.packageNo || item.batchCode);
+  const dwg = norm(item.drawingNo);
+  const cat = norm(item.category);
+  return `${pl}__${shp}__${code}__${name}__${pkg}__${dwg}__${cat}`;
 }
 
 function buildOutboundItemFromStock(st: InventoryStockRecord, idxOffset = 0): OutboundItemDetail {
@@ -252,12 +261,12 @@ export const OutboundManager: React.FC = () => {
       const stockIndexMap = new Map<string, number>();
       for (let i = 0; i < baseStock.length; i++) {
         const s = baseStock[i];
-        const key = `${s.warehouseId}__${s.packingListNo}__${s.shipment}__${s.materialCode}__${s.packageNo}__${s.drawingNo}__${s.category}`;
+        const key = `${s.warehouseId}__${s.packingListNo}__${s.shipment}__${s.materialCode}__${s.materialName}__${s.packageNo}__${s.drawingNo}__${s.category}`;
         stockIndexMap.set(key, i);
       }
       for (let j = 0; j < editingReceipt.items.length; j++) {
         const it = editingReceipt.items[j];
-        const key = `${editingReceipt.warehouseId}__${it.packingListNo || 'N/A'}__${it.shipment || 'N/A'}__${it.materialCode || 'N/A'}__${it.packageNo || 'N/A'}__${it.drawingNo || 'N/A'}__${it.category || 'N/A'}`;
+        const key = `${editingReceipt.warehouseId}__${it.packingListNo || 'N/A'}__${it.shipment || 'N/A'}__${it.materialCode || 'N/A'}__${it.materialName || 'N/A'}__${it.packageNo || it.batchCode || 'N/A'}__${it.drawingNo || 'N/A'}__${it.category || 'N/A'}`;
         const idx = stockIndexMap.get(key);
         if (idx !== undefined) {
           baseStock[idx].currentQuantity = roundQty(
@@ -323,12 +332,12 @@ export const OutboundManager: React.FC = () => {
     const stockIndexMap = new Map<string, number>();
     for (let i = 0; i < baseStock.length; i++) {
       const s = baseStock[i];
-      const key = `${s.warehouseId}__${s.packingListNo}__${s.shipment}__${s.materialCode}__${s.packageNo}__${s.drawingNo}__${s.category}`;
+      const key = `${s.warehouseId}__${s.packingListNo}__${s.shipment}__${s.materialCode}__${s.materialName}__${s.packageNo}__${s.drawingNo}__${s.category}`;
       stockIndexMap.set(key, i);
     }
     for (let j = 0; j < (rcp.items || []).length; j++) {
       const it = rcp.items[j];
-      const key = `${rcp.warehouseId}__${it.packingListNo || 'N/A'}__${it.shipment || 'N/A'}__${it.materialCode || 'N/A'}__${it.packageNo || 'N/A'}__${it.drawingNo || 'N/A'}__${it.category || 'N/A'}`;
+      const key = `${rcp.warehouseId}__${it.packingListNo || 'N/A'}__${it.shipment || 'N/A'}__${it.materialCode || 'N/A'}__${it.materialName || 'N/A'}__${it.packageNo || it.batchCode || 'N/A'}__${it.drawingNo || 'N/A'}__${it.category || 'N/A'}`;
       const idx = stockIndexMap.get(key);
       if (idx !== undefined) {
         baseStock[idx].currentQuantity = roundQty(
@@ -427,19 +436,21 @@ export const OutboundManager: React.FC = () => {
     const existingIndex = formItems.findIndex((it) => getStockItemMatchKey(it) === targetKey);
 
     setFormItemSearch('');
+    // Luôn đưa vật tư được chọn vào phiếu xuất để không bao giờ chặn thao tác của người dùng
+    setFormItems((prev) => {
+      const next = [...prev, buildOutboundItemFromStock(st, prev.length)];
+      setFormItemPage(Math.max(1, Math.ceil(next.length / FORM_ITEM_PAGE_SIZE)));
+      return next;
+    });
+
+    const itemLabel = st.materialCode
+      ? `${st.materialCode} - ${st.materialName}`
+      : st.materialName || 'Vật tư';
+
     if (existingIndex !== -1) {
-      const page = Math.max(1, Math.ceil((existingIndex + 1) / FORM_ITEM_PAGE_SIZE));
-      setFormItemPage(page);
-      showToast(
-        `Vật tư "${st.materialCode}" (${st.packageNo || 'Không số kiện'}) đã có sẵn trong phiếu xuất!`
-      );
+      showToast(`Đã thêm dòng xuất mới cho "${itemLabel}"!`, 'success');
     } else {
-      setFormItems((prev) => {
-        const next = [...prev, buildOutboundItemFromStock(st, prev.length)];
-        setFormItemPage(Math.max(1, Math.ceil(next.length / FORM_ITEM_PAGE_SIZE)));
-        return next;
-      });
-      showToast(`Đã thêm "${st.materialCode} - ${st.materialName}" vào phiếu xuất kho!`, 'success');
+      showToast(`Đã thêm "${itemLabel}" vào phiếu xuất kho!`, 'success');
     }
 
     setQuickStockQuery('');
@@ -2179,13 +2190,10 @@ export const OutboundManager: React.FC = () => {
                                       selectSingleStockItem(st, false);
                                       setIsQuickStockOpen(false);
                                     }}
-                                    className={`mt-1.5 px-2.5 py-1 rounded-lg font-bold text-[11px] transition shadow-xs inline-flex items-center gap-1 ${
-                                      isAdded
-                                        ? 'bg-slate-200 text-slate-700 hover:bg-slate-300'
-                                        : 'bg-blue-600 hover:bg-blue-700 text-white'
-                                    }`}
+                                    className="mt-1.5 px-2.5 py-1 rounded-lg font-bold text-[11px] transition shadow-xs inline-flex items-center gap-1 bg-blue-600 hover:bg-blue-700 text-white"
                                   >
-                                    {isAdded ? 'Đã có' : '+ Chọn xuất'}
+                                    <Plus className="w-3.5 h-3.5" />
+                                    <span>{isAdded ? '+ Thêm dòng' : '+ Chọn xuất'}</span>
                                   </button>
                                 </div>
                               </div>
