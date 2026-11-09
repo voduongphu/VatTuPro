@@ -1353,6 +1353,9 @@ async function reconcileInternal(): Promise<{ cloudSuccess: boolean; localSucces
   let syncError: string | undefined;
 
   try {
+    // Đảm bảo xả sạch hàng đợi ghi đĩa cục bộ IndexedDB trước khi đọc và đẩy dữ liệu
+    await StorageService.flush();
+
     // 1. Ưu tiên đồng bộ 2 chiều thời gian thực qua Cloud Firestore cho mọi tài khoản Google đã xác thực (Admin & Nhân sự)
     if (
       authTransitionCount === 0 &&
@@ -1405,7 +1408,7 @@ async function reconcileInternal(): Promise<{ cloudSuccess: boolean; localSucces
   return { cloudSuccess, localSuccess, error: syncError };
 }
 
-function schedulePush(delayMs = 150): void {
+function schedulePush(delayMs = 350): void {
   if (pushDebounceTimer) clearTimeout(pushDebounceTimer);
   pushDebounceTimer = setTimeout(() => {
     void reconcileInternal();
@@ -1744,7 +1747,8 @@ export const SyncService = {
         }
         FirestoreSyncService.pushOsdRealtimeToCloud().catch(() => {});
       }
-      schedulePush(150);
+      // Debounce gom cụm các đột biến liên tiếp (nhất là khi import hàng loạt ~1000 dòng)
+      schedulePush(350);
       try {
         authChannel?.postMessage({ type: 'sync:local_changed' });
       } catch {
@@ -1907,8 +1911,16 @@ export const SyncService = {
       };
     }
 
+    if (pushDebounceTimer) {
+      clearTimeout(pushDebounceTimer);
+      pushDebounceTimer = null;
+    }
+
     notifySyncState(true);
     try {
+      // Đảm bảo commit toàn bộ hàng đợi ghi IndexedDB trước khi phân tán luồng đồng bộ
+      await StorageService.flush();
+
       let serverOk = false;
       let cloudOk = false;
 

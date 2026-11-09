@@ -217,28 +217,115 @@ async function idbGetAll(db: IDBDatabase): Promise<Map<string, any>> {
   });
 }
 
-function idbPut(key: string, value: any): Promise<void> {
-  const p = (async () => {
-    const db = await openIDB();
-    if (!db) return;
-    await new Promise<void>((resolve) => {
+// ============================================================================
+// Batched Write Transaction & Coalescing Queue for IndexedDB
+// Gom nhiều thao tác ghi đĩa liên tục vào 1 IDB Transaction duy nhất
+// ============================================================================
+const idbBatchQueue = new Map<string, any>();
+let isIdbBatchFlushing = false;
+let idbBatchScheduled = false;
+let activeBatchPromise: Promise<void> | null = null;
+
+function scheduleIdbBatchFlush(delayMs = 16): void {
+  if (idbBatchScheduled) return;
+  idbBatchScheduled = true;
+
+  const trigger =
+    typeof queueMicrotask === 'function' && delayMs <= 0
+      ? queueMicrotask
+      : (cb: () => void) => setTimeout(cb, Math.max(0, delayMs));
+
+  trigger(() => {
+    idbBatchScheduled = false;
+    void executeIdbBatchFlush();
+  });
+}
+
+async function executeIdbBatchFlush(): Promise<void> {
+  if (isIdbBatchFlushing) {
+    if (activeBatchPromise) {
       try {
-        const tx = db.transaction(IDB_STORE, 'readwrite');
-        tx.objectStore(IDB_STORE).put(value, key);
-        tx.oncomplete = () => resolve();
-        tx.onerror = () => resolve();
-        tx.onabort = () => resolve();
+        await activeBatchPromise;
       } catch {
-        resolve();
+        // ignore
       }
-    });
+    }
+  }
+
+  if (idbBatchQueue.size === 0) return;
+
+  isIdbBatchFlushing = true;
+  const p = (async () => {
+    try {
+      const db = await openIDB();
+      if (!db) {
+        idbBatchQueue.clear();
+        return;
+      }
+
+      const entries = Array.from(idbBatchQueue.entries());
+      idbBatchQueue.clear();
+
+      if (entries.length === 0) return;
+
+      await new Promise<void>((resolve) => {
+        try {
+          // MỞ 1 TRANSACTION DUY NHẤT CHO TOÀN BỘ CÁC BẢNG/KEY CẦN GHI
+          const tx = db.transaction(IDB_STORE, 'readwrite');
+          const store = tx.objectStore(IDB_STORE);
+          for (let i = 0; i < entries.length; i++) {
+            store.put(entries[i][1], entries[i][0]);
+          }
+          tx.oncomplete = () => resolve();
+          tx.onerror = (err) => {
+            console.warn('IDB batch transaction error:', err);
+            resolve();
+          };
+          tx.onabort = (err) => {
+            console.warn('IDB batch transaction aborted:', err);
+            resolve();
+          };
+        } catch (e) {
+          console.warn('IDB batch transaction exception:', e);
+          resolve();
+        }
+      });
+    } finally {
+      isIdbBatchFlushing = false;
+      if (idbBatchQueue.size > 0) {
+        scheduleIdbBatchFlush(0);
+      }
+    }
   })();
+
+  activeBatchPromise = p;
   pendingWrites.add(p);
-  p.finally(() => pendingWrites.delete(p));
-  return p;
+  p.finally(() => {
+    pendingWrites.delete(p);
+    if (activeBatchPromise === p) {
+      activeBatchPromise = null;
+    }
+  });
+
+  await p;
+}
+
+function idbPut(key: string, value: any): Promise<void> {
+  idbBatchQueue.set(key, value);
+  scheduleIdbBatchFlush(16);
+  return activeBatchPromise || Promise.resolve();
+}
+
+function idbPutBatch(entries: Array<[string, any]>): Promise<void> {
+  for (let i = 0; i < entries.length; i++) {
+    idbBatchQueue.set(entries[i][0], entries[i][1]);
+  }
+  scheduleIdbBatchFlush(16);
+  return activeBatchPromise || Promise.resolve();
 }
 
 async function idbClear(): Promise<void> {
+  idbBatchQueue.clear();
   const db = await openIDB();
   if (!db) return;
   await new Promise<void>((resolve) => {
@@ -1053,9 +1140,51 @@ export const StorageService = {
   },
 
   async flush(): Promise<void> {
+    // Xả toàn bộ hàng đợi ghi IndexedDB gộp (drain coalescing queue)
+    while (idbBatchQueue.size > 0 || isIdbBatchFlushing) {
+      await executeIdbBatchFlush();
+    }
     if (pendingWrites.size > 0) {
       await Promise.all(Array.from(pendingWrites));
     }
+  },
+
+  // Phương thức ghi gộp (Batched Store Write) cho nhiều bảng dữ liệu cùng lúc
+  saveBatch(entries: Array<{ key: string; value: any }>): void {
+    if (!entries || entries.length === 0) return;
+    for (let i = 0; i < entries.length; i++) {
+      const { key, value } = entries[i];
+      memoryCache.set(key, value);
+      if (
+        key === STORAGE_KEYS.INBOUND ||
+        key === STORAGE_KEYS.OUTBOUND ||
+        key === STORAGE_KEYS.WAREHOUSES ||
+        key === STORAGE_KEYS.OSD ||
+        key === STORAGE_KEYS.DELETED_INBOUND ||
+        key === STORAGE_KEYS.DELETED_OUTBOUND
+      ) {
+        inventoryVersion++;
+      }
+      idbBatchQueue.set(key, value);
+      if (LARGE_DATA_KEYS.has(key)) {
+        try {
+          localStorage.removeItem(key);
+        } catch {
+          // ignore
+        }
+      } else {
+        try {
+          localStorage.setItem(key, JSON.stringify(value));
+        } catch {
+          try {
+            localStorage.removeItem(key);
+          } catch {
+            // ignore
+          }
+        }
+      }
+    }
+    scheduleIdbBatchFlush(16);
   },
 
   subscribe(listener: () => void): () => void {
