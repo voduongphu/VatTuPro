@@ -2020,7 +2020,7 @@ export const OutboundManager: React.FC = () => {
                       Chi Tiết Vật Tư Xuất Kho ({formItems.length.toLocaleString('vi-VN')} mục hàng)
                     </h4>
                     <p className="text-xs text-slate-500">
-                      Chọn nhanh từ tồn kho bên dưới hoặc bấm nút để mở bảng tra cứu đầy đủ
+                      Tìm & chọn nhanh từ tồn kho bên dưới hoặc thêm dòng thủ công
                     </p>
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
@@ -2046,14 +2046,6 @@ export const OutboundManager: React.FC = () => {
                     >
                       <Plus className="w-3.5 h-3.5" />
                       <span>Thêm Dòng Thủ Công</span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={openStockPicker}
-                      className="flex items-center gap-1.5 px-3.5 py-2 sm:py-1.5 bg-blue-600 text-white hover:bg-blue-700 rounded-lg text-xs font-bold shadow-sm transition min-h-[38px]"
-                    >
-                      <Package className="w-4 h-4" />
-                      <span>Mở Bảng Tồn Kho Đầy Đủ</span>
                     </button>
                   </div>
                 </div>
@@ -2531,7 +2523,7 @@ export const OutboundManager: React.FC = () => {
                                   ? 'bg-blue-50/70 hover:bg-blue-100/60'
                                   : 'hover:bg-slate-50'
                               }`}
-                              title="Bấm '+ Chọn' hoặc Nhấp đúp chuột để đưa ngay vào phiếu xuất"
+                              title="Bấm 'Chọn' hoặc Nhấp đúp chuột để đưa ngay vào phiếu xuất"
                             >
                               <td className="p-2.5 font-mono font-bold text-blue-700">
                                 {st.materialCode}
@@ -2605,7 +2597,7 @@ export const OutboundManager: React.FC = () => {
                                   ) : (
                                     <>
                                       <Plus className="w-3.5 h-3.5" />
-                                      <span>+ Chọn</span>
+                                      <span>Chọn</span>
                                     </>
                                   )}
                                 </button>
