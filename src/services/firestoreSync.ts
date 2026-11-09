@@ -3564,25 +3564,33 @@ export const FirestoreSyncService = {
         d.deviceId &&
         d.deviceId !== mySession.deviceId
       ) {
-        return {
-          handled: true,
-          valid: false,
-          reason: 'replaced',
-          replacedBy: {
-            userId: String(d.userId || mySession.userId),
-            username: String(d.username || mySession.username),
-            userKey,
-            sessionToken: remoteToken,
-            issuedAtMs: remoteIssued,
-            deviceId: String(d.deviceId || ''),
-            deviceLabel: String(d.deviceLabel || 'Thiết bị khác'),
-            loginAt: String(d.loginAt || ''),
-            lastSeenAt: Number(d.lastSeenAt) || Date.now()
-          }
-        };
+        // CHỈ ngắt phiên nếu thiết bị khác phát hành phiên MỚI HƠN phiên này!
+        if (remoteIssued > myIssued) {
+          return {
+            handled: true,
+            valid: false,
+            reason: 'replaced',
+            replacedBy: {
+              userId: String(d.userId || mySession.userId),
+              username: String(d.username || mySession.username),
+              userKey,
+              sessionToken: remoteToken,
+              issuedAtMs: remoteIssued,
+              deviceId: String(d.deviceId || ''),
+              deviceLabel: String(d.deviceLabel || 'Thiết bị khác'),
+              loginAt: String(d.loginAt || ''),
+              lastSeenAt: Number(d.lastSeenAt) || Date.now()
+            }
+          };
+        }
+
+        // Nếu phiên của thiết bị này MỚI HƠN hoặc BẰNG phiên trên Cloud (vd thiết bị cũ chưa kịp dọn hoặc độ trễ mạng):
+        // Phiên mới của thiết bị này là hợp lệ! Ghi nhận phiên mới lên Cloud và bảo toàn phiên!
+        await this.syncActiveSessionToCloudIfConnected(mySession);
+        return { handled: true, valid: true };
       }
 
-      if (d.deviceId && d.deviceId !== mySession.deviceId) {
+      if (d.deviceId && d.deviceId !== mySession.deviceId && remoteIssued > myIssued) {
         return { handled: true, valid: false, reason: 'replaced' };
       }
 

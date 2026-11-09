@@ -135,8 +135,6 @@ let wsFailCount = 0;
 let nextWsAllowedAtMs = 0;
 let ws: WebSocket | null = null;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-let pollTimer: ReturnType<typeof setInterval> | null = null;
-let osdPollTimer: ReturnType<typeof setInterval> | null = null;
 let sessionHeartbeatTimer: ReturnType<typeof setInterval> | null = null;
 let pushDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 let authChannel: BroadcastChannel | null = null;
@@ -681,10 +679,10 @@ async function verifySessionHeartbeat(forceImmediate = false): Promise<void> {
 
   const watchKey = canonicalUserSessionKey(current.user) || current.session.userKey;
 
-  // Khi Cloud Firestore đang kết nối, onSnapshot nhận thay đổi tức thì; chỉ kiểm tra định kỳ mỗi 30s để bảo toàn hạn mức đọc
+  // Khi Cloud Firestore đang kết nối, onSnapshot nhận thay đổi tức thì; chỉ kiểm tra định kỳ mỗi 15s để bảo toàn hạn mức đọc
   if (FirestoreSyncService.isCloudConnected()) {
     const now = Date.now();
-    if (!forceImmediate && now - lastCloudHeartbeatCheckMs < 4_000) {
+    if (!forceImmediate && now - lastCloudHeartbeatCheckMs < 15_000) {
       FirestoreSyncService.watchActiveSession(watchKey);
       return;
     }
@@ -757,16 +755,18 @@ async function verifySessionHeartbeat(forceImmediate = false): Promise<void> {
       const staticMap = getStaticSessionsMap();
       const activeStatic = staticMap[mySession.userKey];
       if (!activeStatic) {
-        triggerLocalKickOut({ reason: 'force_logout' });
+        saveStaticSessionEntry(mySession.userKey, mySession);
         return;
       }
       if (activeStatic.sessionToken !== mySession.sessionToken) {
-        if (getClientSessionIssuedAtMs(activeStatic) >= getClientSessionIssuedAtMs(mySession)) {
+        if (getClientSessionIssuedAtMs(activeStatic) > getClientSessionIssuedAtMs(mySession)) {
           triggerLocalKickOut({
             reason: 'replaced',
             deviceLabel: activeStatic.deviceLabel,
             loginAt: activeStatic.loginAt
           });
+        } else {
+          saveStaticSessionEntry(mySession.userKey, mySession);
         }
         return;
       }
@@ -877,14 +877,19 @@ function inspectManifestActiveSessions(
     return true;
   }
 
-  // Nếu máy chủ xác nhận phiên khác trên thiết bị khác đang hoạt động -> tự động thoát phiên này ngay!
+  // Nếu cùng đúng mã phiên hiện tại hoặc không có remote session -> giữ nguyên phiên hợp lệ
+  if (!remote || remote.sessionToken === mySession.sessionToken || revokedLocalTokens.has(remote.sessionToken)) {
+    return true;
+  }
+
+  const remoteIssuedAt = getClientSessionIssuedAtMs(remote);
+
+  // CHỈ ngắt phiên nếu thiết bị khác phát hành phiên MỚI HƠN phiên này!
+  // Tuyệt đối không để phiên cũ trên máy tính đá văng phiên mới vừa đăng nhập trên điện thoại!
   if (
-    remote &&
-    remote.sessionToken &&
-    remote.sessionToken !== mySession.sessionToken &&
     remote.deviceId &&
     remote.deviceId !== mySession.deviceId &&
-    !revokedLocalTokens.has(remote.sessionToken)
+    remoteIssuedAt > myIssuedAt
   ) {
     triggerLocalKickOut({
       reason: 'replaced',
@@ -894,20 +899,15 @@ function inspectManifestActiveSessions(
     return false;
   }
 
-  // Nếu máy chủ xác nhận đúng mã phiên hiện tại đang hoạt động thì giữ nguyên phiên (tránh lệch múi giờ/đồng hồ sessionRevokedAt)
-  if (remote && remote.sessionToken === mySession.sessionToken) {
+  // Nếu phiên của thiết bị này MỚI HƠN hoặc BẰNG phiên từ server (vd máy tính chưa dọn dẹp kịp) -> bảo toàn phiên này!
+  if (myIssuedAt >= remoteIssuedAt) {
     return true;
   }
 
   if (matchedUser) {
     const revokedAt = Number(matchedUser.sessionRevokedAt) || 0;
     if (revokedAt > 0 && myIssuedAt > 0 && myIssuedAt <= revokedAt) {
-      if (
-        remote &&
-        remote.sessionToken !== mySession.sessionToken &&
-        !revokedLocalTokens.has(remote.sessionToken) &&
-        getClientSessionIssuedAtMs(remote) > myIssuedAt
-      ) {
+      if (remote && remoteIssuedAt > myIssuedAt) {
         triggerLocalKickOut({
           reason: 'replaced',
           deviceLabel: remote.deviceLabel,
@@ -920,21 +920,7 @@ function inspectManifestActiveSessions(
     }
   }
 
-  if (!remote || revokedLocalTokens.has(remote.sessionToken)) {
-    return true;
-  }
-
-  const remoteIssuedAt = getClientSessionIssuedAtMs(remote);
-  if (myIssuedAt > 0 && remoteIssuedAt > 0 && remoteIssuedAt <= myIssuedAt) {
-    void verifySessionHeartbeat(true);
-    return true;
-  }
-
-  triggerLocalKickOut({
-    reason: 'replaced',
-    deviceLabel: remote.deviceLabel,
-    loginAt: remote.loginAt
-  });
+  return true;
   return false;
 }
 
@@ -1531,9 +1517,13 @@ function connectWebSocket(force = false): void {
               normUserKey(current.session.userKey) === normUserKey(msg.userKey);
 
             if (isUserMatch) {
+              const myIssued = getClientSessionIssuedAtMs(current.session);
+              const remoteIssued = Number(msg.issuedAtMs) || 0;
+              // Chỉ ngắt phiên nếu thiết bị khác phát hành phiên MỚI HƠN phiên này!
               if (
                 msg.deviceId !== current.session.deviceId &&
-                msg.activeSessionToken !== current.session.sessionToken
+                msg.activeSessionToken !== current.session.sessionToken &&
+                remoteIssued > myIssued
               ) {
                 triggerLocalKickOut({
                   reason: 'replaced',
@@ -1705,24 +1695,47 @@ export const SyncService = {
         if (!isMatch) return;
 
         const remoteToken = String(remoteData.sessionToken || '');
+        const remoteIssued = Number(remoteData.issuedAtMs) || 0;
         const revokedBefore = Number(remoteData.revokedBeforeMs) || 0;
+        const myIssued = getClientSessionIssuedAtMs(current.session);
 
         // Nếu remoteToken rỗng (do thiết bị trước đã đăng xuất) hoặc đúng mã phiên này hoặc cùng thiết bị -> bỏ qua
         if (!remoteToken || remoteToken === current.session.sessionToken) return;
         if (remoteData.deviceId && remoteData.deviceId === current.session.deviceId) return;
         if (remoteToken && revokedLocalTokens.has(remoteToken)) return;
 
-        // Bất kỳ khi nào phát hiện phiên hoạt động khác trên thiết bị khác:
-        // Không cho phép 1 tài khoản đăng nhập trên 2 thiết bị -> Thiết bị này lập tức tự động thoát!
-        triggerLocalKickOut({
-          reason: revokedBefore > 0 ? 'force_logout' : 'replaced',
-          deviceLabel: remoteData.forceLogoutDeviceLabel || remoteData.deviceLabel
-            ? String(remoteData.forceLogoutDeviceLabel || remoteData.deviceLabel)
-            : 'Thiết bị khác',
-          loginAt: remoteData.forceLogoutAt || remoteData.loginAt
-            ? String(remoteData.forceLogoutAt || remoteData.loginAt)
-            : undefined
-        });
+        // CHỈ ngắt phiên nếu thiết bị khác phát hành phiên MỚI HƠN phiên này!
+        // Nếu phiên của máy tính cũ hơn phiên hiện tại của điện thoại (remoteIssued <= myIssued) -> TUYỆT ĐỐI KHÔNG ĐÁ!
+        if (remoteIssued <= myIssued && (revokedBefore === 0 || myIssued > revokedBefore)) {
+          return;
+        }
+
+        // Nếu phiên này được cấp TRƯỚC thời điểm revokedBefore -> bị đăng xuất từ xa
+        if (revokedBefore > 0 && myIssued > 0 && myIssued <= revokedBefore) {
+          triggerLocalKickOut({
+            reason: 'force_logout',
+            deviceLabel: remoteData.forceLogoutDeviceLabel || remoteData.deviceLabel
+              ? String(remoteData.forceLogoutDeviceLabel || remoteData.deviceLabel)
+              : 'Thiết bị khác',
+            loginAt: remoteData.forceLogoutAt || remoteData.loginAt
+              ? String(remoteData.forceLogoutAt || remoteData.loginAt)
+              : undefined
+          });
+          return;
+        }
+
+        // Chỉ khi remoteIssued > myIssued mới là phiên bị thay thế bởi thiết bị mới hơn
+        if (remoteIssued > myIssued) {
+          triggerLocalKickOut({
+            reason: 'replaced',
+            deviceLabel: remoteData.forceLogoutDeviceLabel || remoteData.deviceLabel
+              ? String(remoteData.forceLogoutDeviceLabel || remoteData.deviceLabel)
+              : 'Thiết bị khác',
+            loginAt: remoteData.forceLogoutAt || remoteData.loginAt
+              ? String(remoteData.forceLogoutAt || remoteData.loginAt)
+              : undefined
+          });
+        }
       }
     });
 
@@ -1769,7 +1782,6 @@ export const SyncService = {
         connectWebSocket();
         sendWsAuthCheck();
         void verifySessionHeartbeat(true);
-        void reconcileInternal();
       };
 
       document.addEventListener('visibilitychange', () => {
@@ -1783,6 +1795,8 @@ export const SyncService = {
       window.addEventListener('online', () => {
         updateNetworkStatus(true);
         wakeCheck();
+        // Chỉ đồng bộ khi vừa có mạng trở lại sau thời gian ngoại tuyến
+        void reconcileInternal();
       });
       window.addEventListener('offline', () => {
         updateNetworkStatus(false);
@@ -1814,40 +1828,7 @@ export const SyncService = {
           }
           void verifySessionHeartbeat();
         }
-      }, 3000);
-
-      pollTimer = setInterval(() => {
-        if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
-          void reconcileInternal();
-        }
       }, 5000);
-
-      // Giao thức thăm dò OSD chuyên biệt siêu tốc (3.5s) đảm bảo các thiết bị khác tài khoản hội tụ liên tục
-      if (osdPollTimer) clearInterval(osdPollTimer);
-      osdPollTimer = setInterval(() => {
-        if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
-          void fetchJson<{
-            ok: boolean;
-            osdRevision: number;
-            osd: OsdReceipt[];
-            tombstones?: Record<string, number>;
-          }>(`/api/sync/osd?t=${Date.now()}`)
-            .then((res) => {
-              if (res.ok && Array.isArray(res.osd)) {
-                const currentRev = Number(res.osdRevision) || 0;
-                if (currentRev > lastKnownOsdRev) {
-                  lastKnownOsdRev = currentRev;
-                  const changed = StorageService.applyRemoteOsdReceipts(res.osd);
-                  notifyOsdListeners(res.osd);
-                  if (changed && (FirestoreSyncService.isCloudConnected() || FirestoreSyncService.hasAuthenticatedCloudUser())) {
-                    void FirestoreSyncService.pushOsdRealtimeToCloud().catch(() => {});
-                  }
-                }
-              }
-            })
-            .catch(() => {});
-        }
-      }, 3500);
     }
   },
 
@@ -3316,8 +3297,6 @@ export const SyncService = {
   },
 
   stop(): void {
-    if (pollTimer) clearInterval(pollTimer);
-    if (osdPollTimer) clearInterval(osdPollTimer);
     if (sessionHeartbeatTimer) clearInterval(sessionHeartbeatTimer);
     if (reconnectTimer) clearTimeout(reconnectTimer);
     if (ws) ws.close();
