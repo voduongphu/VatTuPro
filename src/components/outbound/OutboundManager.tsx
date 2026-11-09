@@ -43,7 +43,9 @@ import {
   X,
   ArrowUpDown,
   ArrowUp,
-  ArrowDown
+  ArrowDown,
+  Package,
+  Check
 } from 'lucide-react';
 
 export type ReceiptSortField = 'date' | 'code';
@@ -170,8 +172,13 @@ export const OutboundManager: React.FC = () => {
   const [isPickStockOpen, setIsPickStockOpen] = useState(false);
   const [stockSearch, setStockSearch] = useState('');
   const deferredStockSearch = useDeferredValue(stockSearch);
+  const [stockPickerWarehouseFilter, setStockPickerWarehouseFilter] = useState<string>('all');
   const [stockPage, setStockPage] = useState(1);
   const [stockPageSize, setStockPageSize] = useState(50);
+
+  // Thanh tìm kiếm nhanh từ tồn kho trực tiếp trong Form lập phiếu
+  const [quickStockQuery, setQuickStockQuery] = useState('');
+  const [isQuickStockOpen, setIsQuickStockOpen] = useState(false);
 
   const showToast = (message: string, type: 'success' | 'error' = 'success') => {
     setToast({ message, type });
@@ -262,6 +269,7 @@ export const OutboundManager: React.FC = () => {
       }
     }
     setStockRecords(baseStock);
+    setStockPickerWarehouseFilter(selectedWarehouseId || 'all');
     setStockSearch('');
     setStockPage(1);
     setIsPickStockOpen(true);
@@ -273,6 +281,7 @@ export const OutboundManager: React.FC = () => {
     setReceipts(currentReceipts);
     setEditingReceipt(null);
     setMaterials(StorageService.getMaterials());
+    setStockRecords(StorageService.calculateInventoryRecords().map((r) => ({ ...r })));
     setIsCodeManuallyEdited(false);
     setIssueDate(todayDate);
     setIssueCode(generateNextPxkCode(currentReceipts, todayDate));
@@ -290,6 +299,8 @@ export const OutboundManager: React.FC = () => {
     setFormItemSearch('');
     setFormItemPage(1);
     setFormItems([]);
+    setQuickStockQuery('');
+    setIsQuickStockOpen(false);
     setIsCreateModalOpen(true);
   };
 
@@ -306,6 +317,28 @@ export const OutboundManager: React.FC = () => {
     setIssueCode(rcp.issueCode || '');
     setIssueDate(formatExcelDate(rcp.issueDate) || new Date().toISOString().slice(0, 10));
     setSelectedWarehouseId(rcp.warehouseId || whList[0]?.id || '');
+
+    // Chuẩn bị sẵn tồn kho cho Quick Combobox khi sửa
+    const baseStock = StorageService.calculateInventoryRecords().map((r) => ({ ...r }));
+    const stockIndexMap = new Map<string, number>();
+    for (let i = 0; i < baseStock.length; i++) {
+      const s = baseStock[i];
+      const key = `${s.warehouseId}__${s.packingListNo}__${s.shipment}__${s.materialCode}__${s.packageNo}__${s.drawingNo}__${s.category}`;
+      stockIndexMap.set(key, i);
+    }
+    for (let j = 0; j < (rcp.items || []).length; j++) {
+      const it = rcp.items[j];
+      const key = `${rcp.warehouseId}__${it.packingListNo || 'N/A'}__${it.shipment || 'N/A'}__${it.materialCode || 'N/A'}__${it.packageNo || 'N/A'}__${it.drawingNo || 'N/A'}__${it.category || 'N/A'}`;
+      const idx = stockIndexMap.get(key);
+      if (idx !== undefined) {
+        baseStock[idx].currentQuantity = roundQty(
+          baseStock[idx].currentQuantity + roundQty(it.quantity)
+        );
+        baseStock[idx].currentWeightKg =
+          Math.round((baseStock[idx].currentWeightKg + (Number(it.weightKg) || 0)) * 100) / 100;
+      }
+    }
+    setStockRecords(baseStock);
 
     const savedDept =
       rcp.departmentName && rcp.departmentName !== 'DỰ ÁN LTIA-4.9'
@@ -324,6 +357,8 @@ export const OutboundManager: React.FC = () => {
     setFormError('');
     setFormItemSearch('');
     setFormItemPage(1);
+    setQuickStockQuery('');
+    setIsQuickStockOpen(false);
 
     setFormItems(
       (rcp.items || []).map((it, idx) => ({
@@ -375,6 +410,46 @@ export const OutboundManager: React.FC = () => {
     });
   };
 
+  const selectSingleStockItem = (st: InventoryStockRecord, closePicker = true) => {
+    if (st.currentQuantity <= 0 && st.currentWeightKg <= 0) {
+      showToast('Mặt hàng này hiện không còn tồn kho khả dụng!', 'error');
+      return;
+    }
+
+    // Nếu phiếu chưa chọn kho hoặc đang trống, tự động đồng bộ theo kho của mặt hàng
+    if (!selectedWarehouseId || formItems.length === 0) {
+      if (st.warehouseId && st.warehouseId !== selectedWarehouseId) {
+        setSelectedWarehouseId(st.warehouseId);
+      }
+    }
+
+    const targetKey = getStockItemMatchKey(st);
+    const existingIndex = formItems.findIndex((it) => getStockItemMatchKey(it) === targetKey);
+
+    setFormItemSearch('');
+    if (existingIndex !== -1) {
+      const page = Math.max(1, Math.ceil((existingIndex + 1) / FORM_ITEM_PAGE_SIZE));
+      setFormItemPage(page);
+      showToast(
+        `Vật tư "${st.materialCode}" (${st.packageNo || 'Không số kiện'}) đã có sẵn trong phiếu xuất!`
+      );
+    } else {
+      setFormItems((prev) => {
+        const next = [...prev, buildOutboundItemFromStock(st, prev.length)];
+        setFormItemPage(Math.max(1, Math.ceil(next.length / FORM_ITEM_PAGE_SIZE)));
+        return next;
+      });
+      showToast(`Đã thêm "${st.materialCode} - ${st.materialName}" vào phiếu xuất kho!`, 'success');
+    }
+
+    setQuickStockQuery('');
+    setIsQuickStockOpen(false);
+    setFormError('');
+    if (closePicker) {
+      setIsPickStockOpen(false);
+    }
+  };
+
   const toggleStockItemSelection = (st: InventoryStockRecord) => {
     const targetKey = getStockItemMatchKey(st);
     const alreadySelected = formItems.some((it) => getStockItemMatchKey(it) === targetKey);
@@ -387,6 +462,11 @@ export const OutboundManager: React.FC = () => {
     if (st.currentQuantity <= 0 && st.currentWeightKg <= 0) {
       setFormError('Mặt hàng này hiện không còn tồn kho khả dụng!');
       return;
+    }
+
+    // Tự động gán kho phiếu xuất nếu chưa chọn
+    if (!selectedWarehouseId && st.warehouseId) {
+      setSelectedWarehouseId(st.warehouseId);
     }
 
     setFormItemSearch('');
@@ -1024,7 +1104,9 @@ export const OutboundManager: React.FC = () => {
     if (!isPickStockOpen) return [];
     const q = deferredStockSearch.trim().toLowerCase();
     return stockRecords.filter((st) => {
-      if (selectedWarehouseId && st.warehouseId !== selectedWarehouseId) return false;
+      if (stockPickerWarehouseFilter !== 'all' && st.warehouseId !== stockPickerWarehouseFilter) {
+        return false;
+      }
       if (st.currentQuantity <= 0 && st.currentWeightKg <= 0) return false;
       if (q) {
         return (
@@ -1033,12 +1115,35 @@ export const OutboundManager: React.FC = () => {
           st.packingListNo.toLowerCase().includes(q) ||
           st.shipment.toLowerCase().includes(q) ||
           st.packageNo.toLowerCase().includes(q) ||
-          st.drawingNo.toLowerCase().includes(q)
+          st.drawingNo.toLowerCase().includes(q) ||
+          (st.warehouseName && st.warehouseName.toLowerCase().includes(q))
         );
       }
       return true;
     });
-  }, [isPickStockOpen, stockRecords, selectedWarehouseId, deferredStockSearch]);
+  }, [isPickStockOpen, stockRecords, stockPickerWarehouseFilter, deferredStockSearch]);
+
+  // Danh sách gợi ý tồn kho khả dụng cho Quick Combobox trên Form lập phiếu xuất
+  const quickStockSuggestions = useMemo(() => {
+    if (!isCreateModalOpen) return [];
+    const q = quickStockQuery.trim().toLowerCase();
+    const records = stockRecords.length > 0 ? stockRecords : StorageService.calculateInventoryRecords();
+    return records
+      .filter((st) => {
+        if (selectedWarehouseId && st.warehouseId !== selectedWarehouseId) return false;
+        if (st.currentQuantity <= 0 && st.currentWeightKg <= 0) return false;
+        if (!q) return true;
+        return (
+          st.materialCode.toLowerCase().includes(q) ||
+          st.materialName.toLowerCase().includes(q) ||
+          st.packageNo.toLowerCase().includes(q) ||
+          st.packingListNo.toLowerCase().includes(q) ||
+          st.shipment.toLowerCase().includes(q) ||
+          st.drawingNo.toLowerCase().includes(q)
+        );
+      })
+      .slice(0, 10);
+  }, [isCreateModalOpen, quickStockQuery, stockRecords, selectedWarehouseId]);
 
   const pagedStockForPicker = useMemo(() => {
     const start = (stockPage - 1) * stockPageSize;
@@ -1899,9 +2004,14 @@ export const OutboundManager: React.FC = () => {
               {/* Danh sách 8 cột vật tư xuất theo mẫu PXK QLVT */}
               <div className="space-y-3">
                 <div className="flex flex-wrap items-center justify-between gap-2">
-                  <h4 className="font-bold text-sm text-slate-800">
-                    Chi Tiết Vật Tư Xuất Kho ({formItems.length.toLocaleString('vi-VN')} mục hàng)
-                  </h4>
+                  <div>
+                    <h4 className="font-bold text-sm text-slate-800">
+                      Chi Tiết Vật Tư Xuất Kho ({formItems.length.toLocaleString('vi-VN')} mục hàng)
+                    </h4>
+                    <p className="text-xs text-slate-500">
+                      Chọn nhanh từ tồn kho bên dưới hoặc bấm nút để mở bảng tra cứu đầy đủ
+                    </p>
+                  </div>
                   <div className="flex flex-wrap items-center gap-2">
                     {formItems.length > 15 && (
                       <div className="relative">
@@ -1929,12 +2039,162 @@ export const OutboundManager: React.FC = () => {
                     <button
                       type="button"
                       onClick={openStockPicker}
-                      className="flex items-center gap-1 px-3 py-2 sm:py-1.5 bg-blue-600 text-white hover:bg-blue-700 rounded-lg text-xs font-semibold shadow transition min-h-[38px]"
+                      className="flex items-center gap-1.5 px-3.5 py-2 sm:py-1.5 bg-blue-600 text-white hover:bg-blue-700 rounded-lg text-xs font-bold shadow-sm transition min-h-[38px]"
                     >
-                      <Plus className="w-3.5 h-3.5" />
-                      <span>Chọn Từ Tồn Kho Hiện Tại</span>
+                      <Package className="w-4 h-4" />
+                      <span>Mở Bảng Tồn Kho Đầy Đủ</span>
                     </button>
                   </div>
+                </div>
+
+                {/* Thanh tìm kiếm & chọn nhanh từ tồn kho trực tiếp */}
+                <div className="relative bg-blue-50/70 p-2.5 rounded-xl border border-blue-200/80">
+                  <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+                    <div className="relative flex-1">
+                      <input
+                        type="text"
+                        value={quickStockQuery}
+                        onFocus={() => setIsQuickStockOpen(true)}
+                        onChange={(e) => {
+                          setQuickStockQuery(e.target.value);
+                          setIsQuickStockOpen(true);
+                        }}
+                        placeholder="🔍 Tìm nhanh vật tư từ Tồn kho (gõ Mã VT, Tên VT, Mã lô / Số kiện, Packing List...)"
+                        className="w-full pl-9 pr-9 py-2 bg-white border border-blue-200 rounded-xl text-xs font-medium focus:ring-2 focus:ring-blue-500 outline-none shadow-xs"
+                      />
+                      <Search className="w-4 h-4 text-blue-600 absolute left-3 top-2.5" />
+                      {quickStockQuery && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setQuickStockQuery('');
+                            setIsQuickStockOpen(false);
+                          }}
+                          className="p-1 hover:bg-slate-200 rounded absolute right-2.5 top-1.5 text-slate-400"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={openStockPicker}
+                      className="inline-flex items-center justify-center gap-1 px-3 py-2 bg-white hover:bg-blue-50 text-blue-700 border border-blue-300 rounded-xl text-xs font-semibold shadow-xs transition whitespace-nowrap min-h-[36px]"
+                    >
+                      <Package className="w-3.5 h-3.5" />
+                      <span>Chọn nhiều mục</span>
+                    </button>
+                  </div>
+
+                  {/* Dropdown gợi ý tồn kho khả dụng */}
+                  {isQuickStockOpen && (
+                    <div className="absolute left-2.5 right-2.5 top-full mt-1.5 bg-white rounded-xl shadow-2xl border border-slate-200 z-30 max-h-80 overflow-y-auto animate-in fade-in slide-in-from-top-1">
+                      <div className="p-2.5 bg-slate-50 border-b border-slate-100 flex items-center justify-between text-[11px] text-slate-600 font-semibold sticky top-0 bg-slate-50/95 backdrop-blur-xs z-10">
+                        <span>
+                          Gợi ý tồn kho khả dụng ({quickStockSuggestions.length} kết quả
+                          {quickStockQuery ? ` cho "${quickStockQuery}"` : ''})
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => setIsQuickStockOpen(false)}
+                          className="text-slate-400 hover:text-slate-700 p-1 rounded"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                      {quickStockSuggestions.length === 0 ? (
+                        <div className="p-6 text-center text-xs text-slate-400">
+                          {quickStockQuery
+                            ? `Không tìm thấy vật tư nào trong tồn kho khớp với từ khóa "${quickStockQuery}".`
+                            : 'Không có mặt hàng tồn kho khả dụng nào trong kho này.'}
+                        </div>
+                      ) : (
+                        <div className="divide-y divide-slate-100">
+                          {quickStockSuggestions.map((st) => {
+                            const isAdded = formItems.some(
+                              (it) => getStockItemMatchKey(it) === getStockItemMatchKey(st)
+                            );
+                            return (
+                              <div
+                                key={st.id}
+                                onClick={() => {
+                                  selectSingleStockItem(st, false);
+                                  setIsQuickStockOpen(false);
+                                }}
+                                className={`p-3 hover:bg-blue-50/70 cursor-pointer transition flex items-center justify-between gap-3 text-xs ${
+                                  isAdded ? 'bg-blue-50/30' : ''
+                                }`}
+                              >
+                                <div className="min-w-0 flex-1">
+                                  <div className="flex flex-wrap items-center gap-1.5">
+                                    <span className="font-mono font-bold text-blue-700 text-xs">
+                                      {st.materialCode}
+                                    </span>
+                                    {st.packageNo && st.packageNo !== 'N/A' && (
+                                      <span className="px-1.5 py-0.5 bg-slate-100 text-slate-700 rounded text-[10px] font-mono font-semibold">
+                                        Kiện: {st.packageNo}
+                                      </span>
+                                    )}
+                                    {st.packingListNo && st.packingListNo !== 'N/A' && (
+                                      <span className="text-slate-400 text-[10px] font-mono">
+                                        PL: {st.packingListNo}
+                                      </span>
+                                    )}
+                                    {isAdded && (
+                                      <span className="px-1.5 py-0.5 bg-emerald-100 text-emerald-800 rounded text-[10px] font-bold">
+                                        ✓ Đã có trong phiếu
+                                      </span>
+                                    )}
+                                  </div>
+                                  <div className="text-slate-800 font-semibold truncate mt-1">
+                                    {st.materialName}
+                                  </div>
+                                  <div className="text-[11px] text-slate-500 flex items-center gap-2 mt-0.5">
+                                    <span>Kho: {st.warehouseName || 'Hiện tại'}</span>
+                                    <span>•</span>
+                                    <span>ĐVT: {st.unit}</span>
+                                    {st.drawingNo && st.drawingNo !== 'N/A' && (
+                                      <>
+                                        <span>•</span>
+                                        <span className="font-mono text-[10px]">Bản vẽ: {st.drawingNo}</span>
+                                      </>
+                                    )}
+                                  </div>
+                                </div>
+                                <div className="text-right shrink-0">
+                                  <div className="font-bold text-slate-900 font-mono text-sm tabular-nums">
+                                    {st.currentQuantity.toLocaleString('vi-VN')} {st.unit}
+                                  </div>
+                                  <div className="text-[11px] font-mono text-emerald-700 tabular-nums">
+                                    {st.currentWeightKg.toLocaleString('en-US', {
+                                      minimumFractionDigits: 2,
+                                      maximumFractionDigits: 2
+                                    })}{' '}
+                                    kg
+                                  </div>
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      selectSingleStockItem(st, false);
+                                      setIsQuickStockOpen(false);
+                                    }}
+                                    className={`mt-1.5 px-2.5 py-1 rounded-lg font-bold text-[11px] transition shadow-xs inline-flex items-center gap-1 ${
+                                      isAdded
+                                        ? 'bg-slate-200 text-slate-700 hover:bg-slate-300'
+                                        : 'bg-blue-600 hover:bg-blue-700 text-white'
+                                    }`}
+                                  >
+                                    {isAdded ? 'Đã có' : '+ Chọn xuất'}
+                                  </button>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
 
                 <div className="border border-slate-200 rounded-xl overflow-x-auto">
@@ -1995,6 +2255,12 @@ export const OutboundManager: React.FC = () => {
                                 placeholder='20"x12m PIPE, API 5L B...'
                                 className="w-full px-2 py-1 bg-white border border-slate-200 rounded font-medium outline-none text-xs"
                               />
+                              {item.packingListNo && item.packingListNo !== 'N/A' && (
+                                <span className="text-[10px] text-slate-400 font-mono block mt-0.5 truncate">
+                                  PL: {item.packingListNo}
+                                  {item.shipment && item.shipment !== 'N/A' ? ` • Sh: ${item.shipment}` : ''}
+                                </span>
+                              )}
                             </td>
                             <td className="p-2">
                               <input
@@ -2006,6 +2272,11 @@ export const OutboundManager: React.FC = () => {
                                 placeholder="76C-061.35"
                                 className="w-full px-2 py-1 bg-white border border-slate-200 rounded font-mono outline-none text-xs"
                               />
+                              {item.packageNo && item.packageNo !== 'N/A' && item.batchCode !== item.packageNo && (
+                                <span className="text-[10px] text-slate-400 font-mono block mt-0.5 truncate">
+                                  Kiện: {item.packageNo}
+                                </span>
+                              )}
                             </td>
                             <td className="p-2 text-right">
                               <input
@@ -2161,8 +2432,8 @@ export const OutboundManager: React.FC = () => {
               </button>
             </div>
 
-            <div className="p-3.5 sm:p-4 border-b border-slate-100">
-              <div className="relative">
+            <div className="p-3.5 sm:p-4 border-b border-slate-100 flex flex-col sm:flex-row gap-2.5">
+              <div className="relative flex-1">
                 <input
                   type="text"
                   value={stockSearch}
@@ -2170,26 +2441,44 @@ export const OutboundManager: React.FC = () => {
                     setStockSearch(e.target.value);
                     setStockPage(1);
                   }}
-                  placeholder="Gõ tìm nhanh Mã vật tư, Tên vật tư, Mã lô, Packing List..."
+                  placeholder="Gõ tìm nhanh Mã vật tư, Tên vật tư, Mã lô / Số kiện, Packing List..."
                   className="w-full pl-9 pr-4 py-2.5 sm:py-2 bg-slate-50 border border-slate-200 rounded-xl text-base sm:text-xs focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none"
                 />
                 <Search className="w-4 h-4 text-slate-400 absolute left-3 top-3 sm:top-2.5" />
+              </div>
+              <div className="w-full sm:w-60">
+                <select
+                  value={stockPickerWarehouseFilter}
+                  onChange={(e) => {
+                    setStockPickerWarehouseFilter(e.target.value);
+                    setStockPage(1);
+                  }}
+                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none"
+                >
+                  <option value="all">🌐 Tất cả các kho</option>
+                  {warehouses.map((w) => (
+                    <option key={w.id} value={w.id}>
+                      Kho: {w.name} {w.id === selectedWarehouseId ? ' (Đang chọn)' : ''}
+                    </option>
+                  ))}
+                </select>
               </div>
             </div>
 
             <div className="p-3.5 sm:p-4 overflow-y-auto flex-1">
               <div className="border border-slate-200 rounded-xl overflow-hidden">
                 <div className="max-h-96 overflow-x-auto overflow-y-auto">
-                  <table className="w-full min-w-[720px] text-left text-xs">
+                  <table className="w-full min-w-[760px] text-left text-xs">
                     <thead className="bg-slate-100 text-slate-700 font-semibold border-b border-slate-200 sticky top-0 z-10">
                       <tr>
                         <th className="p-2.5">Mã Vật Tư</th>
                         <th className="p-2.5">Tên Vật Tư</th>
                         <th className="p-2.5">Mã Lô / Số Kiện</th>
                         <th className="p-2.5">Packing List / Shipment</th>
+                        <th className="p-2.5">Kho hàng</th>
                         <th className="p-2.5 text-right">Tồn SL</th>
                         <th className="p-2.5 text-right">Tồn KL (Kg)</th>
-                        <th className="p-2.5 w-24 text-center">
+                        <th className="p-2.5 w-20 text-center">
                           <label
                             className="inline-flex items-center justify-center gap-1.5 cursor-pointer select-none"
                             title={
@@ -2211,12 +2500,13 @@ export const OutboundManager: React.FC = () => {
                             <span>Chọn</span>
                           </label>
                         </th>
+                        <th className="p-2.5 w-24 text-center">Thao tác</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
                       {pagedStockForPicker.length === 0 ? (
                         <tr>
-                          <td colSpan={7} className="p-8 text-center text-slate-400">
+                          <td colSpan={9} className="p-8 text-center text-slate-400">
                             Không tìm thấy mặt hàng tồn kho nào phù hợp.
                           </td>
                         </tr>
@@ -2226,12 +2516,14 @@ export const OutboundManager: React.FC = () => {
                           return (
                             <tr
                               key={st.id}
+                              onDoubleClick={() => selectSingleStockItem(st, true)}
                               onClick={() => toggleStockItemSelection(st)}
                               className={`cursor-pointer select-none transition-colors ${
                                 isChecked
                                   ? 'bg-blue-50/70 hover:bg-blue-100/60'
                                   : 'hover:bg-slate-50'
                               }`}
+                              title="Bấm '+ Chọn' hoặc Nhấp đúp chuột để đưa ngay vào phiếu xuất"
                             >
                               <td className="p-2.5 font-mono font-bold text-blue-700">
                                 {st.materialCode}
@@ -2251,6 +2543,11 @@ export const OutboundManager: React.FC = () => {
                                 </span>
                                 <span className="font-mono text-slate-400 text-[11px]">
                                   {st.shipment}
+                                </span>
+                              </td>
+                              <td className="p-2.5">
+                                <span className="text-[11px] font-medium text-slate-600 bg-slate-100 px-2 py-0.5 rounded">
+                                  {st.warehouseName || 'Kho hiện tại'}
                                 </span>
                               </td>
                               <td className="p-2.5 text-right font-bold text-slate-900 font-mono tabular-nums">
@@ -2277,6 +2574,33 @@ export const OutboundManager: React.FC = () => {
                                       : `Chọn xuất kho vật tư ${st.materialCode}`
                                   }
                                 />
+                              </td>
+                              <td
+                                className="p-2.5 text-center"
+                                onClick={(e) => e.stopPropagation()}
+                              >
+                                <button
+                                  type="button"
+                                  onClick={() => selectSingleStockItem(st, true)}
+                                  className={`px-2.5 py-1 rounded-lg text-xs font-bold transition shadow-xs inline-flex items-center gap-1 ${
+                                    isChecked
+                                      ? 'bg-emerald-600 hover:bg-emerald-700 text-white'
+                                      : 'bg-blue-600 hover:bg-blue-700 text-white'
+                                  }`}
+                                  title="Đưa ngay vào phiếu xuất và đóng hộp thoại"
+                                >
+                                  {isChecked ? (
+                                    <>
+                                      <Check className="w-3.5 h-3.5" />
+                                      <span>Đã chọn</span>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <Plus className="w-3.5 h-3.5" />
+                                      <span>+ Chọn</span>
+                                    </>
+                                  )}
+                                </button>
                               </td>
                             </tr>
                           );
@@ -2339,7 +2663,14 @@ export const OutboundManager: React.FC = () => {
 
                 <button
                   type="button"
-                  onClick={() => setIsPickStockOpen(false)}
+                  onClick={() => {
+                    setIsPickStockOpen(false);
+                    setFormItemSearch('');
+                    if (formItems.length > 0) {
+                      setFormItemPage(Math.max(1, Math.ceil(formItems.length / FORM_ITEM_PAGE_SIZE)));
+                      showToast(`Đã cập nhật ${formItems.length.toLocaleString('vi-VN')} mục vào phiếu xuất kho!`);
+                    }
+                  }}
                   className="px-5 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold shadow-sm shadow-blue-500/20 transition active:scale-95 min-h-[38px]"
                 >
                   Xong ({formItems.length.toLocaleString('vi-VN')} mục)
