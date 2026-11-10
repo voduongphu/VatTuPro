@@ -55,24 +55,6 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenMobileMenu }) => {
     return () => clearTimeout(timer);
   }, [remoteLogoutNotice]);
 
-  const handleForcePushAllToCloud = async () => {
-    setIsUserMenuOpen(false);
-    setIsSyncing(true);
-    try {
-      const res = await SyncService.forcePushAllLocalDataToCloud();
-      setRemoteLogoutNotice({
-        success: res.success,
-        message: res.message
-      });
-    } catch (err: any) {
-      setRemoteLogoutNotice({
-        success: false,
-        message: `Lỗi đồng bộ: ${err?.message || String(err)}`
-      });
-    } finally {
-      setIsSyncing(false);
-    }
-  };
 
   const handleUnifiedSync = async () => {
     setIsUserMenuOpen(false);
@@ -194,11 +176,7 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenMobileMenu }) => {
                     <CloudUpload className="w-4 h-4 text-blue-400 shrink-0" />
                   )}
                   <span className="hidden sm:inline">
-                    {busy
-                      ? 'Đang đồng bộ...'
-                      : connected
-                        ? 'Đồng Bộ Dữ Liệu & Tài Khoản'
-                        : 'Đồng Bộ Cloud'}
+                    {busy ? 'Đang đồng bộ...' : 'Đồng Bộ Cloud'}
                   </span>
                 </button>
               );
@@ -251,16 +229,6 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenMobileMenu }) => {
                           </span>
                         </div>
                       </div>
-
-                      <button
-                        type="button"
-                        onClick={handleForcePushAllToCloud}
-                        disabled={isSyncing || isConnectingCloud}
-                        className="w-full min-h-[44px] px-4 py-2.5 text-left hover:bg-emerald-50 text-emerald-800 flex items-center gap-2.5 font-semibold disabled:opacity-60 border-b border-slate-100"
-                      >
-                        <CloudUpload className="w-4 h-4 text-emerald-600 shrink-0" />
-                        <span>Đồng bộ toàn bộ dữ liệu máy lên Cloud Firestore</span>
-                      </button>
 
                       <button
                         type="button"

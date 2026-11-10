@@ -34,7 +34,6 @@ export const UserManager: React.FC = () => {
   const { users, isAdmin, addUser, updateUser, deleteUser } = useAuth();
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedRole, setSelectedRole] = useState<string>('all');
-  const [isSyncingCloud, setIsSyncingCloud] = useState(false);
   const [cloudState, setCloudState] = useState(() => SyncService.getCloudState());
 
   useEffect(() => {
@@ -267,22 +266,6 @@ export const UserManager: React.FC = () => {
     setUserToDelete(null);
   };
 
-  const handleForceSyncAllToCloud = async () => {
-    setIsSyncingCloud(true);
-    try {
-      const res = await SyncService.forcePushAllLocalDataToCloud();
-      if (res.success) {
-        showNotify('success', res.message);
-      } else {
-        showNotify('error', res.message);
-      }
-    } catch (err: any) {
-      showNotify('error', `Lỗi đồng bộ: ${err?.message || String(err)}`);
-    } finally {
-      setIsSyncingCloud(false);
-    }
-  };
-
   const normalizedSearch = searchTerm.normalize('NFC').toLowerCase();
   const filteredUsers = users.filter((u) => {
     const matchesSearch =
@@ -365,21 +348,6 @@ export const UserManager: React.FC = () => {
           <div className="flex items-center gap-2 flex-wrap w-full md:w-auto">
             <button
               type="button"
-              onClick={handleForceSyncAllToCloud}
-              disabled={isSyncingCloud}
-              className="flex-1 md:flex-initial flex items-center justify-center gap-2 px-3.5 py-2.5 bg-emerald-700 hover:bg-emerald-800 text-white rounded-xl font-semibold text-xs sm:text-sm shadow-md shadow-emerald-700/20 transition active:scale-95 disabled:opacity-70 min-h-[42px]"
-              title="Đồng bộ toàn bộ danh sách tài khoản người dùng và dữ liệu kho bãi lên Cloud Firestore (tránh sót)"
-            >
-              {isSyncingCloud ? (
-                <RefreshCw className="w-4 h-4 animate-spin shrink-0" />
-              ) : (
-                <CloudUpload className="w-4 h-4 shrink-0" />
-              )}
-              <span>{isSyncingCloud ? 'Đang đồng bộ lên Cloud...' : 'Đồng Bộ Tài Khoản & Dữ Liệu Lên Cloud'}</span>
-            </button>
-
-            <button
-              type="button"
               onClick={openAddModal}
               className="flex-1 md:flex-initial flex items-center justify-center gap-2 px-4 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-semibold text-xs sm:text-sm shadow-md shadow-blue-500/20 transition active:scale-95 min-h-[42px]"
             >
@@ -409,21 +377,11 @@ export const UserManager: React.FC = () => {
           </span>
         </div>
       ) : (
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 px-4 py-3 rounded-2xl bg-blue-50/80 border border-blue-200 text-xs text-blue-950 shadow-xs">
-          <div className="flex items-start sm:items-center gap-2.5">
-            <span className="w-2.5 h-2.5 rounded-full bg-blue-500 shrink-0 mt-0.5 sm:mt-0 animate-pulse" />
-            <span>
-              Hệ thống tự động kích hoạt kết nối Google Cloud Firestore. Dữ liệu tài khoản và kho bãi được bảo toàn tại thiết bị và sẵn sàng đồng bộ 1 chạm lên Cloud.
-            </span>
-          </div>
-          <button
-            type="button"
-            onClick={handleForceSyncAllToCloud}
-            disabled={isSyncingCloud}
-            className="px-3.5 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-semibold shrink-0 transition active:scale-95 text-xs shadow-xs"
-          >
-            {isSyncingCloud ? 'Đang đồng bộ...' : 'Đồng Bộ Lên Cloud Ngay'}
-          </button>
+        <div className="flex items-center gap-2.5 px-4 py-2.5 rounded-2xl bg-blue-50/80 border border-blue-200 text-xs text-blue-950 shadow-xs">
+          <span className="w-2.5 h-2.5 rounded-full bg-blue-500 shrink-0 animate-pulse" />
+          <span>
+            Hệ thống tự động kích hoạt kết nối Google Cloud Firestore. Dữ liệu tài khoản và kho bãi được bảo toàn tại thiết bị. Sử dụng nút &ldquo;Đồng Bộ Cloud&rdquo; trên thanh tiêu đề để đồng bộ dữ liệu.
+          </span>
         </div>
       )}
 
