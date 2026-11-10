@@ -2181,6 +2181,8 @@ export const FirestoreSyncService = {
         if (fbUser.email) {
           this.watchActiveSession(fbUser.email);
         }
+        // Tự động kích hoạt đồng bộ dữ liệu hai chiều lên Google Cloud Firestore ngay khi khôi phục phiên Google
+        void this.reconcileWithCloud();
         externalOnRemoteWorkspaceChange?.();
       } catch (err) {
         console.warn('Cloud workspace bootstrap warning:', err);
@@ -2347,15 +2349,35 @@ export const FirestoreSyncService = {
     }
   },
 
-  async connectGoogleAccount(): Promise<{
+  async autoConnectIfPossible(): Promise<{ success: boolean; email?: string | null }> {
+    if (this.isCloudConnected()) {
+      return { success: true, email: auth.currentUser?.email };
+    }
+    const fbUser = auth.currentUser;
+    if (fbUser && fbUser.emailVerified) {
+      const ok = await this.ensureReadyForAuth();
+      if (ok) {
+        void this.reconcileWithCloud();
+        return { success: true, email: fbUser.email };
+      }
+    }
+    return { success: false };
+  },
+
+  async connectGoogleAccount(options?: {
+    forceSelectAccount?: boolean;
+    reuseExistingIfAvailable?: boolean;
+  }): Promise<{
     success: boolean;
     email?: string | null;
     displayName?: string | null;
     message: string;
   }> {
+    const shouldForce = options?.forceSelectAccount ?? false;
+    const canReuse = options?.reuseExistingIfAvailable ?? true;
     const authRes = await this.authenticateGooglePopup({
-      forceSelectAccount: true,
-      reuseExistingIfAvailable: false
+      forceSelectAccount: shouldForce,
+      reuseExistingIfAvailable: canReuse
     });
     if (!authRes.success || !authRes.fbUser) {
       return {

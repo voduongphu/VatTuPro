@@ -2060,10 +2060,25 @@ export const SyncService = {
     return FirestoreSyncService.subscribeState(listener);
   },
 
-  async connectCloudSync(): Promise<{ success: boolean; message: string; email?: string | null }> {
+  async autoConnectAndSyncIfPossible(): Promise<{ success: boolean; email?: string | null }> {
+    const res = await FirestoreSyncService.autoConnectIfPossible();
+    if (res.success) {
+      const current = getStoredUnifiedSession();
+      if (current) {
+        void FirestoreSyncService.syncActiveSessionToCloudIfConnected(current.session);
+      }
+      void reconcileInternal();
+    }
+    return res;
+  },
+
+  async connectCloudSync(options?: {
+    reuseExistingIfAvailable?: boolean;
+    forceSelectAccount?: boolean;
+  }): Promise<{ success: boolean; message: string; email?: string | null }> {
     notifySyncState(true);
     try {
-      const res = await FirestoreSyncService.connectGoogleAccount();
+      const res = await FirestoreSyncService.connectGoogleAccount(options);
       if (res.success) {
         const current = getStoredUnifiedSession();
         if (current) {
@@ -2118,8 +2133,21 @@ export const SyncService = {
   }> {
     notifySyncState(true);
     try {
+      // Sao lưu đồng thời xuống máy chủ nội bộ Express
+      void fetch('/api/sync/meta', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          clientId: CLIENT_ID,
+          users: StorageService.getUsers(),
+          warehouses: StorageService.getWarehouses(),
+          tombstones: StorageService.getTombstones(),
+          osd: StorageService.getOsdReceipts()
+        })
+      }).catch(() => {});
+
       if (!FirestoreSyncService.isCloudConnected() && !FirestoreSyncService.hasAuthenticatedCloudUser()) {
-        const connRes = await this.connectCloudSync();
+        const connRes = await this.connectCloudSync({ reuseExistingIfAvailable: true, forceSelectAccount: false });
         if (!connRes.success) {
           return {
             success: false,

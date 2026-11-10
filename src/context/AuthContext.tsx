@@ -173,6 +173,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const unified = SyncService.getUnifiedSession();
     if (unified) {
       void SyncService.verifyCurrentSession();
+      // Tự động kết nối Google Cloud Firestore trong nền để đồng bộ toàn bộ dữ liệu, tránh sót
+      void SyncService.autoConnectAndSyncIfPossible();
     } else {
       setCurrentUser(null);
     }

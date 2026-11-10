@@ -76,41 +76,20 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenMobileMenu }) => {
 
   const handleUnifiedSync = async () => {
     setIsUserMenuOpen(false);
-    if (cloudState.status === 'connected' || SyncService.hasAuthenticatedCloudUser()) {
-      setIsSyncing(true);
-      try {
-        const res = await SyncService.forcePushAllLocalDataToCloud();
-        setRemoteLogoutNotice({
-          success: res.success,
-          message: res.message
-        });
-      } catch (err: any) {
-        setRemoteLogoutNotice({
-          success: false,
-          message: `Lỗi đồng bộ: ${err?.message || String(err)}`
-        });
-      } finally {
-        setIsSyncing(false);
-      }
-      return;
-    }
-    setIsConnectingCloud(true);
+    setIsSyncing(true);
     try {
-      const res = await connectCloudSync();
-      if (res.success) {
-        const pushRes = await SyncService.forcePushAllLocalDataToCloud();
-        setRemoteLogoutNotice({
-          success: pushRes.success,
-          message: pushRes.message
-        });
-      } else {
-        setRemoteLogoutNotice({
-          success: res.success,
-          message: res.message
-        });
-      }
+      const res = await SyncService.forcePushAllLocalDataToCloud();
+      setRemoteLogoutNotice({
+        success: res.success,
+        message: res.message
+      });
+    } catch (err: any) {
+      setRemoteLogoutNotice({
+        success: false,
+        message: `Lỗi đồng bộ: ${err?.message || String(err)}`
+      });
     } finally {
-      setIsConnectingCloud(false);
+      setIsSyncing(false);
     }
   };
 
@@ -190,7 +169,6 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenMobileMenu }) => {
             {(() => {
               const busy = isSyncing || isConnectingCloud || cloudState.status === 'connecting';
               const connected = cloudState.status === 'connected';
-              const hasGoogleAuth = connected || SyncService.hasAuthenticatedCloudUser();
 
               return (
                 <button
@@ -199,18 +177,13 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenMobileMenu }) => {
                   disabled={isSyncing || isConnectingCloud}
                   title={
                     connected
-                      ? `Đã kết nối Google Cloud (${cloudState.cloudEmail || displayEmail}) — Bấm để đồng bộ dữ liệu ngay`
-                      : hasGoogleAuth
-                        ? 'Đang kích hoạt kết nối Google Cloud — Bấm để đồng bộ ngay'
-                        : cloudState.errorMessage ||
-                          'Bấm để kết nối lại tài khoản Google Cloud & đồng bộ dữ liệu'
+                      ? `Đã kết nối Google Cloud (${cloudState.cloudEmail || displayEmail}) — Bấm để đồng bộ toàn bộ dữ liệu & tài khoản lên Cloud ngay`
+                      : 'Bấm để tự động kết nối & đồng bộ toàn bộ dữ liệu kho bãi cùng tài khoản người dùng lên Cloud Firestore (tránh sót)'
                   }
                   className={`min-h-[40px] min-w-[40px] flex items-center justify-center gap-1.5 px-2.5 sm:px-3.5 py-1.5 rounded-xl text-xs font-semibold border transition disabled:opacity-75 shrink-0 ${
                     connected
-                      ? 'text-emerald-200 hover:text-white bg-emerald-950/75 hover:bg-emerald-900/80 border-emerald-700/60'
-                      : hasGoogleAuth
-                        ? 'text-blue-200 hover:text-white bg-slate-800 hover:bg-slate-700 border-slate-700'
-                        : 'text-amber-200 hover:text-white bg-amber-950/80 hover:bg-amber-900/80 border-amber-600/70'
+                      ? 'text-emerald-200 hover:text-white bg-emerald-950/75 hover:bg-emerald-900/80 border-emerald-700/60 shadow-xs'
+                      : 'text-blue-200 hover:text-white bg-blue-950/80 hover:bg-blue-900/80 border-blue-700/60 shadow-xs'
                   }`}
                 >
                   {busy ? (
@@ -218,18 +191,14 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenMobileMenu }) => {
                   ) : connected ? (
                     <Cloud className="w-4 h-4 text-emerald-400 shrink-0" />
                   ) : (
-                    <CloudOff className="w-4 h-4 text-amber-400 shrink-0" />
+                    <CloudUpload className="w-4 h-4 text-blue-400 shrink-0" />
                   )}
                   <span className="hidden sm:inline">
-                    {isSyncing
+                    {busy
                       ? 'Đang đồng bộ...'
-                      : isConnectingCloud
-                        ? 'Đang kết nối...'
-                        : connected
-                          ? 'Đồng Bộ Cloud'
-                          : hasGoogleAuth
-                            ? 'Đồng Bộ'
-                            : 'Kết nối & Đồng bộ'}
+                      : connected
+                        ? 'Đồng Bộ Dữ Liệu & Tài Khoản'
+                        : 'Đồng Bộ Cloud'}
                   </span>
                 </button>
               );
