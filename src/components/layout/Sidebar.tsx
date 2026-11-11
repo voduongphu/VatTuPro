@@ -1,5 +1,6 @@
 import React from 'react';
 import { useAuth } from '../../context/AuthContext';
+import { useLanguage } from '../../context/LanguageContext';
 import {
   LayoutDashboard,
   ArrowDownLeft,
@@ -30,56 +31,57 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onCloseMobile
 }) => {
   const { currentUser, isAdmin, logout } = useAuth();
+  const { t } = useLanguage();
 
   const navItems = [
     {
       id: 'dashboard',
-      label: 'Tổng Quan & KPI',
+      label: t('navOverview'),
       icon: LayoutDashboard,
       meta: null
     },
     {
       id: 'inbound',
-      label: 'Quản Lý Nhập Kho',
+      label: t('navInbound'),
       icon: ArrowDownLeft,
       meta: 'Excel'
     },
     {
       id: 'outbound',
-      label: 'Quản Lý Xuất Kho',
+      label: t('navOutbound'),
       icon: ArrowUpRight,
       meta: 'Excel'
     },
     {
       id: 'osd',
-      label: 'Quản Lý Vật Tư OSD',
+      label: t('navOsd'),
       icon: FileWarning,
       meta: 'Mới'
     },
     {
       id: 'report',
-      label: 'Báo Cáo Nhập-Xuất-Tồn',
+      label: t('navReports'),
       icon: BarChart3,
       meta: null
     },
     {
-      section: 'Quản trị danh mục'
+      section: t('navCategorySection')
     },
     {
       id: 'warehouses',
-      label: 'Quản Lý Kho Bãi',
+      label: t('navWarehouses'),
       icon: Warehouse,
       meta: 'Admin'
     },
     {
       id: 'materials',
-      label: 'Danh Mục Vật Tư',
+      label: t('navMaterials'),
       icon: Package,
       meta: 'Admin'
     },
     {
       id: 'users',
-      label: 'Người Sử Dụng',
+      label: t('navUsers'),
       icon: Users,
       meta: 'Admin'
     }

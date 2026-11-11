@@ -18,6 +18,7 @@ import {
   X
 } from 'lucide-react';
 import { LoginModal } from '../auth/LoginModal';
+import { useLanguage, LanguageSwitcher } from '../../context/LanguageContext';
 
 interface NavbarProps {
   onOpenMobileMenu?: () => void;
@@ -33,6 +34,7 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenMobileMenu }) => {
     forceLogoutOtherDevicesFromCurrent,
     isAdmin
   } = useAuth();
+  const { t } = useLanguage();
   const [isLoginModalOpen, setIsLoginModalOpen] = useState(false);
   const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
@@ -138,16 +140,19 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenMobileMenu }) => {
 
             <div className="min-w-0">
               <span className="font-extrabold text-xs sm:text-sm md:text-base tracking-tight text-white block truncate">
-                LOGISTICS & INVENTORY
+                {t('appTitle')}
               </span>
               <p className="text-[11px] text-slate-400 hidden md:block truncate">
-                Quản Lý Nhập - Xuất - Tồn Vật Tư Thiết Bị Dự Án
+                {t('appSubtitle')}
               </p>
             </div>
           </div>
 
-          {/* Right: Unified Cloud Sync + User Account */}
+          {/* Right: Language Switcher + Unified Cloud Sync + User Account */}
           <div className="flex items-center gap-1.5 sm:gap-2 shrink-0 whitespace-nowrap">
+            {/* Nút chuyển đổi ngôn ngữ Tiếng Anh / Tiếng Việt trong ứng dụng */}
+            <LanguageSwitcher variant="dark" showLabel={true} />
+
             {(() => {
               const busy = isSyncing || isConnectingCloud || cloudState.status === 'connecting';
               const connected = cloudState.status === 'connected';
@@ -159,8 +164,8 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenMobileMenu }) => {
                   disabled={isSyncing || isConnectingCloud}
                   title={
                     connected
-                      ? `Đã kết nối Google Cloud (${cloudState.cloudEmail || displayEmail}) — Bấm để đồng bộ toàn bộ dữ liệu & tài khoản lên Cloud ngay`
-                      : 'Bấm để tự động kết nối & đồng bộ toàn bộ dữ liệu kho bãi cùng tài khoản người dùng lên Cloud Firestore (tránh sót)'
+                      ? `${t('cloudSyncedTooltip')} (${cloudState.cloudEmail || displayEmail})`
+                      : t('cloudConnectTooltip')
                   }
                   className={`min-h-[40px] min-w-[40px] flex items-center justify-center gap-1.5 px-2.5 sm:px-3.5 py-1.5 rounded-xl text-xs font-semibold border transition disabled:opacity-75 shrink-0 ${
                     connected
@@ -176,7 +181,7 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenMobileMenu }) => {
                     <CloudUpload className="w-4 h-4 text-blue-400 shrink-0" />
                   )}
                   <span className="hidden sm:inline">
-                    {busy ? 'Đang đồng bộ...' : 'Đồng Bộ Cloud'}
+                    {busy ? t('syncing') : t('cloudSync')}
                   </span>
                 </button>
               );
@@ -225,7 +230,7 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenMobileMenu }) => {
                         <div className="mt-1 flex items-center gap-1.5 text-[11px] text-emerald-700 font-medium">
                           <ShieldCheck className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
                           <span>
-                            {isAdmin ? 'Quản trị viên chính (Admin)' : 'Tài khoản Google đồng bộ'}
+                            {isAdmin ? t('adminBadge') : t('googleUserBadge')}
                           </span>
                         </div>
                       </div>
@@ -237,7 +242,7 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenMobileMenu }) => {
                         className="w-full min-h-[44px] px-4 py-2.5 text-left hover:bg-blue-50 text-blue-700 flex items-center gap-2.5 font-semibold disabled:opacity-60"
                       >
                         <LogIn className="w-4 h-4 shrink-0" />
-                        <span>Đổi tài khoản Google khác</span>
+                        <span>{t('switchGoogleAccount')}</span>
                       </button>
 
                       <button
@@ -249,8 +254,8 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenMobileMenu }) => {
                         <MonitorSmartphone className="w-4 h-4 text-amber-600 shrink-0" />
                         <span>
                           {isForcingRemoteLogout
-                            ? 'Đang gửi yêu cầu...'
-                            : 'Yêu cầu đăng xuất trên thiết bị kia'}
+                            ? t('sendingRequest')
+                            : t('requestLogoutOther')}
                         </span>
                       </button>
 
@@ -261,7 +266,7 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenMobileMenu }) => {
                           className="w-full min-h-[44px] px-4 py-2.5 text-left hover:bg-rose-50 text-rose-600 flex items-center gap-2.5 font-semibold"
                         >
                           <LogOut className="w-4 h-4 shrink-0" />
-                          <span>Đăng xuất</span>
+                          <span>{t('logout')}</span>
                         </button>
                       </div>
                     </div>
@@ -275,7 +280,7 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenMobileMenu }) => {
                 className="min-h-[40px] flex items-center gap-1.5 px-3.5 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-semibold shadow-md transition shrink-0"
               >
                 <LogIn className="w-4 h-4" />
-                <span>Đăng Nhập Google</span>
+                <span>{t('loginWithGoogle')}</span>
               </button>
             )}
           </div>

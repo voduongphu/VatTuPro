@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { useAuth } from '../../context/AuthContext';
+import { useLanguage, LanguageSwitcher } from '../../context/LanguageContext';
 import type { ActiveUserSession } from '../../types/inventory';
 import {
   Boxes,
@@ -68,6 +69,7 @@ export const LoginScreen: React.FC = () => {
     acknowledgeKickModal,
     clearSessionKickNotice
   } = useAuth();
+  const { t } = useLanguage();
 
   const [errorMessage, setErrorMessage] = useState('');
   const [successMessage, setSuccessMessage] = useState('');
@@ -145,37 +147,46 @@ export const LoginScreen: React.FC = () => {
     <div className="min-h-dvh w-full bg-slate-950 overflow-x-auto overflow-y-auto relative font-sans">
       <div className="fixed inset-0 bg-[radial-gradient(ellipse_80%_80%_at_50%_-20%,rgba(37,99,235,0.22),rgba(255,255,255,0))] pointer-events-none" />
 
+      {/* Floating Language Switcher top right on wide screen */}
+      <div className="absolute top-3 sm:top-5 right-3 sm:right-6 z-20">
+        <LanguageSwitcher variant="dark" showLabel={true} />
+      </div>
+
       <div className="min-h-dvh w-full flex p-3 sm:p-6 lg:p-8">
         <div className="m-auto w-full max-w-6xl bg-slate-900 border border-slate-800/90 rounded-2xl sm:rounded-3xl shadow-2xl shadow-black/60 overflow-hidden grid grid-cols-1 lg:grid-cols-12 relative z-10">
           {/* Cột Đăng Nhập Google: Ưu tiên hiển thị đầu tiên trên điện thoại (order-1), nằm bên phải trên máy tính (lg:order-2) */}
           <div className="order-1 lg:order-2 lg:col-span-7 p-5 sm:p-10 lg:p-12 bg-slate-900 flex flex-col justify-center">
             <div className="max-w-md mx-auto w-full space-y-5 sm:space-y-6">
               {/* Compact Brand Lockup chỉ hiện trên điện thoại/tablet */}
-              <div className="lg:hidden flex items-center gap-3 pb-3 border-b border-slate-800">
-                <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-blue-600 to-indigo-500 flex items-center justify-center shadow-md shadow-blue-500/30 shrink-0">
-                  <Boxes className="w-5 h-5 text-white" />
-                </div>
-                <div className="min-w-0">
-                  <span className="font-extrabold text-sm tracking-tight text-white block truncate">
-                    LOGISTICS & INVENTORY
-                  </span>
-                  <span className="text-[11px] text-slate-400 block truncate">
-                    Hệ Thống Quản Lý Nhập Xuất Tồn Vật Tư Dự Án
-                  </span>
+              <div className="lg:hidden flex items-center justify-between gap-3 pb-3 border-b border-slate-800">
+                <div className="flex items-center gap-3 min-w-0">
+                  <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-blue-600 to-indigo-500 flex items-center justify-center shadow-md shadow-blue-500/30 shrink-0">
+                    <Boxes className="w-5 h-5 text-white" />
+                  </div>
+                  <div className="min-w-0">
+                    <span className="font-extrabold text-sm tracking-tight text-white block truncate">
+                      {t('appTitle')}
+                    </span>
+                    <span className="text-[11px] text-slate-400 block truncate">
+                      {t('heroSubbrand')}
+                    </span>
+                  </div>
                 </div>
               </div>
 
-              {/* Tiêu đề */}
+              {/* Tiêu đề & Language Switcher */}
               <div>
-                <div className="flex items-center gap-1.5 text-blue-400 text-xs font-semibold mb-1.5">
-                  <ShieldCheck className="w-4 h-4 shrink-0" />
-                  <span>Xác thực đồng bộ bằng Google Cloud</span>
+                <div className="flex items-center justify-between gap-2 mb-1.5">
+                  <div className="flex items-center gap-1.5 text-blue-400 text-xs font-semibold">
+                    <ShieldCheck className="w-4 h-4 shrink-0" />
+                    <span>{t('googleAuthHeaderBadge')}</span>
+                  </div>
                 </div>
                 <h2 className="text-xl sm:text-2xl font-bold text-white tracking-tight">
-                  Đăng Nhập Bằng Google
+                  {t('googleAuthTitle')}
                 </h2>
                 <p className="text-xs sm:text-sm text-slate-400 mt-1.5 leading-relaxed">
-                  Đăng nhập trực tiếp bằng tài khoản Google (Gmail) để vào hệ thống và tự động đồng bộ dữ liệu thời gian thực giữa Máy tính và Điện thoại.
+                  {t('googleAuthDesc')}
                 </p>
               </div>
 
@@ -185,7 +196,7 @@ export const LoginScreen: React.FC = () => {
                   <AlertTriangle className="w-5 h-5 shrink-0 text-amber-400 mt-0.5" />
                   <div className="flex-1 leading-relaxed">
                     <div className="font-bold text-amber-300 mb-0.5">
-                      Đã tự động thoát phiên trên thiết bị này
+                      {t('sessionTerminatedTitle')}
                     </div>
                     <div>{sessionKickNotice}</div>
                   </div>
@@ -248,8 +259,8 @@ export const LoginScreen: React.FC = () => {
                       <LogOut className="w-4 h-4 shrink-0" />
                       <span>
                         {isRequestingRemoteLogout || isAuthenticating
-                          ? 'Đang chuyển phiên sang máy này...'
-                          : 'Đăng xuất thiết bị kia từ xa & Đăng nhập tại đây'}
+                          ? t('sendingRequest')
+                          : t('forceLogoutAndContinue')}
                       </span>
                     </button>
                     <button
@@ -258,7 +269,7 @@ export const LoginScreen: React.FC = () => {
                       disabled={isBusy}
                       className="min-h-[44px] px-3.5 py-2.5 bg-slate-900 hover:bg-slate-800 border border-amber-600/60 text-amber-200 font-semibold text-xs rounded-xl transition flex items-center justify-center gap-1.5 disabled:opacity-70"
                     >
-                      <span>Chỉ đăng xuất thiết bị kia</span>
+                      <span>{t('requestLogoutOnly')}</span>
                     </button>
                   </div>
                 </div>
@@ -288,7 +299,7 @@ export const LoginScreen: React.FC = () => {
                       <Cloud className="w-4 h-4 text-emerald-400 shrink-0" />
                       <div className="min-w-0 flex-1">
                         <div className="text-[11px] text-emerald-300/80">
-                          Tài khoản Google sẵn sàng trên trình duyệt:
+                          {activeGoogleEmail}
                         </div>
                         <div className="font-bold text-white truncate">{activeGoogleEmail}</div>
                       </div>
@@ -303,12 +314,12 @@ export const LoginScreen: React.FC = () => {
                       {isAuthenticating && !isRequestingRemoteLogout ? (
                         <>
                           <RefreshCw className="w-5 h-5 text-blue-600 animate-spin shrink-0" />
-                          <span>Đang xác thực & đồng bộ dữ liệu...</span>
+                          <span>{t('syncing')}</span>
                         </>
                       ) : (
                         <>
                           <GoogleLogoIcon className="w-5 h-5 shrink-0" />
-                          <span className="truncate">Tiếp tục với {activeGoogleEmail}</span>
+                          <span className="truncate">Google: {activeGoogleEmail}</span>
                         </>
                       )}
                     </button>
@@ -320,7 +331,7 @@ export const LoginScreen: React.FC = () => {
                       className="w-full min-h-[44px] py-2.5 px-4 bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-200 font-semibold text-xs sm:text-sm rounded-xl transition flex items-center justify-center gap-2 disabled:opacity-60"
                     >
                       <GoogleLogoIcon className="w-4 h-4 shrink-0" />
-                      <span>Đăng nhập bằng tài khoản Google khác</span>
+                      <span>{t('switchGoogleAccountBtn')}</span>
                     </button>
                   </div>
                 ) : (
@@ -333,12 +344,12 @@ export const LoginScreen: React.FC = () => {
                     {isAuthenticating && !isRequestingRemoteLogout ? (
                       <>
                         <RefreshCw className="w-5 h-5 text-blue-600 animate-spin shrink-0" />
-                        <span>Đang mở xác thực Google...</span>
+                        <span>{t('openingGoogleAuth')}</span>
                       </>
                     ) : (
                       <>
                         <GoogleLogoIcon className="w-5 h-5 shrink-0" />
-                        <span>Đăng nhập bằng tài khoản Google</span>
+                        <span>{t('loginWithGoogle')}</span>
                       </>
                     )}
                   </button>
@@ -347,21 +358,17 @@ export const LoginScreen: React.FC = () => {
                 <div className="pt-2 border-t border-slate-800/80 space-y-2 text-[11px] text-slate-400 leading-relaxed">
                   <div className="flex items-start gap-2">
                     <ShieldCheck className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
-                    <span>
-                      Tài khoản <strong className="text-emerald-300">voduongphu@gmail.com</strong> được phân quyền mặc định là <strong className="text-white">Quản trị viên chính (Admin)</strong>.
-                    </span>
+                    <span>{t('adminDefaultNotice')}</span>
                   </div>
                   <div className="flex items-start gap-2">
                     <Cloud className="w-4 h-4 text-blue-400 shrink-0 mt-0.5" />
-                    <span>
-                      Nhân sự kho đăng nhập bằng tài khoản Google cá nhân để tự động đồng bộ dữ liệu theo thời gian thực. Admin phân quyền chi tiết trong mục <strong className="text-slate-200">Người Sử Dụng</strong>.
-                    </span>
+                    <span>{t('staffNotice')}</span>
                   </div>
                 </div>
               </div>
 
               <div className="text-center text-xs text-slate-500">
-                Mỗi tài khoản Google chỉ hoạt động trên <strong className="text-slate-300">1 thiết bị</strong> tại một thời điểm để bảo vệ toàn vẹn tồn kho.
+                {t('singleDeviceNotice')}
               </div>
             </div>
           </div>
@@ -375,20 +382,20 @@ export const LoginScreen: React.FC = () => {
                 </div>
                 <div>
                   <span className="font-extrabold text-base tracking-tight text-white block">
-                    LOGISTICS & INVENTORY
+                    {t('appTitle')}
                   </span>
                   <span className="text-xs font-medium text-blue-300">
-                    Quản trị kho vận thiết bị dự án
+                    {t('heroSubbrand')}
                   </span>
                 </div>
               </div>
 
               <div className="space-y-2.5">
                 <h1 className="text-lg sm:text-2xl lg:text-3xl font-extrabold tracking-tight text-white leading-snug text-balance">
-                  Hệ Thống Quản Lý Nhập Xuất Tồn Vật Tư
+                  {t('heroTitle')}
                 </h1>
                 <p className="text-xs sm:text-sm text-slate-300 leading-relaxed">
-                  Giải pháp quản trị kho vật tư thiết bị dự án công trình chuyên sâu theo Packing List, Shipment, Package No., Kiện hàng, Nhà sản xuất & Nhà cung cấp.
+                  {t('heroSubtitle')}
                 </p>
               </div>
             </div>
@@ -399,9 +406,9 @@ export const LoginScreen: React.FC = () => {
                   <Warehouse className="w-4 h-4" />
                 </div>
                 <div>
-                  <span className="font-bold text-white block">Đồng Bộ Google Cloud Thời Gian Thực</span>
+                  <span className="font-bold text-white block">{t('heroFeatureRealtime')}</span>
                   <span className="text-[11px] text-slate-400">
-                    Đăng nhập 1 chạm bằng Google, tự động cộng gộp dữ liệu mọi thiết bị
+                    {t('heroFeatureRealtimeDesc')}
                   </span>
                 </div>
               </div>
@@ -411,9 +418,9 @@ export const LoginScreen: React.FC = () => {
                   <Layers className="w-4 h-4" />
                 </div>
                 <div>
-                  <span className="font-bold text-white block">Nhập Xuất & Import File Excel Lớn</span>
+                  <span className="font-bold text-white block">{t('heroFeatureExcel')}</span>
                   <span className="text-[11px] text-slate-400">
-                    Xử lý mượt mà trên 100.000 dòng dữ liệu vật tư
+                    {t('heroFeatureExcelDesc')}
                   </span>
                 </div>
               </div>
@@ -423,16 +430,16 @@ export const LoginScreen: React.FC = () => {
                   <ShieldCheck className="w-4 h-4" />
                 </div>
                 <div>
-                  <span className="font-bold text-white block">Bảo Mật Phiên Đơn Thiết Bị</span>
+                  <span className="font-bold text-white block">{t('heroFeatureSecurity')}</span>
                   <span className="text-[11px] text-slate-400">
-                    Tự động ngắt phiên cũ khi chuyển sang máy mới
+                    {t('heroFeatureSecurityDesc')}
                   </span>
                 </div>
               </div>
             </div>
 
             <div className="pt-3 border-t border-white/10 flex items-center justify-between text-[11px] text-slate-400">
-              <span>Hệ thống Quản lý Kho vận Công trình</span>
+              <span>{t('heroFooterSystem')}</span>
               <span>Google OAuth 2.0</span>
             </div>
           </div>

@@ -5,6 +5,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { AuthProvider, useAuth } from './context/AuthContext';
+import { LanguageProvider, useLanguage } from './context/LanguageContext';
 import { Navbar } from './components/layout/Navbar';
 import { Sidebar } from './components/layout/Sidebar';
 import { DashboardOverview } from './components/dashboard/DashboardOverview';
@@ -29,21 +30,22 @@ import {
   X
 } from 'lucide-react';
 
-const MOBILE_QUICK_TABS = [
-  { id: 'dashboard', label: 'Tổng quan', icon: LayoutDashboard },
-  { id: 'inbound', label: 'Nhập kho', icon: ArrowDownLeft },
-  { id: 'outbound', label: 'Xuất kho', icon: ArrowUpRight },
-  { id: 'osd', label: 'Vật tư OSD', icon: FileWarning },
-  { id: 'report', label: 'Báo cáo NXT', icon: BarChart3 },
-  { id: 'warehouses', label: 'Kho bãi', icon: Warehouse },
-  { id: 'materials', label: 'Vật tư', icon: Package },
-  { id: 'users', label: 'Người dùng', icon: Users }
-];
-
 const MainLayout: React.FC = () => {
   const [activeTab, setActiveTab] = useState<string>('dashboard');
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState<boolean>(false);
   const { currentUser, replacedOtherDeviceAlert, clearReplacedOtherDeviceAlert } = useAuth();
+  const { t } = useLanguage();
+
+  const mobileQuickTabs = [
+    { id: 'dashboard', label: t('quickTabDashboard'), icon: LayoutDashboard },
+    { id: 'inbound', label: t('quickTabInbound'), icon: ArrowDownLeft },
+    { id: 'outbound', label: t('quickTabOutbound'), icon: ArrowUpRight },
+    { id: 'osd', label: t('quickTabOsd'), icon: FileWarning },
+    { id: 'report', label: t('quickTabReport'), icon: BarChart3 },
+    { id: 'warehouses', label: t('quickTabWarehouses'), icon: Warehouse },
+    { id: 'materials', label: t('quickTabMaterials'), icon: Package },
+    { id: 'users', label: t('quickTabUsers'), icon: Users }
+  ];
 
   useEffect(() => {
     if (!replacedOtherDeviceAlert) return;
@@ -100,7 +102,7 @@ const MainLayout: React.FC = () => {
               </div>
               <div className="text-xs leading-relaxed min-w-0">
                 <span className="font-bold text-amber-900 mr-1.5">
-                  Cảnh báo phiên đăng nhập:
+                  {t('sessionAlertTitle')}
                 </span>
                 <span className="text-amber-800">{replacedOtherDeviceAlert.message}</span>
               </div>
@@ -110,7 +112,7 @@ const MainLayout: React.FC = () => {
               onClick={clearReplacedOtherDeviceAlert}
               className="min-h-[36px] px-3 py-1.5 rounded-xl bg-amber-200/70 hover:bg-amber-300/80 text-amber-950 font-bold text-xs flex items-center gap-1 shrink-0 transition"
             >
-              <span>Đã hiểu</span>
+              <span>{t('understand')}</span>
               <X className="w-3.5 h-3.5" />
             </button>
           </div>
@@ -120,7 +122,7 @@ const MainLayout: React.FC = () => {
       {/* Thanh chuyển tab nhanh trên điện thoại & máy tính bảng (cuộn ngang tự nhiên, không chiếm vùng cố định màn hình) */}
       <div className="lg:hidden w-full bg-white border-b border-slate-200/80 px-3 py-2 overflow-x-auto">
         <div className="flex items-center gap-1.5 min-w-max">
-          {MOBILE_QUICK_TABS.map((tab) => {
+          {mobileQuickTabs.map((tab) => {
             const Icon = tab.icon;
             const isActive = activeTab === tab.id;
             return (
@@ -160,8 +162,10 @@ const MainLayout: React.FC = () => {
 
 export default function App() {
   return (
-    <AuthProvider>
-      <MainLayout />
-    </AuthProvider>
+    <LanguageProvider>
+      <AuthProvider>
+        <MainLayout />
+      </AuthProvider>
+    </LanguageProvider>
   );
 }
