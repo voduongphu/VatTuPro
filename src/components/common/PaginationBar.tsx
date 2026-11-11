@@ -1,5 +1,6 @@
 import React from 'react';
 import { ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight } from 'lucide-react';
+import { useLanguage } from '../../context/LanguageContext';
 
 interface PaginationBarProps {
   currentPage: number;
@@ -20,6 +21,7 @@ export const PaginationBar: React.FC<PaginationBarProps> = ({
   pageSizeOptions = [25, 50, 100, 200],
   itemLabel = 'dòng'
 }) => {
+  const { language, t } = useLanguage();
   const totalPages = Math.max(1, Math.ceil(totalItems / pageSize));
   const safePage = Math.min(Math.max(1, currentPage), totalPages);
 
@@ -27,6 +29,10 @@ export const PaginationBar: React.FC<PaginationBarProps> = ({
 
   const startIdx = (safePage - 1) * pageSize + 1;
   const endIdx = Math.min(totalItems, safePage * pageSize);
+
+  const locItemLabel = language === 'en'
+    ? (itemLabel === 'dòng' ? 'rows' : itemLabel === 'kho' ? 'warehouses' : itemLabel === 'vật tư' ? 'items' : t(itemLabel))
+    : itemLabel;
 
   // Tính dãy trang hiển thị gọn gàng
   const getVisiblePages = () => {
@@ -49,15 +55,15 @@ export const PaginationBar: React.FC<PaginationBarProps> = ({
     <div className="px-3 sm:px-4 py-3 bg-slate-50/90 border-t border-slate-200/80 flex flex-col sm:flex-row items-center justify-between gap-2.5 sm:gap-3 text-xs">
       <div className="flex flex-wrap items-center justify-center sm:justify-start gap-2 sm:gap-3 text-slate-600 text-center sm:text-left">
         <span>
-          Hiển thị <strong className="text-slate-900 font-mono tabular-nums">{startIdx.toLocaleString('vi-VN')}</strong> -{' '}
-          <strong className="text-slate-900 font-mono tabular-nums">{endIdx.toLocaleString('vi-VN')}</strong> / Tổng{' '}
-          <strong className="text-blue-700 font-mono tabular-nums">{totalItems.toLocaleString('vi-VN')}</strong> {itemLabel}
+          {language === 'en' ? 'Showing' : 'Hiển thị'} <strong className="text-slate-900 font-mono tabular-nums">{startIdx.toLocaleString(language === 'en' ? 'en-US' : 'vi-VN')}</strong> -{' '}
+          <strong className="text-slate-900 font-mono tabular-nums">{endIdx.toLocaleString(language === 'en' ? 'en-US' : 'vi-VN')}</strong> / {language === 'en' ? 'Total' : 'Tổng'}{' '}
+          <strong className="text-blue-700 font-mono tabular-nums">{totalItems.toLocaleString(language === 'en' ? 'en-US' : 'vi-VN')}</strong> {locItemLabel}
         </span>
 
         {onPageSizeChange && (
           <div className="flex items-center gap-1.5">
             <span className="text-slate-400 hidden sm:inline">|</span>
-            <span className="text-slate-500">Dòng/trang:</span>
+            <span className="text-slate-500">{language === 'en' ? 'Rows/page:' : 'Dòng/trang:'}</span>
             <select
               value={pageSize}
               onChange={(e) => {

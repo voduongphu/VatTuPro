@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../../context/AuthContext';
+import { useLanguage } from '../../context/LanguageContext';
 import { StorageService } from '../../services/storage';
 import { roundQty, sumInboundItems, sumOutboundItems } from '../../utils/additiveMerge';
 import { formatVoucherDateVi } from '../../services/excelService';
@@ -22,6 +23,7 @@ interface DashboardOverviewProps {
 
 export const DashboardOverview: React.FC<DashboardOverviewProps> = ({ onNavigate }) => {
   const { currentUser } = useAuth();
+  const { language, t } = useLanguage();
   const [stats, setStats] = useState({
     totalStockWeightKg: 0,
     totalStockQty: 0,
@@ -113,15 +115,25 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({ onNavigate
         <div className="relative z-10 max-w-2xl space-y-2">
           <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-blue-500/20 text-blue-200 border border-blue-400/20 text-[11px] sm:text-xs font-semibold">
             <ShieldCheck className="w-3.5 h-3.5 shrink-0" />
-            <span>Hệ Thống Quản Lý Nhập Xuất Tồn Vật Tư Dự Án</span>
+            <span>{t('Hệ Thống Quản Lý Nhập Xuất Tồn Vật Tư Dự Án')}</span>
           </div>
           <h1 className="text-xl sm:text-2xl md:text-3xl font-extrabold tracking-tight">
-            Xin chào, {currentUser?.fullName || 'Người dùng'}!
+            {language === 'en' ? `Welcome, ${currentUser?.fullName || 'User'}!` : `Xin chào, ${currentUser?.fullName || 'Người dùng'}!`}
           </h1>
           <p className="text-slate-300 text-xs md:text-sm leading-relaxed">
-            Hệ thống đang quản lý <strong className="text-white font-semibold tabular-nums">{stats.totalPLCount.toLocaleString('vi-VN')} Packing List</strong> và{' '}
-            <strong className="text-white font-semibold tabular-nums">{stats.totalShipmentCount.toLocaleString('vi-VN')} Shipment</strong> trên{' '}
-            <strong className="text-white font-semibold tabular-nums">{stats.totalWarehouseCount} kho bãi</strong> trọng điểm.
+            {language === 'en' ? (
+              <>
+                The system is currently managing <strong className="text-white font-semibold tabular-nums">{stats.totalPLCount.toLocaleString('en-US')} Packing Lists</strong> and{' '}
+                <strong className="text-white font-semibold tabular-nums">{stats.totalShipmentCount.toLocaleString('en-US')} Shipments</strong> across{' '}
+                <strong className="text-white font-semibold tabular-nums">{stats.totalWarehouseCount} warehouses</strong>.
+              </>
+            ) : (
+              <>
+                Hệ thống đang quản lý <strong className="text-white font-semibold tabular-nums">{stats.totalPLCount.toLocaleString('vi-VN')} Packing List</strong> và{' '}
+                <strong className="text-white font-semibold tabular-nums">{stats.totalShipmentCount.toLocaleString('vi-VN')} Shipment</strong> trên{' '}
+                <strong className="text-white font-semibold tabular-nums">{stats.totalWarehouseCount} kho bãi</strong> trọng điểm.
+              </>
+            )}
           </p>
 
           <div className="pt-2.5 grid grid-cols-1 sm:flex sm:flex-wrap gap-2 sm:gap-2.5 text-xs">
@@ -130,28 +142,28 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({ onNavigate
               className="flex items-center justify-center gap-1.5 px-4 py-2.5 bg-blue-600 hover:bg-blue-500 rounded-xl font-bold shadow-md transition min-h-[42px]"
             >
               <ArrowDownLeft className="w-4 h-4 shrink-0" />
-              <span>Nhập Kho Mới / Import Excel</span>
+              <span>{t('Nhập Kho Mới / Import Excel')}</span>
             </button>
             <button
               onClick={() => onNavigate('outbound')}
               className="flex items-center justify-center gap-1.5 px-4 py-2.5 bg-white/10 hover:bg-white/20 text-white rounded-xl font-semibold border border-white/20 transition min-h-[42px]"
             >
               <ArrowUpRight className="w-4 h-4 shrink-0" />
-              <span>Lập Phiếu Xuất Kho</span>
+              <span>{t('Lập Phiếu Xuất Kho')}</span>
             </button>
             <button
               onClick={() => onNavigate('report')}
               className="flex items-center justify-center gap-1.5 px-4 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl font-semibold shadow transition min-h-[42px]"
             >
               <TrendingUp className="w-4 h-4 shrink-0" />
-              <span>Xem Báo Cáo NXT Đa Chiều</span>
+              <span>{t('Xem Báo Cáo NXT Đa Chiều')}</span>
             </button>
             <button
               onClick={() => onNavigate('osd')}
               className="flex items-center justify-center gap-1.5 px-4 py-2.5 bg-amber-600 hover:bg-amber-500 text-white rounded-xl font-semibold shadow transition min-h-[42px]"
             >
               <FileWarning className="w-4 h-4 shrink-0" />
-              <span>Quản Lý Vật Tư OSD</span>
+              <span>{t('Quản Lý Vật Tư OSD')}</span>
             </button>
           </div>
         </div>
