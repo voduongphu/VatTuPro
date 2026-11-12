@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
 import { Globe, Languages } from 'lucide-react';
+import { COMPREHENSIVE_UI_PHRASES_EN } from './translationsDict';
 
 export type AppLanguage = 'vi' | 'en';
 
@@ -582,6 +583,71 @@ const UI_PHRASES_EN: Record<string, string> = {
   'Chỉ Quản trị viên (Admin) mới có quyền import danh mục vật tư.': 'Only Administrators (Admin) can import materials catalog.'
 };
 
+// Merge all specialized and comprehensive phrases into one unified dictionary
+export const ALL_UI_PHRASES_EN: Record<string, string> = {
+  ...UI_PHRASES_EN,
+  ...COMPREHENSIVE_UI_PHRASES_EN
+};
+
+// Precompute lowercase lookup map for instant case-insensitive matching
+const LOWER_CASE_MAP: Record<string, string> = {};
+for (const [k, v] of Object.entries(ALL_UI_PHRASES_EN)) {
+  LOWER_CASE_MAP[k.trim().toLowerCase()] = v;
+}
+
+/**
+ * Intelligent phrase translator with support for punctuation, colons, counts, and symbols
+ */
+export function lookupTranslation(rawText: string): string | null {
+  if (!rawText) return null;
+  const trimmed = rawText.trim();
+  if (!trimmed) return null;
+
+  // 1. Direct exact or trimmed match
+  if (ALL_PHRASES_MATCH(trimmed)) {
+    return ALL_PHRASES_MATCH(trimmed)!;
+  }
+
+  // 2. Trailing colon handling: "Kho bãi:" -> "Warehouse:"
+  if (trimmed.endsWith(':')) {
+    const withoutColon = trimmed.slice(0, -1).trim();
+    const trans = ALL_PHRASES_MATCH(withoutColon);
+    if (trans) return `${trans}:`;
+  }
+
+  // 3. Parentheses with numbers or counts: "Tất cả kho (4)" -> "All Warehouses (4)"
+  const parenMatch = trimmed.match(/^(.*?)(\s*\([0-9.,\s/A-Za-z-]+\))$/);
+  if (parenMatch) {
+    const base = parenMatch[1].trim();
+    const suffix = parenMatch[2];
+    const trans = ALL_PHRASES_MATCH(base);
+    if (trans) return `${trans}${suffix}`;
+  }
+
+  // 4. Leading symbols: "+ Chọn" -> "+ Select", "+ Thêm dòng" -> "+ Add line"
+  if (trimmed.startsWith('+')) {
+    const base = trimmed.replace(/^\+\s*/, '').trim();
+    const trans = ALL_PHRASES_MATCH(base);
+    if (trans) return `+ ${trans}`;
+  }
+
+  // 5. Asterisk suffix: "Tên vật tư (*)" -> "Material Name (*)"
+  if (trimmed.endsWith('(*)') || trimmed.endsWith('*')) {
+    const base = trimmed.replace(/\s*\(\*\)$|\s*\*$/, '').trim();
+    const trans = ALL_PHRASES_MATCH(base);
+    if (trans) return `${trans} (*)`;
+  }
+
+  return null;
+}
+
+function ALL_PHRASES_MATCH(str: string): string | null {
+  if (ALL_UI_PHRASES_EN[str]) return ALL_UI_PHRASES_EN[str];
+  const lower = str.toLowerCase();
+  if (LOWER_CASE_MAP[lower]) return LOWER_CASE_MAP[lower];
+  return null;
+}
+
 interface LanguageContextType {
   language: AppLanguage;
   setLanguage: (lang: AppLanguage) => void;
@@ -627,44 +693,24 @@ export const LanguageProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     const structured = (TRANSLATIONS.en as any)?.[keyOrPhrase];
     if (structured) return structured;
 
-    const phrase = UI_PHRASES_EN[keyOrPhrase];
-    if (phrase) return phrase;
-
-    const trimmed = keyOrPhrase.trim();
-    if (UI_PHRASES_EN[trimmed]) return UI_PHRASES_EN[trimmed];
-
-    // Case-insensitive match check
-    const lower = trimmed.toLowerCase();
-    for (const [k, v] of Object.entries(UI_PHRASES_EN)) {
-      if (k.toLowerCase() === lower) return v;
-    }
+    const trans = lookupTranslation(keyOrPhrase);
+    if (trans) return trans;
 
     return fallback || keyOrPhrase;
   };
 
-  // Safe DOM text node translation hook for static UI elements across tabs
+  // Safe TreeWalker DOM text node translation hook for static UI elements across tabs
   // Preserves user-entered content (inputs, textareas, elements with user data)
   useEffect(() => {
     const isEn = language === 'en';
+    let isScanning = false;
 
-    const translateElement = (el: HTMLElement) => {
-      // Skip input, textarea, contenteditable, or explicitly flagged user content
-      const tagName = el.tagName;
-      if (
-        tagName === 'INPUT' ||
-        tagName === 'TEXTAREA' ||
-        el.isContentEditable ||
-        el.getAttribute('data-user-content') === 'true' ||
-        el.classList.contains('user-data')
-      ) {
-        return;
-      }
-
+    const translateAttributes = (el: HTMLElement) => {
       // Check placeholder
       if (el.hasAttribute('placeholder')) {
         const ph = el.getAttribute('placeholder') || '';
         if (isEn) {
-          const trans = UI_PHRASES_EN[ph.trim()];
+          const trans = lookupTranslation(ph);
           if (trans) {
             if (!el.hasAttribute('data-vi-placeholder')) {
               el.setAttribute('data-vi-placeholder', ph);
@@ -680,7 +726,7 @@ export const LanguageProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       if (el.hasAttribute('title')) {
         const tt = el.getAttribute('title') || '';
         if (isEn) {
-          const trans = UI_PHRASES_EN[tt.trim()];
+          const trans = lookupTranslation(tt);
           if (trans) {
             if (!el.hasAttribute('data-vi-title')) {
               el.setAttribute('data-vi-title', tt);
@@ -691,76 +737,98 @@ export const LanguageProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           el.setAttribute('title', el.getAttribute('data-vi-title') || tt);
         }
       }
-
-      // Only inspect text nodes of standard UI elements
-      const isTargetUiTag =
-        tagName === 'BUTTON' ||
-        tagName === 'TH' ||
-        tagName === 'LABEL' ||
-        tagName === 'H1' ||
-        tagName === 'H2' ||
-        tagName === 'H3' ||
-        tagName === 'H4' ||
-        tagName === 'OPTION' ||
-        tagName === 'SPAN' ||
-        tagName === 'P' ||
-        tagName === 'DIV';
-
-      if (!isTargetUiTag) return;
-
-      // Iterate child nodes
-      for (let i = 0; i < el.childNodes.length; i++) {
-        const child = el.childNodes[i];
-        if (child.nodeType === Node.TEXT_NODE) {
-          const text = child.nodeValue;
-          if (!text) continue;
-          const trimmed = text.trim();
-          if (!trimmed) continue;
-
-          if (isEn) {
-            const trans = UI_PHRASES_EN[trimmed];
-            if (trans) {
-              const anyNode = child as any;
-              if (anyNode.__origViText === undefined) {
-                anyNode.__origViText = text;
-              }
-              child.nodeValue = text.replace(trimmed, trans);
-            }
-          } else {
-            const anyNode = child as any;
-            if (anyNode.__origViText !== undefined) {
-              child.nodeValue = anyNode.__origViText;
-            }
-          }
-        }
-      }
     };
 
     const scanAll = () => {
-      const container = document.body;
-      if (!container) return;
-      const elements = container.querySelectorAll<HTMLElement>(
-        'button, th, label, h1, h2, h3, h4, option, span, p, [placeholder], [title]'
-      );
-      elements.forEach(translateElement);
+      if (isScanning || !document.body) return;
+      isScanning = true;
+
+      try {
+        // 1. Translate placeholders and tooltips
+        const attrElements = document.body.querySelectorAll<HTMLElement>('[placeholder], [title]');
+        attrElements.forEach(translateAttributes);
+
+        // 2. High-performance TreeWalker for all text nodes
+        const walker = document.createTreeWalker(
+          document.body,
+          NodeFilter.SHOW_TEXT,
+          {
+            acceptNode(node) {
+              const parent = node.parentElement;
+              if (!parent) return NodeFilter.FILTER_REJECT;
+
+              const tagName = parent.tagName;
+              if (
+                tagName === 'SCRIPT' ||
+                tagName === 'STYLE' ||
+                tagName === 'INPUT' ||
+                tagName === 'TEXTAREA' ||
+                tagName === 'CODE' ||
+                tagName === 'PRE' ||
+                parent.isContentEditable ||
+                parent.getAttribute('data-user-content') === 'true' ||
+                parent.classList.contains('user-data')
+              ) {
+                return NodeFilter.FILTER_REJECT;
+              }
+
+              // Protect user data cells in tables (like codes, user notes)
+              if (tagName === 'TD' && parent.classList.contains('font-mono')) {
+                return NodeFilter.FILTER_REJECT;
+              }
+
+              const val = node.nodeValue;
+              if (!val || !val.trim()) return NodeFilter.FILTER_REJECT;
+
+              return NodeFilter.FILTER_ACCEPT;
+            }
+          }
+        );
+
+        let currentNode: Node | null;
+        while ((currentNode = walker.nextNode())) {
+          const raw = currentNode.nodeValue || '';
+          const trimmed = raw.trim();
+          if (!trimmed) continue;
+
+          const anyNode = currentNode as any;
+
+          if (isEn) {
+            const trans = lookupTranslation(trimmed);
+            if (trans && trans !== trimmed) {
+              if (anyNode.__origViText === undefined) {
+                anyNode.__origViText = raw;
+              }
+              currentNode.nodeValue = raw.replace(trimmed, trans);
+            }
+          } else {
+            if (anyNode.__origViText !== undefined) {
+              currentNode.nodeValue = anyNode.__origViText;
+            }
+          }
+        }
+      } finally {
+        isScanning = false;
+      }
     };
 
     // Run initial scan
     scanAll();
 
-    // Use a lightweight MutationObserver to catch tab changes and modals
+    // Use a lightweight MutationObserver to catch tab changes, re-renders, and modals
     let debounceTimer: any = null;
     const observer = new MutationObserver(() => {
+      if (isScanning) return;
       clearTimeout(debounceTimer);
       debounceTimer = setTimeout(() => {
         scanAll();
-      }, 60);
+      }, 35);
     });
 
     observer.observe(document.body, {
       childList: true,
       subtree: true,
-      characterData: false
+      characterData: true
     });
 
     return () => {

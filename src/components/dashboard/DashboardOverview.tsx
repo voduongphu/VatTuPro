@@ -178,16 +178,16 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({ onNavigate
         <div className="bg-white p-4 sm:p-5 rounded-2xl border border-slate-200/80 shadow-sm flex items-center justify-between gap-3">
           <div className="min-w-0">
             <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider block">
-              Tổng Khối Lượng Tồn
+              {t('Tổng Khối Lượng Tồn')}
             </span>
             <div className="mt-1 flex items-baseline gap-1.5">
               <span className="text-2xl font-extrabold text-slate-900 font-mono tabular-nums">
                 {(stats.totalStockWeightKg / 1000).toFixed(2)}
               </span>
-              <span className="text-xs font-semibold text-slate-500">Tấn</span>
+              <span className="text-xs font-semibold text-slate-500">{language === 'en' ? 'Tons' : 'Tấn'}</span>
             </div>
             <span className="text-[11px] text-slate-400 mt-0.5 block tabular-nums">
-              ({stats.totalStockWeightKg.toLocaleString('vi-VN')} kg)
+              ({stats.totalStockWeightKg.toLocaleString(language === 'en' ? 'en-US' : 'vi-VN')} kg)
             </span>
           </div>
           <div className="p-3 bg-blue-50 text-blue-700 rounded-2xl shrink-0">
@@ -199,16 +199,16 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({ onNavigate
         <div className="bg-white p-4 sm:p-5 rounded-2xl border border-slate-200/80 shadow-sm flex items-center justify-between gap-3">
           <div className="min-w-0">
             <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider block">
-              Tổng Số Lượng Tồn
+              {t('Tổng Số Lượng Tồn')}
             </span>
             <div className="mt-1 flex items-baseline gap-1.5">
               <span className="text-2xl font-extrabold text-emerald-700 font-mono tabular-nums">
-                {stats.totalStockQty.toLocaleString('vi-VN')}
+                {stats.totalStockQty.toLocaleString(language === 'en' ? 'en-US' : 'vi-VN')}
               </span>
-              <span className="text-xs font-semibold text-slate-500">Đơn vị / Kiện</span>
+              <span className="text-xs font-semibold text-slate-500">{language === 'en' ? 'Units / Pkgs' : 'Đơn vị / Kiện'}</span>
             </div>
             <span className="text-[11px] text-slate-400 mt-0.5 block tabular-nums">
-              {stats.totalMaterialCount.toLocaleString('vi-VN')} mã vật tư thiết bị
+              {stats.totalMaterialCount.toLocaleString(language === 'en' ? 'en-US' : 'vi-VN')} {language === 'en' ? 'material items' : 'mã vật tư thiết bị'}
             </span>
           </div>
           <div className="p-3 bg-emerald-50 text-emerald-700 rounded-2xl shrink-0">
@@ -220,16 +220,18 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({ onNavigate
         <div className="bg-white p-4 sm:p-5 rounded-2xl border border-slate-200/80 shadow-sm flex items-center justify-between gap-3">
           <div className="min-w-0">
             <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider block">
-              Packing List & Shipment
+              {t('Packing List & Shipment')}
             </span>
             <div className="mt-1 flex items-baseline gap-2">
               <span className="text-2xl font-extrabold text-indigo-700 font-mono tabular-nums">
-                {stats.totalPLCount.toLocaleString('vi-VN')}
+                {stats.totalPLCount.toLocaleString(language === 'en' ? 'en-US' : 'vi-VN')}
               </span>
-              <span className="text-xs text-slate-500 font-medium tabular-nums">PL / {stats.totalShipmentCount.toLocaleString('vi-VN')} Lô</span>
+              <span className="text-xs text-slate-500 font-medium tabular-nums">
+                PL / {stats.totalShipmentCount.toLocaleString(language === 'en' ? 'en-US' : 'vi-VN')} {language === 'en' ? 'Shipments' : 'Lô'}
+              </span>
             </div>
             <span className="text-[11px] text-slate-400 mt-0.5 block">
-              Truy xuất nguồn gốc chuẩn 100%
+              {language === 'en' ? '100% Traceability' : 'Truy xuất nguồn gốc chuẩn 100%'}
             </span>
           </div>
           <div className="p-3 bg-indigo-50 text-indigo-700 rounded-2xl shrink-0">
@@ -241,16 +243,16 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({ onNavigate
         <div className="bg-white p-4 sm:p-5 rounded-2xl border border-slate-200/80 shadow-sm flex items-center justify-between gap-3">
           <div className="min-w-0">
             <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider block">
-              Kho Bãi Lưu Trữ
+              {language === 'en' ? 'Storage Warehouses' : 'Kho Bãi Lưu Trữ'}
             </span>
             <div className="mt-1 flex items-baseline gap-1.5">
               <span className="text-2xl font-extrabold text-amber-700 font-mono tabular-nums">
                 {stats.totalWarehouseCount}
               </span>
-              <span className="text-xs font-semibold text-slate-500">Khu bãi & kho</span>
+              <span className="text-xs font-semibold text-slate-500">{language === 'en' ? 'Active yards & stores' : 'Khu bãi & kho'}</span>
             </div>
             <span className="text-[11px] text-slate-400 mt-0.5 block">
-              Kho Cát Lái, Cảng Phú Mỹ...
+              {language === 'en' ? 'Cat Lai, Phu My Ports...' : 'Kho Cát Lái, Cảng Phú Mỹ...'}
             </span>
           </div>
           <div className="p-3 bg-amber-50 text-amber-700 rounded-2xl shrink-0">
@@ -266,13 +268,13 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({ onNavigate
           <div className="flex items-center justify-between">
             <h3 className="font-bold text-sm text-slate-900 flex items-center gap-2">
               <Layers className="w-4 h-4 text-blue-600" />
-              <span>Phân Bổ Tồn Kho Theo Hạng Mục</span>
+              <span>{t('Phân Bổ Tồn Kho Theo Hạng Mục')}</span>
             </h3>
             <button
               onClick={() => onNavigate('report')}
               className="text-xs text-blue-600 hover:text-blue-800 font-semibold"
             >
-              Xem chi tiết
+              {t('Xem chi tiết')}
             </button>
           </div>
 
@@ -283,7 +285,7 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({ onNavigate
                 <div key={i} className="p-3 rounded-xl bg-slate-50 border border-slate-100 space-y-1.5">
                   <div className="flex justify-between items-center text-xs">
                     <span className="font-semibold text-slate-800 line-clamp-1">{cat.name}</span>
-                    <span className="font-mono font-bold text-slate-700">{cat.weight.toLocaleString('vi-VN')} kg</span>
+                    <span className="font-mono font-bold text-slate-700">{cat.weight.toLocaleString(language === 'en' ? 'en-US' : 'vi-VN')} kg</span>
                   </div>
                   <progress
                     value={Math.min(100, Math.max(8, Math.round(pct)))}
@@ -291,8 +293,8 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({ onNavigate
                     className="w-full h-1.5 rounded-full overflow-hidden block [&::-webkit-progress-bar]:bg-slate-200 [&::-webkit-progress-bar]:rounded-full [&::-webkit-progress-value]:bg-blue-600 [&::-webkit-progress-value]:rounded-full [&::-moz-progress-bar]:bg-blue-600"
                   />
                   <div className="flex justify-between text-[11px] text-slate-500">
-                    <span>Số lượng: {cat.count.toLocaleString('vi-VN')}</span>
-                    <span>Tỷ trọng: {pct.toFixed(1)}%</span>
+                    <span>{language === 'en' ? 'Quantity:' : 'Số lượng:'} {cat.count.toLocaleString(language === 'en' ? 'en-US' : 'vi-VN')}</span>
+                    <span>{language === 'en' ? 'Ratio:' : 'Tỷ trọng:'} {pct.toFixed(1)}%</span>
                   </div>
                 </div>
               );
@@ -305,39 +307,45 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({ onNavigate
           <div className="flex items-center justify-between">
             <h3 className="font-bold text-sm text-slate-900 flex items-center gap-2">
               <ArrowDownLeft className="w-4 h-4 text-emerald-600" />
-              <span>Phiếu Nhập Kho Gần Đây</span>
+              <span>{t('Phiếu Nhập Kho Gần Đây')}</span>
             </h3>
             <button
               onClick={() => onNavigate('inbound')}
               className="text-xs text-blue-600 hover:text-blue-800 font-semibold"
             >
-              Tất cả phiếu
+              {language === 'en' ? 'All Vouchers' : 'Tất cả phiếu'}
             </button>
           </div>
 
           <div className="space-y-2.5">
-            {stats.recentInbounds.map((inb) => {
-              const inSums = sumInboundItems(Array.isArray(inb.items) ? inb.items : []);
-              return (
-                <div key={inb.id} className="p-3 rounded-xl bg-slate-50 hover:bg-slate-100/80 transition border border-slate-100 text-xs">
-                  <div className="flex justify-between items-start">
-                    <div>
-                      <span className="font-mono font-bold text-blue-700">{inb.receiptCode}</span>
-                      <div className="text-[11px] text-slate-500 font-mono">
-                        PL: {inb.packingListNo} | {inb.shipment}
+            {stats.recentInbounds.length === 0 ? (
+              <div className="text-center py-6 text-slate-400 text-xs">
+                {language === 'en' ? 'No recent inbound receipts' : 'Chưa có phiếu nhập kho nào gần đây'}
+              </div>
+            ) : (
+              stats.recentInbounds.map((inb) => {
+                const inSums = sumInboundItems(Array.isArray(inb.items) ? inb.items : []);
+                return (
+                  <div key={inb.id} className="p-3 rounded-xl bg-slate-50 hover:bg-slate-100/80 transition border border-slate-100 text-xs">
+                    <div className="flex justify-between items-start">
+                      <div>
+                        <span className="font-mono font-bold text-blue-700">{inb.receiptCode}</span>
+                        <div className="text-[11px] text-slate-500 font-mono">
+                          PL: {inb.packingListNo} | {inb.shipment}
+                        </div>
                       </div>
+                      <span className="font-mono font-bold text-emerald-700">
+                        +{inSums.totalQuantity.toLocaleString(language === 'en' ? 'en-US' : 'vi-VN')} {language === 'en' ? 'Qty' : 'SL'}
+                      </span>
                     </div>
-                    <span className="font-mono font-bold text-emerald-700">
-                      +{inSums.totalQuantity.toLocaleString('vi-VN')} SL
-                    </span>
+                    <div className="mt-1.5 flex justify-between text-[11px] text-slate-500 border-t border-slate-200/60 pt-1.5">
+                      <span className="line-clamp-1">{inb.warehouseName}</span>
+                      <span>{formatVoucherDateVi(inb.receiptDate)}</span>
+                    </div>
                   </div>
-                  <div className="mt-1.5 flex justify-between text-[11px] text-slate-500 border-t border-slate-200/60 pt-1.5">
-                    <span className="line-clamp-1">{inb.warehouseName}</span>
-                    <span>{formatVoucherDateVi(inb.receiptDate)}</span>
-                  </div>
-                </div>
-              );
-            })}
+                );
+              })
+            )}
           </div>
         </div>
 
@@ -346,39 +354,45 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({ onNavigate
           <div className="flex items-center justify-between">
             <h3 className="font-bold text-sm text-slate-900 flex items-center gap-2">
               <ArrowUpRight className="w-4 h-4 text-rose-600" />
-              <span>Phiếu Xuất Kho Gần Đây</span>
+              <span>{t('Phiếu Xuất Kho Gần Đây')}</span>
             </h3>
             <button
               onClick={() => onNavigate('outbound')}
               className="text-xs text-blue-600 hover:text-blue-800 font-semibold"
             >
-              Tất cả phiếu
+              {language === 'en' ? 'All Vouchers' : 'Tất cả phiếu'}
             </button>
           </div>
 
           <div className="space-y-2.5">
-            {stats.recentOutbounds.map((outb) => {
-              const outSums = sumOutboundItems(Array.isArray(outb.items) ? outb.items : []);
-              return (
-                <div key={outb.id} className="p-3 rounded-xl bg-slate-50 hover:bg-slate-100/80 transition border border-slate-100 text-xs">
-                  <div className="flex justify-between items-start">
-                    <div>
-                      <span className="font-mono font-bold text-rose-700">{outb.issueCode}</span>
-                      <div className="text-[11px] text-slate-600 line-clamp-1 font-medium">
-                        {outb.recipientDepartment}
+            {stats.recentOutbounds.length === 0 ? (
+              <div className="text-center py-6 text-slate-400 text-xs">
+                {language === 'en' ? 'No recent outbound issues' : 'Chưa có phiếu xuất kho nào gần đây'}
+              </div>
+            ) : (
+              stats.recentOutbounds.map((outb) => {
+                const outSums = sumOutboundItems(Array.isArray(outb.items) ? outb.items : []);
+                return (
+                  <div key={outb.id} className="p-3 rounded-xl bg-slate-50 hover:bg-slate-100/80 transition border border-slate-100 text-xs">
+                    <div className="flex justify-between items-start">
+                      <div>
+                        <span className="font-mono font-bold text-rose-700">{outb.issueCode}</span>
+                        <div className="text-[11px] text-slate-600 line-clamp-1 font-medium">
+                          {outb.recipientDepartment}
+                        </div>
                       </div>
+                      <span className="font-mono font-bold text-rose-700">
+                        -{outSums.totalQuantity.toLocaleString(language === 'en' ? 'en-US' : 'vi-VN')} {language === 'en' ? 'Qty' : 'SL'}
+                      </span>
                     </div>
-                    <span className="font-mono font-bold text-rose-700">
-                      -{outSums.totalQuantity.toLocaleString('vi-VN')} SL
-                    </span>
+                    <div className="mt-1.5 flex justify-between text-[11px] text-slate-500 border-t border-slate-200/60 pt-1.5">
+                      <span className="line-clamp-1">{outb.warehouseName}</span>
+                      <span>{formatVoucherDateVi(outb.issueDate)}</span>
+                    </div>
                   </div>
-                  <div className="mt-1.5 flex justify-between text-[11px] text-slate-500 border-t border-slate-200/60 pt-1.5">
-                    <span className="line-clamp-1">{outb.warehouseName}</span>
-                    <span>{formatVoucherDateVi(outb.issueDate)}</span>
-                  </div>
-                </div>
-              );
-            })}
+                );
+              })
+            )}
           </div>
         </div>
       </div>
