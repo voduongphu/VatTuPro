@@ -211,34 +211,25 @@ export function resolveGoogleUserRecord(
     };
   }
 
-  const [h1, h2] = hashPair(`GOOGLE_USER_ID|${emailLower}`);
-  const detId = `user-g-${h1.toString(36)}${h2.toString(36)}`;
-  const rawLocalPart = emailLower.split('@')[0] || 'user';
-  const cleanLocalPart = rawLocalPart.replace(/[^a-z0-9._-]/g, '') || 'user';
-  const usernameTaken = safeUsers.some(
-    (u) => normUserKey(u.username) === normUserKey(cleanLocalPart)
-  );
-  const finalUsername = usernameTaken
-    ? `${cleanLocalPart}_${h1.toString(36).slice(0, 4)}`
-    : cleanLocalPart;
-
+  // CHỈ NHỮNG TÀI KHOẢN GOOGLE MAIL ĐƯỢC ADMIN KHAI BÁO VÀ PHÂN QUYỀN TRONG MỤC "NGƯỜI SỬ DỤNG" MỚI ĐƯỢC PHÉP ĐĂNG NHẬP
   return {
-    allowed: true,
-    isNew: true,
-    mutated: true,
+    allowed: false,
+    isNew: false,
+    mutated: false,
     user: {
-      id: detId,
-      username: finalUsername,
-      fullName: cleanDisplay || finalUsername,
-      role: 'staff',
+      id: `unauthorized-${nowMs}`,
+      username: emailLower.split('@')[0] || 'unauthorized',
+      fullName: cleanDisplay || emailLower,
+      role: 'viewer',
       password: 'google-oauth',
       email: emailLower,
       emailDigest,
-      department: 'Nhân sự Kho vận',
-      isActive: true,
+      department: 'Chưa phân quyền',
+      isActive: false,
       createdAt: nowIso,
       updatedAt: nowMs
-    }
+    },
+    message: `Tài khoản Google "${emailLower}" chưa được Quản trị viên (Admin) khai báo và phân quyền trong mục "Người Sử Dụng". Vui lòng liên hệ Admin (${BOOTSTRAPPED_ADMIN_EMAIL}) để được cấp quyền truy cập vào hệ thống.`
   };
 }
 

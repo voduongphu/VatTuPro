@@ -338,7 +338,7 @@ export const UserManager: React.FC = () => {
                 Quản Lý Tài Khoản Google & Phân Quyền
               </h1>
               <p className="text-slate-500 text-xs mt-0.5">
-                Người dùng đăng nhập đồng bộ bằng tài khoản Google (Gmail). Admin ({BOOTSTRAPPED_ADMIN_EMAIL}) quản lý vai trò và trạng thái truy cập.
+                Chỉ những tài khoản Google mail được Admin ({BOOTSTRAPPED_ADMIN_EMAIL}) khai báo và phân quyền tại đây mới được phép đăng nhập vào hệ thống.
               </p>
             </div>
           </div>

@@ -3225,6 +3225,7 @@ export const FirestoreSyncService = {
         });
 
         if (!resolved.allowed) {
+          await this.disconnectGoogleAccount().catch(() => {});
           return {
             handled: true,
             success: false,
@@ -3232,7 +3233,7 @@ export const FirestoreSyncService = {
             user: resolved.user,
             message:
               resolved.message ||
-              'Tài khoản Google này hiện đang bị khóa hoặc ngừng kích hoạt bởi Quản trị viên.'
+              'Tài khoản Google này chưa được cấp quyền truy cập bởi Quản trị viên.'
           };
         }
 
@@ -3433,10 +3434,13 @@ export const FirestoreSyncService = {
         uid: fbUser.uid
       });
       if (!resolved.allowed) {
+        await this.disconnectGoogleAccount().catch(() => {});
         return {
           handled: true,
           success: false,
-          message: resolved.message || 'Tài khoản Google này đang bị khóa.'
+          message:
+            resolved.message ||
+            'Tài khoản Google này chưa được cấp quyền truy cập bởi Quản trị viên.'
         };
       }
 
