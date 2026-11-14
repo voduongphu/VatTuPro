@@ -307,5 +307,13 @@ export const COMPREHENSIVE_UI_PHRASES_EN: Record<string, string> = {
   "• Mã vật tư / Thiết bị (*)": "• Material Code / Thiết bị (*)",
   "• Số lượng, ĐVT & KL (Kg) (*)": "• Quantity, ĐVT & KL (Kg) (*)",
   "• Tên vật tư thiết bị (*)": "• Material Name thiết bị (*)",
-  "🌐 Tất cả các kho": "🌐 All các kho"
+  "🌐 Tất cả các kho": "🌐 All các kho",
+  "Export ra Excel": "Export to Excel",
+  "Xuất danh sách phiếu nhập kho ra file Excel": "Export inbound receipts list to Excel file",
+  "Xuất danh sách phiếu xuất kho ra file Excel": "Export outbound issues list to Excel file",
+  "Hình thức nhập": "Inbound Type",
+  "Hình thức xuất": "Outbound Type",
+  "Nhập mới": "New Inbound",
+  "Nhập trả kho": "Return to Stock",
+  "Xuất mới": "New Issue"
 };

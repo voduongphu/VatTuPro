@@ -16,6 +16,7 @@ import { PaginationBar } from '../common/PaginationBar';
 import {
   downloadOutboundTemplate,
   exportOutboundReceiptToExcel,
+  exportOutboundReceiptsToExcel,
   formatExcelDate,
   formatVoucherDateVi
 } from '../../services/excelService';
@@ -386,6 +387,32 @@ export const OutboundManager: React.FC = () => {
     } catch (err) {
       console.error('Export Outbound Excel error:', err);
       showToast('Không thể xuất file Excel. Vui lòng thử lại.', 'error');
+    }
+  };
+
+  const handleExportAllOutboundExcel = () => {
+    const selectedFiltered =
+      selectedIds.size > 0 ? filteredReceipts.filter((r) => selectedIds.has(r.id)) : [];
+    const targetReceipts =
+      selectedIds.size > 0
+        ? selectedFiltered.length > 0
+          ? selectedFiltered
+          : receipts.filter((r) => selectedIds.has(r.id))
+        : filteredReceipts;
+
+    if (targetReceipts.length === 0) {
+      showToast('Không có dữ liệu phiếu xuất kho để xuất ra Excel.', 'error');
+      return;
+    }
+
+    try {
+      const { receiptCount, itemCount } = exportOutboundReceiptsToExcel(targetReceipts);
+      showToast(
+        `Đã export ${receiptCount.toLocaleString('vi-VN')} phiếu xuất kho (${itemCount.toLocaleString('vi-VN')} dòng vật tư) ra file Excel!`
+      );
+    } catch (err) {
+      console.error('Export all Outbound Excel error:', err);
+      showToast('Không thể xuất file Excel danh sách phiếu xuất kho.', 'error');
     }
   };
 
@@ -1391,6 +1418,16 @@ export const OutboundManager: React.FC = () => {
           >
             <Download className="w-4 h-4 text-slate-500 shrink-0" />
             <span>Tải Mẫu Excel Xuất Kho</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={handleExportAllOutboundExcel}
+            title="Xuất danh sách phiếu xuất kho ra file Excel"
+            className="flex items-center justify-center gap-1.5 px-3.5 py-2.5 bg-white hover:bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-xl font-semibold text-xs shadow-xs transition active:scale-95 min-h-[42px]"
+          >
+            <Download className="w-4 h-4 text-emerald-600 shrink-0" />
+            <span>Export ra Excel</span>
           </button>
 
           <button

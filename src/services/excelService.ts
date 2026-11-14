@@ -2047,3 +2047,212 @@ export function exportOutboundReceiptToExcel(receipt: OutboundReceipt): void {
   const safeCode = sanitizeExcelFileName(receipt.issueCode || 'PXK');
   XLSX.writeFile(wb, `${safeCode}_Phieu_Xuat_Kho.xlsx`, { compression: true });
 }
+
+// Xuất toàn bộ danh sách Phiếu Nhập Kho (kèm chi tiết từng dòng vật tư tương thích import lại) ra 1 file Excel
+export function exportInboundReceiptsToExcel(
+  receipts: InboundReceipt[],
+  fileName?: string
+): { receiptCount: number; itemCount: number } {
+  const detailRows: Record<string, any>[] = [];
+  const summaryRows: Record<string, any>[] = [];
+
+  let rowIdx = 1;
+  for (let rIdx = 0; rIdx < receipts.length; rIdx++) {
+    const receipt = receipts[rIdx];
+    const items = Array.isArray(receipt.items) ? receipt.items : [];
+    const sums = sumInboundItems(items);
+    const rcpDate = formatExcelDate(receipt.receiptDate) || receipt.receiptDate || '';
+    const inboundTypeLabel = receipt.inboundType === 'return' ? 'Nhập trả kho' : 'Nhập mới';
+    const delivererDisplay =
+      receipt.delivererName && receipt.delivererName !== 'Nhập từ File Excel tự động'
+        ? receipt.delivererName
+        : receipt.supplier &&
+            receipt.supplier !== 'Nhiều nhà cung cấp' &&
+            receipt.supplier !== 'Theo phiếu nhập' &&
+            receipt.supplier !== 'Đơn vị giao hàng'
+          ? receipt.supplier
+          : receipt.delivererName || receipt.supplier || '';
+    const cleanNotes =
+      receipt.notes && !receipt.notes.startsWith('Import thành công ') ? receipt.notes : '';
+
+    summaryRows.push({
+      STT: rIdx + 1,
+      'Số phiếu': receipt.receiptCode,
+      'Ngày nhập kho': rcpDate,
+      'Hình thức nhập': inboundTypeLabel,
+      'Bộ phận': receipt.departmentName || '',
+      'Kho tiếp nhận': receipt.warehouseName || '',
+      'Đơn vị giao hàng': delivererDisplay,
+      'Hợp đồng': receipt.contractNo || '',
+      'Đề xuất số': receipt.requestNo || '',
+      'Nội dung': cleanNotes,
+      'Số dòng vật tư': items.length,
+      'Tổng SL': roundQty(sums.totalQuantity || receipt.totalQuantity || 0),
+      'Tổng Khối lượng (Kg)': Math.round((sums.totalWeightKg || receipt.totalWeightKg || 0) * 100) / 100,
+      'Tổng Thành tiền (VNĐ)': Math.round((sums.totalAmount || receipt.totalAmount || 0) * 100) / 100,
+      'Người lập phiếu': receipt.createdBy || receipt.receiverName || ''
+    });
+
+    for (let i = 0; i < items.length; i++) {
+      const it = items[i];
+      const qty = roundQty(it.quantity);
+      const uPrice = Number(it.unitPrice) || 0;
+      const tPrice =
+        it.totalPrice !== undefined && Number(it.totalPrice) > 0
+          ? Math.round(Number(it.totalPrice) * 100) / 100
+          : Math.round(qty * uPrice * 100) / 100;
+
+      detailRows.push({
+        STT: rowIdx++,
+        'Số phiếu (*)': receipt.receiptCode,
+        'Ngày nhập kho': rcpDate,
+        'Hình thức nhập': inboundTypeLabel,
+        'Bộ phận': receipt.departmentName || '',
+        'Kho tiếp nhận (*)': receipt.warehouseName || it.warehouseName || '',
+        'Đơn vị giao hàng (*)': delivererDisplay,
+        'Hợp đồng': receipt.contractNo || '',
+        'Đề xuất số': receipt.requestNo || '',
+        'Nội dung': cleanNotes,
+        'Mã vật tư (*)': it.materialCode || '',
+        'Tên vật tư (*)': it.materialName || '',
+        'Mã lô': getExportItemBatch(it),
+        'Số lượng (cây/tấm) (*)': qty,
+        'ĐVT (*)': it.unit || '',
+        'Khối lượng (Kg) (*)': Math.round((Number(it.weightKg) || 0) * 100) / 100,
+        'Đơn giá (VNĐ)': uPrice,
+        'Thành tiền (VNĐ)': tPrice,
+        'Ghi chú': it.note ?? it.conditionNote ?? '',
+        'Số Packing List': it.packingListNo || receipt.packingListNo || '',
+        Shipment: it.shipment || receipt.shipment || '',
+        'Package No.': it.packageNo || '',
+        'Hạng mục': it.category || '',
+        'Bản vẽ kỹ thuật': it.drawingNo || '',
+        'Nhà sản xuất': it.manufacturer || receipt.manufacturer || '',
+        'Nhà cung cấp': it.supplier || receipt.supplier || '',
+        'Vị trí kho': it.storageLocation || ''
+      });
+    }
+  }
+
+  const wsDetail = XLSX.utils.json_to_sheet(detailRows, { dense: true } as any);
+  wsDetail['!cols'] = [
+    { wch: 6 }, { wch: 16 }, { wch: 14 }, { wch: 16 }, { wch: 20 }, { wch: 22 },
+    { wch: 24 }, { wch: 16 }, { wch: 16 }, { wch: 30 }, { wch: 28 },
+    { wch: 44 }, { wch: 16 }, { wch: 18 }, { wch: 10 }, { wch: 18 },
+    { wch: 15 }, { wch: 16 }, { wch: 24 }, { wch: 18 }, { wch: 18 },
+    { wch: 16 }, { wch: 20 }, { wch: 20 }, { wch: 20 }, { wch: 22 }, { wch: 18 }
+  ];
+
+  const wsSummary = XLSX.utils.json_to_sheet(summaryRows, { dense: true } as any);
+  wsSummary['!cols'] = [
+    { wch: 6 }, { wch: 16 }, { wch: 14 }, { wch: 16 }, { wch: 20 }, { wch: 22 },
+    { wch: 24 }, { wch: 16 }, { wch: 16 }, { wch: 32 }, { wch: 14 },
+    { wch: 14 }, { wch: 18 }, { wch: 18 }, { wch: 22 }
+  ];
+
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, wsDetail, 'Chi_Tiet_Nhap_Kho');
+  XLSX.utils.book_append_sheet(wb, wsSummary, 'Tong_Hop_Phieu_Nhap');
+  const exportName =
+    fileName || `Danh_Sach_Phieu_Nhap_Kho_${new Date().toISOString().slice(0, 10)}`;
+  XLSX.writeFile(wb, `${sanitizeExcelFileName(exportName)}.xlsx`, { compression: true });
+  return { receiptCount: receipts.length, itemCount: detailRows.length };
+}
+
+// Xuất toàn bộ danh sách Phiếu Xuất Kho (kèm chi tiết từng dòng vật tư tương thích import lại) ra 1 file Excel
+export function exportOutboundReceiptsToExcel(
+  receipts: OutboundReceipt[],
+  fileName?: string
+): { receiptCount: number; itemCount: number } {
+  const detailRows: Record<string, any>[] = [];
+  const summaryRows: Record<string, any>[] = [];
+
+  let rowIdx = 1;
+  for (let rIdx = 0; rIdx < receipts.length; rIdx++) {
+    const receipt = receipts[rIdx];
+    const items = Array.isArray(receipt.items) ? receipt.items : [];
+    const sums = sumOutboundItems(items);
+    const issueDate = formatExcelDate(receipt.issueDate) || receipt.issueDate || '';
+    const outboundTypeLabel =
+      receipt.outboundType === 'transfer' ? 'Xuất điều chuyển' : 'Xuất mới';
+    const deptHeader =
+      receipt.departmentName ||
+      (receipt.projectName && !receipt.projectName.includes('(Import Excel)')
+        ? receipt.projectName
+        : '');
+    const cleanNotes =
+      receipt.notes && !receipt.notes.startsWith('Import thành công ') ? receipt.notes : '';
+
+    summaryRows.push({
+      STT: rIdx + 1,
+      'Số phiếu': receipt.issueCode,
+      'Ngày xuất kho': issueDate,
+      'Hình thức xuất': outboundTypeLabel,
+      'Bộ phận / Dự án': deptHeader,
+      'Kho xuất': receipt.warehouseName || '',
+      'Người nhận': receipt.recipientName || '',
+      'Đơn vị/Tổ/Nhóm': receipt.recipientDepartment || '',
+      'Số PYC/PĐX': receipt.requestNo || '',
+      'Lý do xuất kho': cleanNotes,
+      'Số dòng vật tư': items.length,
+      'Tổng SL': roundQty(sums.totalQuantity || receipt.totalQuantity || 0),
+      'Tổng Khối lượng (Kg)': Math.round((sums.totalWeightKg || receipt.totalWeightKg || 0) * 100) / 100,
+      'Người lập phiếu': receipt.createdBy || receipt.issuerName || ''
+    });
+
+    for (let i = 0; i < items.length; i++) {
+      const it = items[i];
+      detailRows.push({
+        STT: rowIdx++,
+        'Số phiếu (*)': receipt.issueCode,
+        'Ngày xuất kho': issueDate,
+        'Hình thức xuất': outboundTypeLabel,
+        'Bộ phận': deptHeader,
+        'Kho xuất (*)': receipt.warehouseName || it.warehouseName || '',
+        'Người nhận (*)': receipt.recipientName || '',
+        'Đơn vị/Tổ/Nhóm (*)': receipt.recipientDepartment || '',
+        'Số PYC/PĐX': receipt.requestNo || '',
+        'Lý do xuất kho': cleanNotes,
+        'Mã vật tư (*)': it.materialCode || '',
+        'Tên vật tư (*)': it.materialName || '',
+        'Mã lô': getExportItemBatch(it),
+        'Số lượng (cây/tấm) (*)': roundQty(it.quantity),
+        'ĐVT (*)': it.unit || '',
+        'Khối lượng (Kg) (*)': Math.round((Number(it.weightKg) || 0) * 100) / 100,
+        'Ghi chú': it.note ?? it.purpose ?? '',
+        'Số Packing List': it.packingListNo || '',
+        Shipment: it.shipment || '',
+        'Package No.': it.packageNo || '',
+        'Hạng mục': it.category || '',
+        'Bản vẽ kỹ thuật': it.drawingNo || '',
+        'Nhà sản xuất': it.manufacturer || '',
+        'Nhà cung cấp': it.supplier || ''
+      });
+    }
+  }
+
+  const wsDetail = XLSX.utils.json_to_sheet(detailRows, { dense: true } as any);
+  wsDetail['!cols'] = [
+    { wch: 6 }, { wch: 16 }, { wch: 14 }, { wch: 18 }, { wch: 20 }, { wch: 22 },
+    { wch: 22 }, { wch: 20 }, { wch: 16 }, { wch: 32 }, { wch: 28 },
+    { wch: 44 }, { wch: 16 }, { wch: 18 }, { wch: 10 }, { wch: 18 },
+    { wch: 24 }, { wch: 18 }, { wch: 18 }, { wch: 16 }, { wch: 20 },
+    { wch: 20 }, { wch: 20 }, { wch: 22 }
+  ];
+
+  const wsSummary = XLSX.utils.json_to_sheet(summaryRows, { dense: true } as any);
+  wsSummary['!cols'] = [
+    { wch: 6 }, { wch: 16 }, { wch: 14 }, { wch: 18 }, { wch: 22 }, { wch: 22 },
+    { wch: 22 }, { wch: 20 }, { wch: 16 }, { wch: 32 }, { wch: 14 },
+    { wch: 14 }, { wch: 18 }, { wch: 22 }
+  ];
+
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, wsDetail, 'Chi_Tiet_Xuat_Kho');
+  XLSX.utils.book_append_sheet(wb, wsSummary, 'Tong_Hop_Phieu_Xuat');
+  const exportName =
+    fileName || `Danh_Sach_Phieu_Xuat_Kho_${new Date().toISOString().slice(0, 10)}`;
+  XLSX.writeFile(wb, `${sanitizeExcelFileName(exportName)}.xlsx`, { compression: true });
+  return { receiptCount: receipts.length, itemCount: detailRows.length };
+}
+

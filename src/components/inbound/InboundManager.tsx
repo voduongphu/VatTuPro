@@ -10,6 +10,7 @@ import { PaginationBar } from '../common/PaginationBar';
 import {
   downloadInboundTemplate,
   exportInboundReceiptToExcel,
+  exportInboundReceiptsToExcel,
   formatExcelDate,
   formatVoucherDateVi
 } from '../../services/excelService';
@@ -520,6 +521,32 @@ export const InboundManager: React.FC = () => {
     } catch (err) {
       console.error('Export Inbound Excel error:', err);
       showToast('Không thể xuất file Excel. Vui lòng thử lại.', 'error');
+    }
+  };
+
+  const handleExportAllInboundExcel = () => {
+    const selectedFiltered =
+      selectedIds.size > 0 ? filteredReceipts.filter((r) => selectedIds.has(r.id)) : [];
+    const targetReceipts =
+      selectedIds.size > 0
+        ? selectedFiltered.length > 0
+          ? selectedFiltered
+          : receipts.filter((r) => selectedIds.has(r.id))
+        : filteredReceipts;
+
+    if (targetReceipts.length === 0) {
+      showToast('Không có dữ liệu phiếu nhập kho để xuất ra Excel.', 'error');
+      return;
+    }
+
+    try {
+      const { receiptCount, itemCount } = exportInboundReceiptsToExcel(targetReceipts);
+      showToast(
+        `Đã export ${receiptCount.toLocaleString('vi-VN')} phiếu nhập kho (${itemCount.toLocaleString('vi-VN')} dòng vật tư) ra file Excel!`
+      );
+    } catch (err) {
+      console.error('Export all Inbound Excel error:', err);
+      showToast('Không thể xuất file Excel danh sách phiếu nhập kho.', 'error');
     }
   };
 
@@ -1552,6 +1579,16 @@ export const InboundManager: React.FC = () => {
           >
             <Download className="w-4 h-4 text-slate-500 shrink-0" />
             <span>Tải Mẫu Excel Nhập Kho</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={handleExportAllInboundExcel}
+            title="Xuất danh sách phiếu nhập kho ra file Excel"
+            className="flex items-center justify-center gap-1.5 px-3.5 py-2.5 bg-white hover:bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-xl font-semibold text-xs shadow-xs transition active:scale-95 min-h-[42px]"
+          >
+            <Download className="w-4 h-4 text-emerald-600 shrink-0" />
+            <span>Export ra Excel</span>
           </button>
 
           <button
