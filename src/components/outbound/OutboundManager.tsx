@@ -595,6 +595,7 @@ export const OutboundManager: React.FC = () => {
         warehouse: Warehouse;
         issueCode?: string;
         issueDate?: string;
+        outboundType?: 'issue' | 'transfer';
         departmentName?: string;
         projectName?: string;
         recipientName?: string;
@@ -610,9 +611,10 @@ export const OutboundManager: React.FC = () => {
       const wh = resolveWarehouse(item.warehouseName);
       const rawCode = (item.issueCode || '').trim();
       const customCode = rawCode || (item.packingListNo ? `PXK-${item.packingListNo.trim()}` : '');
+      const rowType: 'issue' | 'transfer' = item.outboundType === 'transfer' ? 'transfer' : 'issue';
       const groupKey = rawCode
         ? `ISSUE_${rawCode.toUpperCase()}`
-        : `${wh.id}__${customCode || 'AUTO'}`;
+        : `${wh.id}__${rowType}__${customCode || 'AUTO'}`;
 
       let currentGroup = groups.get(groupKey);
       if (!currentGroup) {
@@ -620,6 +622,7 @@ export const OutboundManager: React.FC = () => {
           warehouse: wh,
           issueCode: rawCode || customCode,
           issueDate: item.issueDate,
+          outboundType: item.outboundType === 'transfer' ? 'transfer' : item.outboundType === 'issue' ? 'issue' : undefined,
           departmentName: item.departmentName,
           projectName: item.projectName,
           recipientName: item.recipientName,
@@ -631,6 +634,11 @@ export const OutboundManager: React.FC = () => {
         groups.set(groupKey, currentGroup);
       } else {
         if (!currentGroup.issueDate && item.issueDate) currentGroup.issueDate = item.issueDate;
+        if (item.outboundType === 'transfer') {
+          currentGroup.outboundType = 'transfer';
+        } else if (!currentGroup.outboundType && item.outboundType) {
+          currentGroup.outboundType = item.outboundType;
+        }
         if (!currentGroup.departmentName && item.departmentName) currentGroup.departmentName = item.departmentName;
         if (!currentGroup.projectName && item.projectName) currentGroup.projectName = item.projectName;
         if (!currentGroup.recipientName && item.recipientName) currentGroup.recipientName = item.recipientName;
@@ -657,6 +665,7 @@ export const OutboundManager: React.FC = () => {
         warehouse: targetWh,
         issueCode: customCode,
         issueDate: customDate,
+        outboundType: customOutboundType,
         departmentName: customDeptHeader,
         projectName: customProj,
         recipientName: customRecipient,
@@ -726,7 +735,7 @@ export const OutboundManager: React.FC = () => {
           warehouseName: targetWh.name,
           departmentName: effectiveDeptHeader,
           requestNo: customReqNo || '',
-          outboundType: 'issue',
+          outboundType: customOutboundType === 'transfer' ? 'transfer' : 'issue',
           projectName: customProj || effectiveDeptHeader,
           recipientDepartment: customDept || first?.recipientDepartment || 'Tổ thi công',
           recipientName: customRecipient || first?.recipientName || '',

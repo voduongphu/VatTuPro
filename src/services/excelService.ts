@@ -29,6 +29,7 @@ export const MATERIAL_EXCEL_COLUMNS = [
 export const INBOUND_EXCEL_COLUMNS = [
   { key: 'receiptCode', label: 'Số phiếu nhập kho (*)', sample: 'PN-20261014-001' },
   { key: 'receiptDate', label: 'Ngày nhập kho (YYYY-MM-DD)', sample: '2026-10-14' },
+  { key: 'inboundType', label: 'Hình thức nhập (Nhập mới / Nhập trả kho)', sample: 'Nhập mới' },
   { key: 'warehouseName', label: 'Kho tiếp nhận / Nhập vào kho (*)', sample: 'Kho Tổng Trung Tâm Cát Lái' },
   { key: 'packingListNo', label: 'Số Packing List (*)', sample: 'PL-2026-OCT-001' },
   { key: 'shipment', label: 'Shipment / Lô hàng (*)', sample: 'SHP-PACIFIC-V04' },
@@ -52,6 +53,7 @@ export const INBOUND_EXCEL_COLUMNS = [
 export const OUTBOUND_EXCEL_COLUMNS = [
   { key: 'issueCode', label: 'Số phiếu xuất kho (*)', sample: 'PX-20261014-001' },
   { key: 'issueDate', label: 'Ngày xuất kho (YYYY-MM-DD)', sample: '2026-10-14' },
+  { key: 'outboundType', label: 'Hình thức xuất (Xuất mới / Xuất điều chuyển)', sample: 'Xuất mới' },
   { key: 'projectName', label: 'Tên dự án / Công trình (*)', sample: 'Dự Án Nhà Máy Lọc Hóa Dầu Long Sơn' },
   { key: 'recipientDepartment', label: 'Người nhận / Đội thi công (*)', sample: 'Ban Chỉ Huy Công Trường - Đội Lắp Đặt Số 2' },
   { key: 'warehouseName', label: 'Kho xuất / Xuất từ kho (*)', sample: 'Kho Tổng Trung Tâm Cát Lái' },
@@ -170,6 +172,7 @@ export function downloadInboundTemplate(): void {
     {
       'Số phiếu (*)': 'PNK25-0001',
       'Ngày nhập kho': '2025-03-07',
+      'Hình thức nhập': 'Nhập mới',
       'Bộ phận': '',
       'Kho tiếp nhận (*)': 'Kho Long Phú 1',
       'Đơn vị giao hàng (*)': 'Việt Xuân Mới',
@@ -194,6 +197,7 @@ export function downloadInboundTemplate(): void {
     {
       'Số phiếu (*)': 'PNK25-0001',
       'Ngày nhập kho': '2025-03-07',
+      'Hình thức nhập': 'Nhập mới',
       'Bộ phận': '',
       'Kho tiếp nhận (*)': 'Kho Long Phú 1',
       'Đơn vị giao hàng (*)': 'Việt Xuân Mới',
@@ -216,14 +220,15 @@ export function downloadInboundTemplate(): void {
       'Nhà cung cấp': 'Việt Xuân Mới'
     },
     {
-      'Số phiếu (*)': 'PNK25-0001',
-      'Ngày nhập kho': '2025-03-07',
-      'Bộ phận': '',
+      'Số phiếu (*)': 'PNK25-0002',
+      'Ngày nhập kho': '2025-03-08',
+      'Hình thức nhập': 'Nhập trả kho',
+      'Bộ phận': 'Đội thi công Piping',
       'Kho tiếp nhận (*)': 'Kho Long Phú 1',
-      'Đơn vị giao hàng (*)': 'Việt Xuân Mới',
+      'Đơn vị giao hàng (*)': 'Tổ thi công',
       'Hợp đồng': '',
       'Đề xuất số': '',
-      'Nội dung': 'Phục vụ thi công hạng mục PIPING',
+      'Nội dung': 'Nhập trả kho vật tư dư sau thi công',
       'Mã vật tư (*)': 'PI-P.AA.S.2.0.0.1AG1-1.0.G.0',
       'Tên vật tư (*)': '20"x12m PIPE, API 5L B PSL1 SAWL, BE, SCH 40, AG',
       'Mã lô': '183A0494',
@@ -232,7 +237,7 @@ export function downloadInboundTemplate(): void {
       'Khối lượng (Kg) (*)': 2202.0,
       'Đơn giá (VNĐ)': 0,
       'Thành tiền (VNĐ)': 0,
-      'Ghi chú': '',
+      'Ghi chú': 'Vật tư còn nguyên vẹn, nhập trả kho',
       'Số Packing List': 'PL-01',
       'Shipment': 'SHP-01',
       'Package No.': '183A0494',
@@ -243,7 +248,7 @@ export function downloadInboundTemplate(): void {
 
   const ws = XLSX.utils.json_to_sheet(sampleRows);
   ws['!cols'] = [
-    { wch: 16 }, { wch: 14 }, { wch: 20 }, { wch: 22 }, { wch: 22 },
+    { wch: 16 }, { wch: 14 }, { wch: 18 }, { wch: 20 }, { wch: 22 }, { wch: 22 },
     { wch: 16 }, { wch: 16 }, { wch: 32 }, { wch: 28 }, { wch: 44 },
     { wch: 15 }, { wch: 18 }, { wch: 10 }, { wch: 18 }, { wch: 15 },
     { wch: 16 }, { wch: 22 }, { wch: 18 }, { wch: 18 }, { wch: 15 },
@@ -253,11 +258,12 @@ export function downloadInboundTemplate(): void {
   const guideRows = [
     { 'HƯỚNG DẪN': 'QUY TẮC TẠO PHIẾU NHẬP KHO (MẪU QN-OPR-PR11-FM05.01) TỪ FILE EXCEL', 'CHI TIẾT': '' },
     { 'HƯỚNG DẪN': '1. Cột Số phiếu (*)', 'CHI TIẾT': 'Các dòng có cùng Số phiếu (ví dụ PNK25-0019) sẽ được gom lại thành 1 Phiếu Nhập Kho duy nhất.' },
-    { 'HƯỚNG DẪN': '2. Cột biểu mẫu QLVT', 'CHI TIẾT': 'Hỗ trợ đầy đủ: Bộ phận, Đơn vị giao hàng, Hợp đồng, Đề xuất số, Nội dung, Mã vật tư, Tên vật tư, Mã lô, Số lượng (cây/tấm), ĐVT, Khối lượng (Kg), Đơn giá (VNĐ), Thành tiền (VNĐ), Ghi chú.' },
-    { 'HƯỚNG DẪN': '3. Tương thích ngược', 'CHI TIẾT': 'Tương thích hoàn toàn với cả các file Excel mẫu cũ theo Packing List, Shipment, Package No.' }
+    { 'HƯỚNG DẪN': '2. Cột Hình thức nhập', 'CHI TIẾT': 'Điền "Nhập mới" hoặc "Nhập trả kho" (nếu để trống sẽ mặc định là "Nhập mới"). Các dòng "Nhập trả kho" sẽ tự động cộng vào cột NHẬP TRẢ KHO trong Báo cáo Nhập-Xuất-Tồn.' },
+    { 'HƯỚNG DẪN': '3. Cột biểu mẫu QLVT', 'CHI TIẾT': 'Hỗ trợ đầy đủ: Bộ phận, Đơn vị giao hàng, Hợp đồng, Đề xuất số, Nội dung, Mã vật tư, Tên vật tư, Mã lô, Số lượng (cây/tấm), ĐVT, Khối lượng (Kg), Đơn giá (VNĐ), Thành tiền (VNĐ), Ghi chú.' },
+    { 'HƯỚNG DẪN': '4. Tương thích ngược', 'CHI TIẾT': 'Tương thích hoàn toàn với cả các file Excel mẫu cũ theo Packing List, Shipment, Package No.' }
   ];
   const wsGuide = XLSX.utils.json_to_sheet(guideRows);
-  wsGuide['!cols'] = [{ wch: 30 }, { wch: 80 }];
+  wsGuide['!cols'] = [{ wch: 30 }, { wch: 88 }];
 
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, 'Mau_PNK_QLVT');
@@ -271,6 +277,7 @@ export function downloadOutboundTemplate(): void {
     {
       'Số phiếu (*)': 'PXK25-0001',
       'Ngày xuất kho': '2025-03-04',
+      'Hình thức xuất': 'Xuất mới',
       'Bộ phận': '',
       'Kho xuất (*)': 'Kho Long Phú 1',
       'Người nhận (*)': 'Nguyễn Văn Long',
@@ -291,6 +298,7 @@ export function downloadOutboundTemplate(): void {
     {
       'Số phiếu (*)': 'PXK25-0001',
       'Ngày xuất kho': '2025-03-04',
+      'Hình thức xuất': 'Xuất mới',
       'Bộ phận': '',
       'Kho xuất (*)': 'Kho Long Phú 1',
       'Người nhận (*)': 'Nguyễn Văn Long',
@@ -307,12 +315,33 @@ export function downloadOutboundTemplate(): void {
       'Số Packing List': 'PL-01',
       'Shipment': 'SHP-01',
       'Package No.': '76E-005.50'
+    },
+    {
+      'Số phiếu (*)': 'PXK25-0002',
+      'Ngày xuất kho': '2025-03-05',
+      'Hình thức xuất': 'Xuất điều chuyển',
+      'Bộ phận': 'Ban điều hành dự án',
+      'Kho xuất (*)': 'Kho Long Phú 1',
+      'Người nhận (*)': 'Trần Minh Tâm',
+      'Đơn vị/Tổ/Nhóm (*)': 'Kho Bãi Trung Tâm',
+      'Số PYC/PĐX': 'PYC25-0002',
+      'Lý do xuất kho': 'Xuất điều chuyển sang kho công trường khác',
+      'Mã vật tư (*)': 'PI-P.AA.S.2.0.0.1AG1-1.0.G.0',
+      'Tên vật tư (*)': '20"x12m PIPE, API 5L B PSL1 SAWL, BE, SCH 40, AG',
+      'Mã lô': '183A0494',
+      'Số lượng (cây/tấm) (*)': 1,
+      'ĐVT (*)': 'Ống',
+      'Khối lượng (Kg) (*)': 2202.0,
+      'Ghi chú': 'Xuất điều chuyển kho',
+      'Số Packing List': 'PL-01',
+      'Shipment': 'SHP-01',
+      'Package No.': '183A0494'
     }
   ];
 
   const ws = XLSX.utils.json_to_sheet(sampleRows);
   ws['!cols'] = [
-    { wch: 16 }, { wch: 14 }, { wch: 20 }, { wch: 22 }, { wch: 22 },
+    { wch: 16 }, { wch: 14 }, { wch: 20 }, { wch: 20 }, { wch: 22 }, { wch: 22 },
     { wch: 20 }, { wch: 16 }, { wch: 34 }, { wch: 28 }, { wch: 44 },
     { wch: 16 }, { wch: 18 }, { wch: 10 }, { wch: 18 }, { wch: 22 },
     { wch: 18 }, { wch: 18 }, { wch: 16 }
@@ -321,10 +350,11 @@ export function downloadOutboundTemplate(): void {
   const guideRows = [
     { 'HƯỚNG DẪN': 'QUY TẮC TẠO PHIẾU XUẤT KHO (MẪU QN-OPR-PR11-FM06) TỪ FILE EXCEL', 'CHI TIẾT': '' },
     { 'HƯỚNG DẪN': '1. Cột Số phiếu (*)', 'CHI TIẾT': 'Các dòng có cùng Số phiếu (ví dụ PXK25-0001) sẽ được gom lại thành 1 Phiếu Xuất Kho duy nhất.' },
-    { 'HƯỚNG DẪN': '2. Cột biểu mẫu QLVT', 'CHI TIẾT': 'Hỗ trợ đầy đủ: Bộ phận, Người nhận, Đơn vị/Tổ/Nhóm, Số PYC/PĐX, Lý do xuất kho, Mã vật tư, Tên vật tư, Mã lô, Số lượng (cây/tấm), ĐVT, Khối lượng (Kg), Ghi chú.' }
+    { 'HƯỚNG DẪN': '2. Cột Hình thức xuất', 'CHI TIẾT': 'Điền "Xuất mới" hoặc "Xuất điều chuyển" (nếu để trống sẽ mặc định là "Xuất mới"). Các dòng "Xuất điều chuyển" sẽ tự động cộng vào cột TÁI XUẤT trong Báo cáo Nhập-Xuất-Tồn.' },
+    { 'HƯỚNG DẪN': '3. Cột biểu mẫu QLVT', 'CHI TIẾT': 'Hỗ trợ đầy đủ: Bộ phận, Người nhận, Đơn vị/Tổ/Nhóm, Số PYC/PĐX, Lý do xuất kho, Mã vật tư, Tên vật tư, Mã lô, Số lượng (cây/tấm), ĐVT, Khối lượng (Kg), Ghi chú.' }
   ];
   const wsGuide = XLSX.utils.json_to_sheet(guideRows);
-  wsGuide['!cols'] = [{ wch: 30 }, { wch: 80 }];
+  wsGuide['!cols'] = [{ wch: 30 }, { wch: 88 }];
 
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, 'Mau_PXK_QLVT');
@@ -340,6 +370,62 @@ function normalizeHeaderKey(str: string): string {
     .replace(/[\u0300-\u036f]/g, '')
     .replace(/đ/g, 'd')
     .replace(/[^a-z0-9]/g, '');
+}
+
+// Chuẩn hóa giá trị cột "Hình thức nhập" (Nhập mới / Nhập trả kho)
+function normalizeInboundTypeCell(val: unknown): 'new' | 'return' | undefined {
+  const raw = String(val ?? '').trim();
+  if (!raw) return undefined;
+  const norm = normalizeHeaderKey(raw);
+  if (!norm) return undefined;
+  if (
+    norm.includes('nhaptra') ||
+    norm.includes('trakho') ||
+    norm.includes('hoankho') ||
+    norm.includes('thuhoi') ||
+    norm === 'tra' ||
+    norm === 'return'
+  ) {
+    return 'return';
+  }
+  if (
+    norm.includes('nhapmoi') ||
+    norm.includes('muamoi') ||
+    norm === 'moi' ||
+    norm === 'new' ||
+    norm === 'standard'
+  ) {
+    return 'new';
+  }
+  return undefined;
+}
+
+// Chuẩn hóa giá trị cột "Hình thức xuất" (Xuất mới / Xuất điều chuyển)
+function normalizeOutboundTypeCell(val: unknown): 'issue' | 'transfer' | undefined {
+  const raw = String(val ?? '').trim();
+  if (!raw) return undefined;
+  const norm = normalizeHeaderKey(raw);
+  if (!norm) return undefined;
+  if (
+    norm.includes('dieuchuyen') ||
+    norm.includes('taixuat') ||
+    norm.includes('chuyenkho') ||
+    norm === 'transfer'
+  ) {
+    return 'transfer';
+  }
+  if (
+    norm.includes('xuatmoi') ||
+    norm.includes('xuatsudung') ||
+    norm === 'xuatkho' ||
+    norm === 'phieuxuatkho' ||
+    norm === 'moi' ||
+    norm === 'issue' ||
+    norm === 'standard'
+  ) {
+    return 'issue';
+  }
+  return undefined;
 }
 
 // Chuyển đổi ngày Excel (Date object, số serial, chuỗi serial "46311", "Ngày ... tháng ... năm ...", DD/MM/YYYY, YYYY-MM-DD) sang YYYY-MM-DD
@@ -778,6 +864,8 @@ interface SheetVoucherMeta {
   requestNo?: string;
   notes?: string;
   warehouseName?: string;
+  inboundType?: 'new' | 'return';
+  outboundType?: 'issue' | 'transfer';
 }
 
 // Bóc tách thông tin đầu phiếu nếu người dùng import trực tiếp từ tờ Phiếu Nhập/Xuất Kho Excel (có phần tiêu đề phía trên bảng)
@@ -811,6 +899,21 @@ function extractSheetVoucherMeta(rows: any[][], headerIdx: number): SheetVoucher
       const text = String(rawVal).trim();
       if (!text) continue;
 
+      if (!meta.inboundType) {
+        if (/☑\s*nh[ậa]p\s*tr[ảa]\s*kho/i.test(text) || /\[x\]\s*nh[ậa]p\s*tr[ảa]\s*kho/i.test(text)) {
+          meta.inboundType = 'return';
+        } else if (/☑\s*nh[ậa]p\s*m[ớo]i/i.test(text) || /\[x\]\s*nh[ậa]p\s*m[ớo]i/i.test(text)) {
+          meta.inboundType = 'new';
+        }
+      }
+      if (!meta.outboundType) {
+        if (/☑\s*(?:phi[ếe]u\s*)?xu[ấa]t\s*[đd]i[ềe]u\s*chuy[ểe]n/i.test(text) || /\[x\]\s*(?:phi[ếe]u\s*)?xu[ấa]t\s*[đd]i[ềe]u\s*chuy[ểe]n/i.test(text)) {
+          meta.outboundType = 'transfer';
+        } else if (/☑\s*(?:phi[ếe]u\s*)?xu[ấa]t\s*kho/i.test(text) || /\[x\]\s*(?:phi[ếe]u\s*)?xu[ấa]t\s*kho/i.test(text)) {
+          meta.outboundType = 'issue';
+        }
+      }
+
       const norm = normalizeHeaderKey(text);
       if (!norm) continue;
 
@@ -824,6 +927,14 @@ function extractSheetVoucherMeta(rows: any[][], headerIdx: number): SheetVoucher
       ) {
         const val = extractAfterColonOrNextCell(row, c, text);
         if (val && val.length <= 40) meta.code = val;
+      } else if (!meta.inboundType && (norm.startsWith('hinhthucnhap') || norm.startsWith('loainhap'))) {
+        const val = extractAfterColonOrNextCell(row, c, text);
+        const parsedType = normalizeInboundTypeCell(val);
+        if (parsedType) meta.inboundType = parsedType;
+      } else if (!meta.outboundType && (norm.startsWith('hinhthucxuat') || norm.startsWith('loaiphieuxuat') || norm.startsWith('loaixuat'))) {
+        const val = extractAfterColonOrNextCell(row, c, text);
+        const parsedType = normalizeOutboundTypeCell(val);
+        if (parsedType) meta.outboundType = parsedType;
       } else if (!meta.departmentName && norm.startsWith('bophan')) {
         const val = extractAfterColonOrNextCell(row, c, text);
         if (val) meta.departmentName = val;
@@ -1050,6 +1161,7 @@ export async function parseInboundExcel(
   type InboundCol =
     | 'receiptCode'
     | 'receiptDate'
+    | 'inboundType'
     | 'departmentName'
     | 'delivererName'
     | 'contractNo'
@@ -1082,6 +1194,7 @@ export async function parseInboundExcel(
     if (norm.includes('sochungtugoc')) return null;
     if (norm.includes('maphieunhap') || norm.includes('sophieunhap') || norm.includes('maphieu') || norm.includes('sophieu') || norm.includes('sochungtu') || norm.includes('receiptcode')) return 'receiptCode';
     if (norm.includes('ngaynhapkho') || norm.includes('ngaynhap') || norm.includes('ngaylap') || norm.includes('ngaychungtu') || (norm.includes('ngay') && !norm.includes('denngay')) || norm.includes('receiptdate')) return 'receiptDate';
+    if (norm.includes('hinhthucnhap') || norm.includes('loainhap') || norm.includes('loaiphieunhap') || norm === 'inboundtype') return 'inboundType';
     if (norm === 'bophan' || norm.includes('bophanduan') || norm.includes('department')) return 'departmentName';
     if (norm.includes('nguoigiao') || norm.includes('donvigiao') || norm.includes('deliverer')) return 'delivererName';
     if (norm.includes('hopdong') || norm.includes('sohopdong') || norm.includes('contract')) return 'contractNo';
@@ -1164,6 +1277,9 @@ export async function parseInboundExcel(
       } else if (field === 'receiptDate') {
         const dt = formatExcelDate(val);
         if (dt) item.receiptDate = dt;
+      } else if (field === 'inboundType') {
+        const t = normalizeInboundTypeCell(val);
+        if (t) item.inboundType = t;
       } else if (field === 'materialCode') {
         const cleaned = cleanCellText(val);
         if (cleaned) item.materialCode = cleaned.toUpperCase();
@@ -1181,6 +1297,7 @@ export async function parseInboundExcel(
     // Gắn thông tin đầu phiếu bóc tách từ phần tiêu đề trên của sheet (nếu cột tương ứng không có trên từng dòng)
     if (!item.receiptCode && sheetMeta.code) item.receiptCode = sheetMeta.code;
     if (!item.receiptDate && sheetMeta.date) item.receiptDate = sheetMeta.date;
+    if (!item.inboundType && sheetMeta.inboundType) item.inboundType = sheetMeta.inboundType;
     if (!item.departmentName && sheetMeta.departmentName) item.departmentName = sheetMeta.departmentName;
     if (!item.delivererName && sheetMeta.delivererName) item.delivererName = sheetMeta.delivererName;
     if (!item.contractNo && sheetMeta.contractNo) item.contractNo = sheetMeta.contractNo;
@@ -1249,6 +1366,7 @@ export async function parseOutboundExcel(
   type OutboundCol =
     | 'issueCode'
     | 'issueDate'
+    | 'outboundType'
     | 'departmentName'
     | 'projectName'
     | 'recipientName'
@@ -1277,6 +1395,7 @@ export async function parseOutboundExcel(
     if (!norm || norm === 'stt' || norm === 'no') return null;
     if (norm.includes('maphieuxuat') || norm.includes('sophieuxuat') || norm.includes('maphieu') || norm.includes('sophieu') || norm.includes('sochungtu') || norm.includes('issuecode')) return 'issueCode';
     if (norm.includes('ngayxuatkho') || norm.includes('ngayxuat') || norm.includes('ngaylap') || norm.includes('ngaychungtu') || (norm.includes('ngay') && !norm.includes('denngay')) || norm.includes('issuedate')) return 'issueDate';
+    if (norm.includes('hinhthucxuat') || norm.includes('loaixuat') || norm.includes('loaiphieuxuat') || norm === 'outboundtype') return 'outboundType';
     if (norm === 'bophan' || norm.includes('bophanduan')) return 'departmentName';
     if (norm.includes('tenduan') || norm.includes('duan') || norm.includes('congtrinh') || norm.includes('project')) return 'projectName';
     if (norm === 'nguoinhan' || norm === 'hotennguoinhan' || norm === 'recipientname') return 'recipientName';
@@ -1355,6 +1474,9 @@ export async function parseOutboundExcel(
       } else if (field === 'issueDate') {
         const dt = formatExcelDate(val);
         if (dt) item.issueDate = dt;
+      } else if (field === 'outboundType') {
+        const t = normalizeOutboundTypeCell(val);
+        if (t) item.outboundType = t;
       } else if (field === 'materialCode') {
         const cleaned = cleanCellText(val);
         if (cleaned) item.materialCode = cleaned.toUpperCase();
@@ -1370,6 +1492,7 @@ export async function parseOutboundExcel(
 
     if (!item.issueCode && sheetMeta.code) item.issueCode = sheetMeta.code;
     if (!item.issueDate && sheetMeta.date) item.issueDate = sheetMeta.date;
+    if (!item.outboundType && sheetMeta.outboundType) item.outboundType = sheetMeta.outboundType;
     if (!item.departmentName && sheetMeta.departmentName) item.departmentName = sheetMeta.departmentName;
     if (!item.recipientName && sheetMeta.recipientName) item.recipientName = sheetMeta.recipientName;
     if (!item.recipientDepartment && sheetMeta.recipientDepartment) item.recipientDepartment = sheetMeta.recipientDepartment;
@@ -1683,6 +1806,7 @@ export function buildInboundReceiptWorkbook(receipt: InboundReceipt): XLSX.WorkB
       STT: idx + 1,
       'Số phiếu (*)': receipt.receiptCode,
       'Ngày nhập kho': formatExcelDate(receipt.receiptDate) || receipt.receiptDate,
+      'Hình thức nhập': receipt.inboundType === 'return' ? 'Nhập trả kho' : 'Nhập mới',
       'Bộ phận': rawDept,
       'Kho tiếp nhận (*)': receipt.warehouseName,
       'Đơn vị giao hàng (*)': delivererDisplay,
@@ -1711,7 +1835,7 @@ export function buildInboundReceiptWorkbook(receipt: InboundReceipt): XLSX.WorkB
 
   const wsDetail = XLSX.utils.json_to_sheet(detailRows, { dense: true } as any);
   wsDetail['!cols'] = [
-    { wch: 6 }, { wch: 16 }, { wch: 14 }, { wch: 20 }, { wch: 22 },
+    { wch: 6 }, { wch: 16 }, { wch: 14 }, { wch: 18 }, { wch: 20 }, { wch: 22 },
     { wch: 24 }, { wch: 16 }, { wch: 16 }, { wch: 30 }, { wch: 28 },
     { wch: 44 }, { wch: 16 }, { wch: 18 }, { wch: 10 }, { wch: 18 },
     { wch: 15 }, { wch: 16 }, { wch: 24 }, { wch: 18 }, { wch: 18 },
@@ -1880,6 +2004,7 @@ export function buildOutboundReceiptWorkbook(receipt: OutboundReceipt): XLSX.Wor
     STT: idx + 1,
     'Số phiếu (*)': receipt.issueCode,
     'Ngày xuất kho': formatExcelDate(receipt.issueDate) || receipt.issueDate,
+    'Hình thức xuất': receipt.outboundType === 'transfer' ? 'Xuất điều chuyển' : 'Xuất mới',
     'Bộ phận': rawDept,
     'Kho xuất (*)': receipt.warehouseName,
     'Người nhận (*)': receipt.recipientName || '',
@@ -1904,7 +2029,7 @@ export function buildOutboundReceiptWorkbook(receipt: OutboundReceipt): XLSX.Wor
 
   const wsDetail = XLSX.utils.json_to_sheet(detailRows, { dense: true } as any);
   wsDetail['!cols'] = [
-    { wch: 6 }, { wch: 16 }, { wch: 14 }, { wch: 20 }, { wch: 22 },
+    { wch: 6 }, { wch: 16 }, { wch: 14 }, { wch: 20 }, { wch: 20 }, { wch: 22 },
     { wch: 22 }, { wch: 20 }, { wch: 16 }, { wch: 32 }, { wch: 28 },
     { wch: 44 }, { wch: 16 }, { wch: 18 }, { wch: 10 }, { wch: 18 },
     { wch: 24 }, { wch: 18 }, { wch: 18 }, { wch: 16 }, { wch: 20 },

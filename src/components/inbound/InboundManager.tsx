@@ -644,6 +644,7 @@ export const InboundManager: React.FC = () => {
         warehouse: Warehouse;
         receiptCode?: string;
         receiptDate?: string;
+        inboundType?: 'new' | 'return';
         departmentName?: string;
         delivererName?: string;
         contractNo?: string;
@@ -659,9 +660,10 @@ export const InboundManager: React.FC = () => {
       const wh = resolveWarehouse(item.warehouseName);
       const rawCode = (item.receiptCode || '').trim();
       const customCode = rawCode || (item.packingListNo && item.packingListNo !== 'PL-CHUA-RO' ? `PNK-${item.packingListNo.trim()}` : '');
+      const rowType: 'new' | 'return' = item.inboundType === 'return' ? 'return' : 'new';
       const groupKey = rawCode
         ? `RECEIPT_${rawCode.toUpperCase()}`
-        : `${wh.id}__${customCode || 'AUTO'}`;
+        : `${wh.id}__${rowType}__${customCode || 'AUTO'}`;
 
       let currentGroup = groups.get(groupKey);
       if (!currentGroup) {
@@ -669,6 +671,7 @@ export const InboundManager: React.FC = () => {
           warehouse: wh,
           receiptCode: rawCode || customCode,
           receiptDate: item.receiptDate,
+          inboundType: item.inboundType === 'return' ? 'return' : item.inboundType === 'new' ? 'new' : undefined,
           departmentName: item.departmentName,
           delivererName: item.delivererName,
           contractNo: item.contractNo,
@@ -680,6 +683,11 @@ export const InboundManager: React.FC = () => {
         groups.set(groupKey, currentGroup);
       } else {
         if (!currentGroup.receiptDate && item.receiptDate) currentGroup.receiptDate = item.receiptDate;
+        if (item.inboundType === 'return') {
+          currentGroup.inboundType = 'return';
+        } else if (!currentGroup.inboundType && item.inboundType) {
+          currentGroup.inboundType = item.inboundType;
+        }
         if (!currentGroup.departmentName && item.departmentName) currentGroup.departmentName = item.departmentName;
         if (!currentGroup.delivererName && item.delivererName) currentGroup.delivererName = item.delivererName;
         if (!currentGroup.contractNo && item.contractNo) currentGroup.contractNo = item.contractNo;
@@ -704,6 +712,7 @@ export const InboundManager: React.FC = () => {
         warehouse: targetWh,
         receiptCode: customRcpCode,
         receiptDate: customRcpDate,
+        inboundType: customInboundType,
         departmentName: customDept,
         delivererName: customDeliverer,
         contractNo: customContract,
@@ -786,7 +795,7 @@ export const InboundManager: React.FC = () => {
           departmentName: customDept || '',
           contractNo: customContract || '',
           requestNo: customReqNo || '',
-          inboundType: 'new',
+          inboundType: customInboundType === 'return' ? 'return' : 'new',
           supplier: effectiveSupplier || effectiveDeliverer || 'Theo phiếu nhập',
           manufacturer: first.manufacturer && first.manufacturer !== 'Đang cập nhật' ? first.manufacturer : '',
           shipment: first.shipment || 'SHP-EXCEL',

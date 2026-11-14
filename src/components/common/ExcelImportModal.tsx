@@ -435,6 +435,10 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
                       <span className="font-bold text-blue-800 block">• {type === 'inbound' ? 'Số phiếu PNK (*)' : 'Số phiếu PXK (*)'}</span>
                       <span className="text-[11px] text-blue-600 font-medium">{type === 'inbound' ? 'Mẫu QN-OPR-PR11-FM05.01' : 'Mẫu QN-OPR-PR11-FM06'}</span>
                     </div>
+                    <div className="bg-indigo-50/70 p-2 rounded-lg border border-indigo-200">
+                      <span className="font-bold text-indigo-800 block">• {type === 'inbound' ? 'Hình thức nhập' : 'Hình thức xuất'}</span>
+                      <span className="text-[11px] text-indigo-600 font-medium">{type === 'inbound' ? 'Nhập mới / Nhập trả kho' : 'Xuất mới / Xuất điều chuyển'}</span>
+                    </div>
                     <div className="bg-white p-2 rounded-lg border border-slate-200/70">
                       <span className="font-semibold text-slate-800 block">• Ngày & Kho (*)</span>
                       <span className="text-[11px] text-slate-400">2026-10-14, Kho PTSC...</span>
@@ -458,10 +462,6 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
                     <div className="bg-white p-2 rounded-lg border border-slate-200/70">
                       <span className="font-semibold text-slate-900 block">• Số lượng, ĐVT & KL (Kg) (*)</span>
                       <span className="text-[11px] text-slate-400">Số lượng (cây/tấm), ĐVT, Kg</span>
-                    </div>
-                    <div className="bg-white p-2 rounded-lg border border-slate-200/70">
-                      <span className="font-semibold text-slate-900 block">• {type === 'inbound' ? 'Đơn giá, Thành tiền & Ghi chú' : 'Lý do xuất kho & Ghi chú'}</span>
-                      <span className="text-[11px] text-slate-400">{type === 'inbound' ? 'VNĐ, chứng từ gốc kèm theo' : 'Nội dung xuất & ghi chú dòng'}</span>
                     </div>
                   </div>
                 )}
@@ -602,6 +602,7 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
                         <tr>
                           <th className="p-2.5">STT</th>
                           <th className="p-2.5">{type === 'inbound' ? 'Số Phiếu Nhập' : 'Số Phiếu Xuất'}</th>
+                          <th className="p-2.5">{type === 'inbound' ? 'Hình thức nhập' : 'Hình thức xuất'}</th>
                           <th className="p-2.5">{type === 'inbound' ? 'Kho Tiếp Nhận' : 'Kho Xuất Hàng'}</th>
                           <th className="p-2.5">Bộ phận & Chứng từ</th>
                           <th className="p-2.5">{type === 'inbound' ? 'Đơn vị giao hàng' : 'Người nhận & Đơn vị'}</th>
@@ -621,6 +622,8 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
                           const rowAny = r as any;
                           const customCode = rowAny.receiptCode || rowAny.issueCode;
                           const batchOrPkg = rowAny.batchCode || r.packageNo || '-';
+                          const isReturnInbound = type === 'inbound' && rowAny.inboundType === 'return';
+                          const isTransferOutbound = type === 'outbound' && rowAny.outboundType === 'transfer';
                           const lineAmount =
                             Number(rowAny.totalPrice) ||
                             Number(rowAny.totalAmount) ||
@@ -636,6 +639,25 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
                                   </span>
                                 ) : (
                                   <span className="text-slate-400 italic text-[11px] bg-slate-100 px-1.5 py-0.5 rounded">Tự sinh</span>
+                                )}
+                              </td>
+                              <td className="p-2.5 whitespace-nowrap">
+                                {type === 'inbound' ? (
+                                  <span className={`inline-block px-2 py-0.5 rounded text-[11px] font-semibold border ${
+                                    isReturnInbound
+                                      ? 'bg-indigo-50 text-indigo-700 border-indigo-200'
+                                      : 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                                  }`}>
+                                    {isReturnInbound ? 'Nhập trả kho' : 'Nhập mới'}
+                                  </span>
+                                ) : (
+                                  <span className={`inline-block px-2 py-0.5 rounded text-[11px] font-semibold border ${
+                                    isTransferOutbound
+                                      ? 'bg-amber-50 text-amber-700 border-amber-200'
+                                      : 'bg-slate-100 text-slate-700 border-slate-200'
+                                  }`}>
+                                    {isTransferOutbound ? 'Xuất điều chuyển' : 'Xuất mới'}
+                                  </span>
                                 )}
                               </td>
                               <td className="p-2.5">
