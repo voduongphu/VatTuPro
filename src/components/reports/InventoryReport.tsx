@@ -535,7 +535,10 @@ export const InventoryReport: React.FC = () => {
                     <td className="p-3 font-mono text-slate-700">{r.shipment}</td>
                     <td className="p-3">
                       <span className="font-bold text-slate-900 block">{r.packageNo}</span>
-                      <span className="text-[11px] text-slate-500 line-clamp-1">{r.packageName}</span>
+                      {r.packageName &&
+                        r.packageName.trim().toUpperCase() !== r.packageNo.trim().toUpperCase() && (
+                          <span className="text-[11px] text-slate-500 line-clamp-1">{r.packageName}</span>
+                        )}
                     </td>
                     <td className="p-3 font-mono font-semibold text-slate-800">
                       {r.materialCode && r.materialCode !== 'N/A' ? (

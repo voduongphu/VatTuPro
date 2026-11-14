@@ -701,7 +701,7 @@ export const OutboundManager: React.FC = () => {
             packingListNo: plNo,
             shipment: item.shipment || 'SHP-EXCEL',
             packageNo: pkgNo,
-            packageName: item.packageName || `Kiện xuất ${pkgNo}`,
+            packageName: item.packageName || '',
             category: item.category || 'Hạng mục lắp đặt',
             drawingNo: dwgNo,
             manufacturer: item.manufacturer || 'N/A',
