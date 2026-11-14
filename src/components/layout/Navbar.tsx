@@ -119,7 +119,7 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenMobileMenu }) => {
 
   return (
     <>
-      <header className="sticky top-0 bg-slate-900 border-b border-slate-800 text-white shrink-0 z-40 w-full">
+      <header className="sticky top-0 bg-slate-900/95 backdrop-blur-md border-b border-slate-800 text-white shrink-0 z-40 w-full shadow-md shadow-slate-950/15">
         <div className="w-full px-3 sm:px-6 h-14 sm:h-16 flex items-center justify-between gap-2 sm:gap-4">
           {/* Left: Mobile Drawer Trigger + Brand */}
           <div className="flex items-center gap-2 sm:gap-3 min-w-0">

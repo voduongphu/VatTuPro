@@ -171,7 +171,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   return (
     <>
       {/* Desktop Permanent Sidebar */}
-      <aside className="hidden lg:flex w-64 min-h-[calc(100dvh-4rem)] bg-white border-r border-slate-200/80 p-4 flex-col justify-between shrink-0">
+      <aside className="hidden lg:flex w-64 lg:sticky lg:top-16 lg:h-[calc(100dvh-4rem)] lg:overflow-y-auto bg-white border-r border-slate-200/80 p-4 flex-col justify-between shrink-0">
         {renderNavList(false)}
         <div className="pt-4 border-t border-slate-100">{renderRoleNotice()}</div>
       </aside>
